@@ -1,0 +1,15 @@
+INT6143 Group 3 超市购物机器人项目
+
+网页文件：index.html；网页代码：app.js、layout.js、instacart.js 等。
+已生成的数据结果：public/data/。五份输入 CSV：data/raw/。
+
+本项目使用 JavaScript 模块，不能直接双击 index.html 运行。
+在电脑终端进入 robot 文件夹，执行：python3 -m http.server 8768
+再在浏览器打开：http://127.0.0.1:8768/
+停止服务：在终端按 Control+C。
+
+重新生成分析数据时，先安装 README.md 所述 Python 依赖，然后在 robot 文件夹执行：
+python3 scripts/build_data.py --source data/raw
+
+公开演示：https://joe-8899.github.io/int6143-supermarket-robot/
+商品估算属性与教学模拟边界详见 README.md。

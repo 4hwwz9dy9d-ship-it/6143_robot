@@ -1,0 +1,152 @@
+/* 五个任务页面共用原有功能节点。 */
+[hidden]{display:none!important}
+body{background:#eef2f4;color:#21374a}
+.app-shell{max-width:none;min-height:100vh;margin:0;padding:0 28px 0 0;display:grid;grid-template-columns:238px minmax(0,1fr);grid-template-rows:70px minmax(0,1fr) auto;column-gap:28px}
+.app-navigation{grid-column:1;grid-row:1/4;position:sticky;top:0;height:100vh;background:#203c50;color:#fff;padding:30px 16px 22px;display:flex;flex-direction:column;z-index:10}
+.navigation-brand{display:flex;align-items:center;gap:12px;padding:4px 9px 32px;font-size:20px;font-weight:800;white-space:nowrap}
+.navigation-brand .brand-mark{background:#8ed6bf;color:#1d4652;transform:none;flex:0 0 34px;width:34px;height:34px}
+.navigation-brand small{display:block;margin-top:4px;color:#a7c2ce;font-size:11px;letter-spacing:.1em}
+.navigation-label{margin:32px 12px 16px;color:#9db4c2;font-size:13px;font-weight:700;letter-spacing:.08em}
+.view-navigation{display:grid;gap:7px}
+.view-navigation button{width:100%;display:flex;align-items:center;gap:13px;text-align:left;border:0;border-radius:12px;background:transparent;color:#c4d7df;padding:13px 14px;font-size:16px;font-weight:650}
+.view-navigation button>span{font-size:22px;line-height:1;width:24px;text-align:center;color:#9ab7c6}
+.view-navigation button:hover{background:#2c5165;color:#fff}
+.view-navigation button.is-active{background:#385f72;color:#fff;box-shadow:inset 4px 0 0 #8ed6bf}
+.view-navigation button.is-active>span{color:#a7e4d5}
+.navigation-foot{margin:auto 9px 0;padding-top:22px;border-top:1px solid #496476;color:#a7c2ce;font-size:13px;line-height:1.5}
+.masthead{grid-column:2;grid-row:1;height:70px;border-bottom:1px solid #d9e2e7;background:#fff;margin-right:-28px;padding:0 28px;position:sticky;top:0;z-index:9}
+.header-location{display:flex;align-items:center;gap:10px;min-width:0;font-size:14px;color:#5f7585;white-space:nowrap}
+.header-location strong{color:#233e50;font-weight:800}
+.header-divider{color:#aebcc4}
+.masthead-right{gap:8px}
+.header-action{border:1px solid #d4e3e9;background:#fff;color:#2c5c68;border-radius:9px;min-height:36px;padding:0 13px;font-size:14px;font-weight:700}
+.header-action:hover{background:#e9f4f2}
+#headerOrderBtn{background:#e6f5ef;border-color:#cee8df;color:#146d61}
+main{grid-column:2;grid-row:2;min-width:0;padding:20px 0 28px}
+.view-panel{min-width:0;max-width:1700px;margin:auto}
+.view-heading{display:flex;align-items:end;justify-content:space-between;gap:20px;margin:5px 0 20px}
+.view-heading h1{margin:7px 0 5px;font-size:clamp(27px,2.8vw,38px);line-height:1.2;color:#203e52}
+.view-heading p:last-child{margin:0;color:#637988;font-size:15px;line-height:1.6}
+.view-heading .secondary-btn{flex:none}
+.section-kicker{font-size:12px;color:#168475}
+.intro{padding:8px 0 22px}
+.intro h1{font-size:clamp(30px,3vw,44px);color:#203e52}
+.intro h1 span{color:#188a75}
+.intro-copy{font-size:15px;margin-top:10px}
+.intro-note{background:#e2f1ed;border-color:#c7e3db;color:#246e65}
+.order-section{margin-bottom:0}
+.workspace{grid-template-columns:minmax(0,1fr) minmax(290px,315px);gap:16px;align-items:start}
+.workspace .panel-head{min-height:58px;align-items:center}
+.workspace .panel-head h2{font-size:20px}
+.map-card,.side-card,.info-card,.event-section{background:#fff;border:1px solid #dbe5e9;border-radius:16px;box-shadow:0 5px 18px #233f4f0b}
+.map-topline{font-size:14px;padding:12px 16px}
+.map-scale{font-size:12px}
+.scene-3d{height:min(58vh,620px);min-height:440px}
+.sidebar{padding-top:0;max-height:calc(100vh - 180px);min-height:590px;overflow-y:auto;overscroll-behavior:contain;padding-right:3px}
+.sidebar .current-card{background:#244d50;border-color:#244d50}
+.sidebar .side-card{flex:none}
+.sidebar .small-label,.sidebar .status-pills span,.sidebar .stockout-control label,.sidebar .load-label{font-size:13px}
+.sidebar .current-detail,.sidebar .item-name{font-size:14px}
+.sidebar .side-test-btn,.sidebar .stockout-control p,.sidebar .assumption{font-size:12px}
+.sidebar .shopping-list li{line-height:1.5}
+.control-bar{min-height:72px}
+.primary-btn,.secondary-btn{font-size:14px}
+.map-legend{font-size:12px}
+.route-reason{margin:0;padding:12px 16px;border-top:1px solid #e8eef0;color:#3b6171;background:#f8fbfa;font-size:13px;line-height:1.6}
+.event-section{margin-top:14px;margin-bottom:0;padding:16px 20px;grid-template-columns:190px 1fr}
+.event-section h2{font-size:19px;margin:6px 0 0}
+.event-log{max-height:122px;overflow:auto}
+.event-log li{font-size:12px}
+#view-data>.info-card,#view-operations>.info-card,#view-comparison>.info-card{margin-top:16px}
+#view-data>.explanation-card{margin-top:16px}
+#view-operations>.inventory-panel{margin-bottom:16px}
+#view-comparison>.comparison-card{margin-top:0}
+#view-comparison .comparison-card table{font-size:14px}
+#view-comparison .comparison-card th,#view-comparison .comparison-card td{padding:14px}
+#view-data .analytics-grid{margin-bottom:0}
+footer{grid-column:2;grid-row:3;margin:0;border-color:#d9e2e7;font-size:12px}
+@media(max-width:1100px){
+  .app-shell{grid-template-columns:204px minmax(0,1fr);column-gap:20px;padding-right:20px}
+  .app-navigation{padding-inline:12px}
+  .navigation-brand{font-size:17px}
+  .masthead{margin-right:-20px;padding:0 20px}
+  .workspace{grid-template-columns:minmax(0,1fr)}
+  .sidebar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-height:none;min-height:0;overflow:visible}
+  .timeline-card{grid-column:1/-1}
+  .scene-3d{height:500px;min-height:0}
+}
+@media(max-width:760px){
+  .app-shell{display:block;padding:0 0 78px}
+  .app-navigation{position:fixed;top:auto;bottom:0;left:0;right:0;height:72px;padding:0;background:#203c50;box-shadow:0 -4px 18px #112d3a30}
+  .navigation-brand,.navigation-label,.navigation-foot{display:none}
+  .view-navigation{height:100%;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:0}
+  .view-navigation button{display:flex;flex-direction:column;justify-content:center;gap:2px;text-align:center;align-items:center;border-radius:0;padding:5px 1px;font-size:12px;white-space:nowrap}
+  .view-navigation button>span{width:auto;font-size:22px}
+  .view-navigation button.is-active{box-shadow:inset 0 4px 0 #8ed6bf}
+  .masthead{height:58px;margin:0;padding:0 14px}
+  .header-location{font-size:12px;gap:6px}
+  .header-location>span:nth-child(2){display:none}
+  .masthead-right{gap:5px}
+  .header-action{font-size:12px;padding:0 8px;min-height:32px}
+  main{padding:14px 13px 20px}
+  .view-heading{align-items:start;margin:2px 0 15px;gap:8px}
+  .view-heading h1{font-size:26px}
+  .view-heading p:last-child{font-size:13px}
+  .view-heading .secondary-btn{height:34px;padding:0 8px;font-size:12px}
+  .intro{padding:4px 0 18px}
+  .intro h1{font-size:30px}
+  .workspace .panel-head{align-items:start}
+  .scene-3d{height:440px;min-height:0}
+  .sidebar{display:flex;max-height:none}
+  .event-section{grid-template-columns:1fr}
+  .event-log{max-height:180px}
+  .analytics-grid{grid-template-columns:1fr}
+  footer{display:none}
+}
+@media(max-width:430px){
+  .view-navigation button{font-size:11px}
+  .scene-3d{height:410px}
+  .map-topline{font-size:12px}
+  .map-scale{display:none}
+  .map-legend{font-size:10px}
+}
+/* Instacart 离线分析结果：与现有教学演示沿用同一套卡片视觉。 */
+.research-dashboard{display:grid;gap:20px}
+.research-hero{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;background:#203e54;color:#fff;border-radius:22px;padding:28px}
+.research-hero h2{margin:4px 0 8px;font-size:clamp(24px,3vw,36px)}
+.research-hero p{max-width:800px;line-height:1.65}
+.research-hero .section-kicker{color:#85d2c5}
+.research-badge{white-space:nowrap;background:#2c5a65;border-radius:99px;padding:8px 14px;font-size:13px}
+.research-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.research-stats>div{background:#fff;border:1px solid #dbe4e6;border-radius:16px;padding:18px;display:grid;gap:6px}
+.research-stats b{color:#183b50;font-size:clamp(19px,2vw,28px)}
+.research-stats span{color:#667b86;font-size:13px}
+.research-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.research-dashboard .info-card{min-width:0}
+.research-bars{display:grid;gap:5px;margin:10px 0 18px}
+.research-bar{display:grid;grid-template-columns:74px 1fr 68px;gap:8px;align-items:center;font-size:11px}
+.research-bar div{height:7px;background:#e9f0f0;border-radius:99px;overflow:hidden}
+.research-bar i{display:block;height:100%;background:#20a49c;border-radius:99px}
+.research-bar b{text-align:right;font-size:11px}
+.research-controls{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+.research-controls label{display:grid;gap:4px;font-size:13px}
+.research-controls input{max-width:140px;border:1px solid #cbd9dc;border-radius:8px;padding:8px;background:#fff}
+.research-list{padding-left:22px;line-height:1.8;font-size:13px}
+.rule-network{display:grid;gap:6px;margin-top:15px}
+.rule-network svg{display:block;width:100%;height:auto;background:#f7faf9;border:1px solid #dce8e8;border-radius:12px}
+.rule-network div{display:flex;align-items:center;gap:8px;font-size:12px;border:1px solid #e0e8e8;border-radius:8px;padding:7px}
+.rule-network span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rule-network i{color:#168d88;font-style:normal;flex:none}
+.cluster-plot{position:relative;height:210px;border:1px solid #dce7e8;border-radius:12px;background:linear-gradient(90deg,transparent 49.8%,#e7eeee 50%,transparent 50.2%),linear-gradient(0deg,transparent 49.8%,#e7eeee 50%,transparent 50.2%);overflow:hidden;margin:15px 0}
+.cluster-plot i{position:absolute;width:5px;height:5px;border-radius:50%;opacity:.6}
+.cluster-card{display:grid;gap:4px;border-top:1px solid #e4ebeb;padding:10px 0;font-size:12px}
+.cluster-card small{font-size:12px;color:#657984}
+.quality-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.quality-grid>div{border:1px solid #e1e9e9;border-radius:12px;padding:14px}
+.quality-grid p{margin:6px 0 0}
+.quality-steps{margin-top:16px;border-top:1px solid #dce7e8;padding-top:14px}
+.quality-steps summary{cursor:pointer;color:#166c71;font-weight:700}
+.quality-steps ol{line-height:1.7;padding-left:22px}
+.quality-steps li{margin:7px 0}
+@media(max-width:900px){.research-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.research-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.research-hero{display:block;padding:20px}.research-badge{display:inline-block;margin-top:10px}.research-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.quality-grid{grid-template-columns:1fr}.research-bar{grid-template-columns:64px 1fr 55px}}
