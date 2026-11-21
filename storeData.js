@@ -50,25 +50,35 @@ export const shelves = zoneDefs.map((d, i) => {
   };
 });
 
+// 中文区域名：仅用于场景标牌与 2D 地图，分类键仍保持英文以匹配真实数据。
+export const zoneCn = {
+  'Personal Care': '个人护理', 'Household Essentials': '家庭日用', 'Cleaning Supplies': '清洁用品',
+  'Baby Care': '母婴用品', Stationery: '文具', 'Pet Supplies': '宠物用品', Beverages: '饮品',
+  'Dairy & Eggs': '乳制品与蛋类', Bakery: '烘焙', Snacks: '零食小吃', 'Ready Meals': '即食餐',
+  'Frozen Food': '冷冻食品', 'Fresh Produce': '生鲜果蔬', Seafood: '海鲜', Meat: '肉类',
+  'Grains & Oils': '谷物与食用油', 'Soy Products': '豆制品', Condiments: '调味品',
+};
+export const zoneName = value => zoneCn[value] || value;
+
 // Non-pickable architectural fixtures. They are drawn in 3D and in the 2D map.
 export const layoutFixtures = [
-  { label: 'Dairy Wall',      x: 3,   y: 26, w: 5,  h: 16, kind: 'wall' },
-  { label: 'Snack Wall',      x: 3,   y: 50, w: 5,  h: 14, kind: 'wall' },
-  { label: 'Home Wall',       x: 3,   y: 72, w: 5,  h: 14, kind: 'wall' },
-  { label: 'Back Cooler A',   x: 24,  y: 87, w: 28, h: 4,  kind: 'wall' },
-  { label: 'Back Cooler B',   x: 62,  y: 87, w: 28, h: 4,  kind: 'wall' },
-  { label: 'Back Cooler C',   x: 104, y: 87, w: 26, h: 4,  kind: 'wall' },
-  { label: 'Chilled Wall',    x: 137, y: 44, w: 4,  h: 12, kind: 'wall' },
-  { label: 'Grocery Wall',    x: 137, y: 70, w: 4,  h: 12, kind: 'wall' },
-  { label: 'Promo Island A',  x: 11,  y: 18, w: 8,  h: 8,  kind: 'promo' },
-  { label: 'Promo Island B',  x: 11,  y: 66, w: 8,  h: 8,  kind: 'promo' },
-  { label: 'Promo Island C',  x: 129, y: 35, w: 7,  h: 7,  kind: 'promo' },
-  { label: 'Checkout 01',     x: 123, y: 4,  w: 5,  h: 3,  kind: 'checkout' },
-  { label: 'Checkout 02',     x: 130, y: 4,  w: 5,  h: 3,  kind: 'checkout' },
-  { label: 'Checkout 03',     x: 137, y: 4,  w: 5,  h: 3,  kind: 'checkout' },
-  { label: 'Cart Park',       x: 14,  y: 3,  w: 10, h: 3,  kind: 'cart' },
-  { label: 'Entrance',        x: 5,   y: 8,  w: 7,  h: 4,  kind: 'entrance' },
-  { label: 'Exit',            x: 138, y: 8,  w: 7,  h: 4,  kind: 'exit' },
+  { label: '乳制品墙', x: 3,   y: 26, w: 5,  h: 16, kind: 'wall' },
+  { label: '零食墙', x: 3,   y: 50, w: 5,  h: 14, kind: 'wall' },
+  { label: '日用品墙', x: 3,   y: 72, w: 5,  h: 14, kind: 'wall' },
+  { label: '后侧冷柜 A', x: 24, y: 87, w: 28, h: 4, kind: 'wall' },
+  { label: '后侧冷柜 B', x: 62, y: 87, w: 28, h: 4, kind: 'wall' },
+  { label: '后侧冷柜 C', x: 104, y: 87, w: 26, h: 4, kind: 'wall' },
+  { label: '冷藏墙', x: 137, y: 44, w: 4, h: 12, kind: 'wall' },
+  { label: '食品杂货墙', x: 137, y: 70, w: 4, h: 12, kind: 'wall' },
+  { label: '促销岛 A', x: 11, y: 18, w: 8, h: 8, kind: 'promo' },
+  { label: '促销岛 B', x: 11, y: 66, w: 8, h: 8, kind: 'promo' },
+  { label: '促销岛 C', x: 129, y: 35, w: 7, h: 7, kind: 'promo' },
+  { label: '收银台 01', x: 123, y: 4, w: 5, h: 3, kind: 'checkout' },
+  { label: '收银台 02', x: 130, y: 4, w: 5, h: 3, kind: 'checkout' },
+  { label: '收银台 03', x: 137, y: 4, w: 5, h: 3, kind: 'checkout' },
+  { label: '购物车停放区', x: 14, y: 3, w: 10, h: 3, kind: 'cart' },
+  { label: '入口', x: 5, y: 8, w: 7, h: 4, kind: 'entrance' },
+  { label: '出口', x: 138, y: 8, w: 7, h: 4, kind: 'exit' },
 ];
 
 // Teaching catalog: English names, mapped to real zones. Price/weight/stock

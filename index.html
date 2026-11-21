@@ -1,15 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <script>
-    // Teaching demo is scheduled to expire at 2026-12-31 23:59:59 Beijing time.
+    // 教学演示站点将于 2026-12-31 23:59:59（北京时间）到期。
     if (Date.now() >= Date.parse('2026-12-31T16:00:00Z')) window.location.replace('./expired.html');
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#101C28" />
-  <meta name="description" content="NEXUS RETAIL — Autonomous Retail Intelligence Platform. Smart Supermarket Operations & Robotic Simulation." />
-  <title>NEXUS RETAIL · Autonomous Retail Intelligence Platform</title>
+  <meta name="description" content="NEXUS RETAIL 自主零售智能平台 · 智慧商超运营与机器人仿真" />
+  <title>NEXUS RETAIL · 自主零售智能平台</title>
   <link rel="stylesheet" href="./style.css" />
   <link rel="stylesheet" href="./ui.css" />
   <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
@@ -19,52 +19,52 @@
 </head>
 <body>
 <div class="app-shell" id="appShell">
-  <aside class="app-navigation" aria-label="Workspace navigation">
-    <div class="navigation-brand"><span class="brand-mark">N</span><span class="brand-title">NEXUS RETAIL<small>AUTONOMOUS RETAIL INTELLIGENCE</small></span></div>
-    <p class="navigation-label">WORKSPACE</p>
-    <nav class="view-navigation" aria-label="Primary views">
-      <button type="button" data-view="overview" class="is-active"><span class="nav-icon">◈</span>Overview</button>
-      <button type="button" data-view="order"><span class="nav-icon">▦</span>Order Management</button>
-      <button type="button" data-view="inventory"><span class="nav-icon">▤</span>Inventory</button>
-      <button type="button" data-view="analytics"><span class="nav-icon">◫</span>Retail Analytics</button>
-      <button type="button" data-view="supermarket"><span class="nav-icon">◉</span>3D Supermarket</button>
-      <button type="button" data-view="robot"><span class="nav-icon">◎</span>Robot Control</button>
-      <button type="button" data-view="route"><span class="nav-icon">◇</span>Route Optimization</button>
-      <button type="button" data-view="simulation"><span class="nav-icon">⚡</span>Simulation Center</button>
-      <button type="button" data-view="research"><span class="nav-icon">◈</span>Research</button>
+  <aside class="app-navigation" aria-label="工作区导航">
+    <div class="navigation-brand"><span class="brand-mark">N</span><span class="brand-title">NEXUS RETAIL<small>自主零售智能平台</small></span></div>
+    <p class="navigation-label">工作区 / WORKSPACE</p>
+    <nav class="view-navigation" aria-label="主导航">
+      <button type="button" data-view="overview" class="is-active"><span class="nav-icon">◈</span><span>总览<small>OVERVIEW</small></span></button>
+      <button type="button" data-view="order"><span class="nav-icon">▦</span><span>订单管理<small>ORDER MANAGEMENT</small></span></button>
+      <button type="button" data-view="inventory"><span class="nav-icon">▤</span><span>库存管理<small>INVENTORY</small></span></button>
+      <button type="button" data-view="analytics"><span class="nav-icon">◫</span><span>零售分析<small>ANALYTICS</small></span></button>
+      <button type="button" data-view="supermarket"><span class="nav-icon">◉</span><span>3D 超市<small>3D SUPERMARKET</small></span></button>
+      <button type="button" data-view="robot"><span class="nav-icon">◎</span><span>机器人控制<small>ROBOT CONTROL</small></span></button>
+      <button type="button" data-view="route"><span class="nav-icon">◇</span><span>路径优化<small>ROUTE OPTIMIZATION</small></span></button>
+      <button type="button" data-view="simulation"><span class="nav-icon">⚡</span><span>仿真中心<small>SIMULATION CENTER</small></span></button>
+      <button type="button" data-view="research"><span class="nav-icon">◈</span><span>研究方法<small>RESEARCH</small></span></button>
     </nav>
-    <div class="navigation-foot"><b>SIMULATION ENVIRONMENT</b>Rule-driven teaching model. No real sensor classification, live inventory or physical robot is connected.</div>
+    <div class="navigation-foot"><b>仿真环境 / SIMULATION ENVIRONMENT</b>规则驱动的教学模型。未接入真实视觉识别、实时库存或实体机器人。</div>
   </aside>
 
   <header class="masthead">
-    <div class="header-location"><span class="dot"></span><span>NEXUS RETAIL</span><span class="header-divider">/</span><strong id="activeViewTitle">Overview</strong></div>
-    <div class="live-ops" id="liveOps" aria-label="Live operations status">
-      <div class="ops-item"><span class="ops-label">ROBOT</span><b id="opsRobot">IDLE</b></div>
-      <div class="ops-item"><span class="ops-label">ACTIVE ORDERS</span><b id="opsOrders">0</b></div>
-      <div class="ops-item"><span class="ops-label">STOCK ALERTS</span><b id="opsStock">0</b></div>
-      <div class="ops-item"><span class="ops-label">COMPLETED</span><b id="opsDone">0</b></div>
+    <div class="header-location"><span class="dot"></span><span>NEXUS RETAIL</span><span class="header-divider">/</span><strong id="activeViewTitle">总览</strong></div>
+    <div class="live-ops" id="liveOps" aria-label="实时运营状态">
+      <div class="ops-item"><span class="ops-label">机器人 / ROBOT</span><b id="opsRobot">待机</b></div>
+      <div class="ops-item"><span class="ops-label">进行中订单 / ACTIVE ORDERS</span><b id="opsOrders">0</b></div>
+      <div class="ops-item"><span class="ops-label">库存预警 / STOCK ALERTS</span><b id="opsStock">0</b></div>
+      <div class="ops-item"><span class="ops-label">已完成 / COMPLETED</span><b id="opsDone">0</b></div>
     </div>
     <div class="masthead-right">
-      <button id="viewModeBtn" class="header-action" type="button" aria-pressed="false">2D MAP</button>
-      <button id="presentationBtn" class="header-action" type="button">Presentation</button>
-      <button id="headerOrderBtn" class="header-action" type="button">New Order</button>
-      <button id="fullscreenBtn" class="header-action icon" type="button" aria-label="Toggle fullscreen">⛶</button>
+      <button id="viewModeBtn" class="header-action" type="button" aria-pressed="false">2D 地图</button>
+      <button id="presentationBtn" class="header-action" type="button">演示模式</button>
+      <button id="headerOrderBtn" class="header-action" type="button">新建订单</button>
+      <button id="fullscreenBtn" class="header-action icon" type="button" aria-label="切换全屏">⛶</button>
     </div>
   </header>
 
   <main id="appMain">
-    <!-- ============================ OVERVIEW ============================ -->
-    <section class="view-panel" id="view-overview" aria-label="Overview">
+    <!-- ============================ 总览 ============================ -->
+    <section class="view-panel" id="view-overview" aria-label="总览">
       <div class="hero-card">
         <div>
-          <p class="eyebrow">INT6143 · GROUP 3 · RETAIL SYSTEMS</p>
-          <h1>Autonomous Retail<br /><span>Intelligence Platform</span></h1>
-          <p class="hero-sub">Smart Supermarket Operations &amp; Robotic Simulation</p>
-          <p class="lead">An order-to-navigation teaching platform: real Instacart product data, Held–Karp visit sequencing, A* path planning and an interactive 3D supermarket. Every simulated element is explicitly labelled.</p>
+          <p class="eyebrow">INT6143 · 第三组 · 零售系统</p>
+          <h1>自主零售<br /><span>智能平台</span></h1>
+          <p class="hero-sub">智慧商超运营与机器人仿真 / Smart Supermarket Operations &amp; Robotic Simulation</p>
+          <p class="lead">从订单到导航的教学平台：真实 Instacart 商品数据、Held–Karp 访问顺序优化、A* 路径规划与可交互的 3D 超市。所有仿真元素均明确标注。</p>
           <div class="hero-actions btn-row">
-            <button id="btnOverviewOrder" class="btn btn-teal btn-lg" type="button">Place an order →</button>
-            <button id="btnOverview3D" class="btn btn-secondary btn-lg" type="button">Open 3D supermarket</button>
-            <button id="btnOverviewPresentation" class="btn btn-ghost btn-lg" type="button">Presentation mode</button>
+            <button id="btnOverviewOrder" class="btn btn-teal btn-lg" type="button">提交订单 →</button>
+            <button id="btnOverview3D" class="btn btn-secondary btn-lg" type="button">进入 3D 超市</button>
+            <button id="btnOverviewPresentation" class="btn btn-ghost btn-lg" type="button">演示模式</button>
           </div>
         </div>
         <div class="hero-visual" aria-hidden="true">
@@ -84,139 +84,139 @@
             <rect x="200" y="183" width="28" height="12" rx="4" fill="#28B9A4" opacity=".85"/>
             <circle cx="214" cy="248" r="8" fill="#101c28" stroke="#28B9A4" stroke-width="2"/>
             <circle cx="214" cy="248" r="16" fill="none" stroke="#28B9A4" stroke-opacity=".3"/>
-            <text x="214" y="92" text-anchor="middle" fill="#8fded0" font-size="10" font-weight="700" letter-spacing="3">LIVE SIMULATION</text>
+            <text x="214" y="92" text-anchor="middle" fill="#8fded0" font-size="10" font-weight="700" letter-spacing="3">实时仿真 / LIVE SIMULATION</text>
             <text x="214" y="112" text-anchor="middle" fill="#eaf6f4" font-size="20" font-weight="800">NEXUS / AMR-01</text>
           </svg>
         </div>
       </div>
 
       <div class="kpi-row">
-        <div class="kpi"><div class="kpi-label">Active orders</div><div class="kpi-value" id="kpiOrders">0</div><div class="kpi-foot">In queue or in progress</div></div>
-        <div class="kpi"><div class="kpi-label">Completed orders</div><div class="kpi-value" id="kpiCompleted">0</div><div class="kpi-foot">Handed over at exit</div></div>
-        <div class="kpi kpi--warn"><div class="kpi-label">Stock alerts</div><div class="kpi-value" id="kpiStock">0</div><div class="kpi-foot">Simulated inventory &lt; 10%</div></div>
-        <div class="kpi kpi--dark"><div class="kpi-label">Planned route</div><div class="kpi-value" id="kpiDistance">—</div><div class="kpi-foot">Map units · current order</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">ACTIVE ORDERS</span>进行中订单</div><div class="kpi-value" id="kpiOrders">0</div><div class="kpi-foot">排队中或执行中</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">COMPLETED ORDERS</span>已完成订单</div><div class="kpi-value" id="kpiCompleted">0</div><div class="kpi-foot">已在出口交接</div></div>
+        <div class="kpi kpi--warn"><div class="kpi-label"><span class="en-mini">STOCK ALERTS</span>库存预警</div><div class="kpi-value" id="kpiStock">0</div><div class="kpi-foot">仿真库存低于 10%</div></div>
+        <div class="kpi kpi--dark"><div class="kpi-label"><span class="en-mini">PLANNED ROUTE</span>规划路径</div><div class="kpi-value" id="kpiDistance">—</div><div class="kpi-foot">地图单位 · 当前订单</div></div>
       </div>
 
       <div class="overview-grid">
         <div class="card card-pad">
-          <div class="card-head"><div><p class="section-kicker">SYSTEM STATUS</p><h3>Operational snapshot</h3></div><span class="pill pill--ok" id="systemPill">SIMULATION READY</span></div>
+          <div class="card-head"><div><p class="section-kicker">SYSTEM STATUS</p><h3>系统运行快照</h3></div><span class="pill pill--ok" id="systemPill">仿真就绪</span></div>
           <div class="table-wrap"><table class="data-table"><tbody id="systemStatusTable"></tbody></table></div>
-          <p class="assumption">Status values reflect the current browser session only. They are read from the running order queue, simulated inventory and robot task state — not fabricated live telemetry.</p>
+          <p class="assumption">状态值仅反映当前浏览器会话，读取自运行中的订单队列、仿真库存与机器人任务状态，并非伪造的实时遥测数据。</p>
         </div>
         <div class="card card-pad">
-          <div class="card-head"><div><p class="section-kicker">LIVE OPERATIONS PREVIEW</p><h3>Order execution pipeline</h3></div><span class="badge">REAL STATE</span></div>
+          <div class="card-head"><div><p class="section-kicker">LIVE OPERATIONS PREVIEW</p><h3>订单执行流程</h3></div><span class="badge">真实运行状态</span></div>
           <div class="list" id="livePreviewList"></div>
         </div>
       </div>
 
       <div class="supermarket-preview">
-        <svg viewBox="0 0 660 380" role="img" aria-label="Supermarket zone plan preview">
+        <svg viewBox="0 0 660 380" role="img" aria-label="超市区域平面预览">
           <rect x="8" y="8" width="644" height="364" rx="14" fill="#f7faf8" stroke="#dfe8e3"/>
           <g id="previewZones"></g>
           <g id="previewRoute"></g>
-          <text x="28" y="352" font-size="9" fill="#84919b">SCHEMATIC PLAN · 140 × 90 MAP UNITS · ZONES FROM storeData.js</text>
+          <text x="28" y="352" font-size="9" fill="#84919b">示意平面图 · 140 × 90 地图单位 · 区域来自 storeData.js</text>
         </svg>
         <div class="preview-side">
           <p class="section-kicker">3D SUPERMARKET PREVIEW</p>
-          <h3>Fifteen minutes inside the store</h3>
-          <p>Irregular gondolas, wall coolers, produce islands and three checkout counters share one coordinate system with the navigation graph.</p>
-          <div class="zone-legend"><span><i style="background:#20A995"></i>Fresh</span><span><i style="background:#3D7BD6"></i>Chilled</span><span><i style="background:#E8A34A"></i>Promo</span><span><i style="background:#84919B"></i>Grocery</span></div>
-          <button id="btnPreviewOpen" class="btn btn-primary btn-block" type="button">Open interactive scene</button>
+          <h3>走进超市的十五分钟</h3>
+          <p>不规则货架、靠墙冷柜、果蔬展示岛与三台收银台，与导航图共用同一套坐标系统。</p>
+          <div class="zone-legend"><span><i style="background:#20A995"></i>生鲜</span><span><i style="background:#3D7BD6"></i>冷藏</span><span><i style="background:#E8A34A"></i>促销</span><span><i style="background:#84919B"></i>日用</span></div>
+          <button id="btnPreviewOpen" class="btn btn-primary btn-block" type="button">打开交互场景</button>
         </div>
       </div>
     </section>
 
-    <!-- ======================== ORDER MANAGEMENT ======================== -->
-    <section class="view-panel" id="view-order" aria-label="Order Management" hidden>
-      <div class="section-title"><div><p class="section-kicker">ORDER MANAGEMENT</p><h2>Build a customer basket</h2><p>Product names and departments are the original Instacart English names. Prices, weights, shelf mapping and stock are teaching simulations.</p></div><span class="badge badge--live">REAL CATALOG · SIMULATED FULFILLMENT</span></div>
+    <!-- ======================== 订单管理 ======================== -->
+    <section class="view-panel" id="view-order" aria-label="订单管理" hidden>
+      <div class="section-title"><div><p class="section-kicker">ORDER MANAGEMENT</p><h2>构建顾客购物篮</h2><p>商品名称与部门沿用 Instacart 原始英文名称；价格、重量、货架映射与库存为教学仿真。</p></div><span class="badge badge--live">真实商品目录 · 仿真履约</span></div>
       <div class="order-layout">
         <div class="card card-pad">
-          <div class="card-head"><div><h3>Product catalog</h3><p>Search the English product name, then filter by department / aisle.</p></div><button id="demoOrderBtn" class="btn btn-secondary btn-sm" type="button">Load sample basket</button></div>
+          <div class="card-head"><div><h3>商品目录</h3><p>搜索英文商品名，再按部门 / 货区筛选。</p></div><button id="demoOrderBtn" class="btn btn-secondary btn-sm" type="button">载入示例购物篮</button></div>
           <div class="order-filters">
-            <label class="field"><span class="field-label">Search product</span><input id="productSearch" type="search" placeholder="e.g. milk, banana, bread" /></label>
-            <label class="field"><span class="field-label">Department</span><select id="categoryFilter"></select></label>
-            <label class="field"><span class="field-label">Aisle</span><select id="subcategoryFilter"></select></label>
+            <label class="field"><span class="field-label">搜索商品 / SEARCH</span><input id="productSearch" type="search" placeholder="例如 milk、banana、bread" /></label>
+            <label class="field"><span class="field-label">部门 / DEPARTMENT</span><select id="categoryFilter"></select></label>
+            <label class="field"><span class="field-label">货区 / AISLE</span><select id="subcategoryFilter"></select></label>
           </div>
           <div id="catalogue" class="catalogue"></div>
-          <p class="assumption">The browser loads one small JSON shard per department or search letter. A maximum of 36 items is displayed.</p>
+          <p class="assumption">浏览器按部门或搜索首字母分片加载 JSON，最多显示 36 件商品。</p>
         </div>
         <div class="stack">
           <div class="card card-pad">
-            <div class="card-head"><div><h3>Customer cart</h3><p>Simulated payment · no real transaction</p></div><span class="pill" id="cartCountPill">0 ITEMS</span></div>
+            <div class="card-head"><div><h3>顾客购物车</h3><p>模拟支付 · 无真实交易</p></div><span class="pill" id="cartCountPill">0 件</span></div>
             <div id="cartList"></div>
-            <div class="cart-total"><span id="cartSummary">0 items · ¥0.00</span><b id="cartTotal">¥0.00</b></div>
+            <div class="cart-total"><span id="cartSummary">0 件 · ¥0.00</span><b id="cartTotal">¥0.00</b></div>
             <p id="minimumNotice" class="order-message" role="status"></p>
-            <p id="orderMessage" class="order-message" role="status">No order submitted. The robot is waiting at the entrance.</p>
-            <button id="submitOrderBtn" class="btn btn-teal btn-block btn-lg" type="button">Simulate payment &amp; submit order</button>
-            <p class="assumption">Minimum ¥30, fixed teaching rate 1 USD = ¥7, 12 kg capacity — all assumptions. Submitting an order drives the real Held–Karp and A* code.</p>
+            <p id="orderMessage" class="order-message" role="status">尚未提交订单，机器人正在入口待命。</p>
+            <button id="submitOrderBtn" class="btn btn-teal btn-block btn-lg" type="button">模拟支付并提交订单</button>
+            <p class="assumption">最低 ¥30、固定教学汇率 1 USD = ¥7、载重上限 12 kg——均为假设。提交订单会驱动真实的 Held–Karp 与 A* 计算。</p>
           </div>
           <div class="card card-pad">
-            <div class="card-head"><div><p class="section-kicker">APRIORI · REAL CO-PURCHASE</p><h3>Basket recommendations</h3></div></div>
+            <div class="card-head"><div><p class="section-kicker">APRIORI · 真实共购关系</p><h3>购物篮推荐</h3></div></div>
             <div id="recommendations"></div>
           </div>
         </div>
       </div>
       <div class="card card-pad" style="margin-top:16px">
-        <div class="card-head"><div><p class="section-kicker">ORDER QUEUE</p><h3>Fulfillment pipeline</h3><p>Orders are processed in submission order. Queue state lives only in this browser session.</p></div></div>
+        <div class="card-head"><div><p class="section-kicker">ORDER QUEUE</p><h3>履约流水线</h3><p>订单按提交顺序处理，队列状态仅保存在当前浏览器会话。</p></div></div>
         <div id="orderQueue" class="queue-list" aria-live="polite"></div>
         <div class="divider"></div>
-        <div class="table-wrap"><table class="data-table"><thead><tr><th>Order ID</th><th>Items</th><th>Paid (simulated)</th><th>Assigned robot</th><th>Status</th></tr></thead><tbody id="fulfillmentTable"></tbody></table></div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>件数</th><th>支付金额（模拟）</th><th>分配机器人</th><th>状态</th></tr></thead><tbody id="fulfillmentTable"></tbody></table></div>
       </div>
     </section>
 
-    <!-- ========================== INVENTORY ============================= -->
-    <section class="view-panel" id="view-inventory" aria-label="Inventory Management" hidden>
-      <div class="section-title"><div><p class="section-kicker">INVENTORY MANAGEMENT</p><h3>Stock status and replenishment</h3><p>Each shelf position holds an assumed capacity of 20 units. Below 10% raises a teaching alert; an employee must confirm restocking.</p></div><span class="badge">SIMULATED INVENTORY</span></div>
+    <!-- ========================== 库存管理 ============================= -->
+    <section class="view-panel" id="view-inventory" aria-label="库存管理" hidden>
+      <div class="section-title"><div><p class="section-kicker">INVENTORY MANAGEMENT</p><h3>库存状态与补货</h3><p>每个货位假设容量为 20 件，低于 10% 触发教学预警，且需员工确认补货。</p></div><span class="badge">仿真库存</span></div>
       <div class="kpi-row">
-        <div class="kpi"><div class="kpi-label">Tracked SKUs</div><div class="kpi-value" id="invSkus">0</div><div class="kpi-foot">Catalog + teaching products</div></div>
-        <div class="kpi kpi--warn"><div class="kpi-label">Low stock</div><div class="kpi-value" id="invLow">0</div><div class="kpi-foot">1% – 9% capacity</div></div>
-        <div class="kpi kpi--danger"><div class="kpi-label">Out of stock</div><div class="kpi-value" id="invOut">0</div><div class="kpi-foot">0 units available</div></div>
-        <div class="kpi"><div class="kpi-label">Restock actions</div><div class="kpi-value" id="invRestocks">0</div><div class="kpi-foot">Confirmed in this session</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">TRACKED SKUS</span>跟踪商品数</div><div class="kpi-value" id="invSkus">0</div><div class="kpi-foot">目录 + 教学商品</div></div>
+        <div class="kpi kpi--warn"><div class="kpi-label"><span class="en-mini">LOW STOCK</span>低库存</div><div class="kpi-value" id="invLow">0</div><div class="kpi-foot">容量的 1% – 9%</div></div>
+        <div class="kpi kpi--danger"><div class="kpi-label"><span class="en-mini">OUT OF STOCK</span>缺货</div><div class="kpi-value" id="invOut">0</div><div class="kpi-foot">可用数量 0</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">RESTOCK ACTIONS</span>补货操作</div><div class="kpi-value" id="invRestocks">0</div><div class="kpi-foot">本会话已确认</div></div>
       </div>
       <div class="grid grid-2">
-        <div class="card card-pad"><div class="card-head"><div><h3>Low / out-of-stock alerts</h3><p>Employee confirmation is required before stock changes.</p></div></div><div id="inventoryAlerts" class="alert-list" aria-live="polite"></div></div>
-        <div class="card card-pad"><div class="card-head"><div><h3>Stock detail</h3><p>Zone, position, available units and status.</p></div></div><div class="table-wrap" style="max-height:420px;overflow:auto"><table class="data-table"><thead><tr><th>Product</th><th>Zone</th><th class="right">Stock</th><th>Status</th></tr></thead><tbody id="inventoryTable"></tbody></table></div></div>
+        <div class="card card-pad"><div class="card-head"><div><h3>低库存 / 缺货预警</h3><p>库存变更须经员工确认。</p></div></div><div id="inventoryAlerts" class="alert-list" aria-live="polite"></div></div>
+        <div class="card card-pad"><div class="card-head"><div><h3>库存明细</h3><p>区域、货位、可用数量与状态。</p></div></div><div class="table-wrap" style="max-height:420px;overflow:auto"><table class="data-table"><thead><tr><th>商品</th><th>区域</th><th class="right">库存</th><th>状态</th></tr></thead><tbody id="inventoryTable"></tbody></table></div></div>
       </div>
     </section>
 
-    <!-- ========================== ANALYTICS ============================= -->
-    <section class="view-panel" id="view-analytics" aria-label="Retail Analytics" hidden>
-      <div class="section-title"><div><p class="section-kicker">RETAIL ANALYTICS</p><h2>Evidence behind the decisions</h2><p>Charts are rendered from the offline JSON produced by scripts/build_data.py. Hover any bar or point for its exact value.</p></div><span class="badge badge--live">REAL DATA + CALCULATED RESULTS</span></div>
-      <div id="researchDashboard" class="research-dashboard"><p class="muted">Loading offline analysis results…</p></div>
+    <!-- ========================== 零售分析 ============================= -->
+    <section class="view-panel" id="view-analytics" aria-label="零售分析" hidden>
+      <div class="section-title"><div><p class="section-kicker">RETAIL ANALYTICS</p><h2>决策背后的证据</h2><p>图表由 scripts/build_data.py 生成的离线 JSON 渲染，悬停任意柱形或数据点可查看精确数值。</p></div><span class="badge badge--live">真实数据 + 计算结果</span></div>
+      <div id="researchDashboard" class="research-dashboard"><p class="muted">正在加载离线分析结果……</p></div>
       <div class="grid grid-2" style="margin-top:16px">
         <div class="card card-pad">
-          <div class="card-head"><div><p class="section-kicker">SIMULATED CROWD</p><h3>Aisle congestion by time slot</h3></div><label class="field"><span class="field-label">Time slot</span><select id="timeSlot"></select></label></div>
+          <div class="card-head"><div><p class="section-kicker">SIMULATED CROWD</p><h3>各时段通道拥堵</h3></div><label class="field"><span class="field-label">时段 / TIME SLOT</span><select id="timeSlot"></select></label></div>
           <p id="crowdSummary" class="lead" style="font-size:11px"></p>
           <div id="crowdTable" class="grid" style="grid-template-columns:repeat(6,minmax(0,1fr));gap:6px"></div>
-          <p class="assumption">Crowd samples are teaching assumptions. Instacart order hours are online ordering times, not in-store traffic.</p>
+          <p class="assumption">客流样本为教学假设。Instacart 的下单时段是线上时间，不等于店内客流。</p>
         </div>
         <div class="card card-pad">
-          <div class="card-head"><div><p class="section-kicker">APRIORI · REAL BASKETS</p><h3>Co-purchase rules</h3></div></div>
+          <div class="card-head"><div><p class="section-kicker">APRIORI · 真实购物篮</p><h3>共购规则</h3></div></div>
           <p id="miningMethod" class="lead" style="font-size:11px"></p>
           <div id="ruleTable"></div>
-          <h4 style="margin-top:14px">Adjacency suggestions</h4>
+          <h4 style="margin-top:14px">货架邻接建议</h4>
           <div id="shelfSuggestions"></div>
         </div>
       </div>
     </section>
 
-    <!-- ======================== 3D SUPERMARKET ======================== -->
-    <section class="view-panel" id="view-supermarket" aria-label="3D Supermarket" hidden>
-      <div class="section-title"><div><p class="section-kicker">3D SUPERMARKET · CONTROL CENTER</p><h2>Order-driven robot navigation</h2></div><span class="badge badge--live">SIMULATION</span></div>
+    <!-- ======================== 3D 超市 ======================== -->
+    <section class="view-panel" id="view-supermarket" aria-label="3D 超市" hidden>
+      <div class="section-title"><div><p class="section-kicker">3D SUPERMARKET · CONTROL CENTER</p><h2>订单驱动的机器人导航</h2></div><span class="badge badge--live">仿真</span></div>
       <div class="control-center">
         <div class="control-head">
-          <div><p class="section-kicker">NEXUS / STORE 01</p><h2>Interactive store environment</h2></div>
+          <div><p class="section-kicker">NEXUS / STORE 01</p><h2>交互式门店环境</h2></div>
           <div class="control-head-actions">
-            <div class="segmented" role="group" aria-label="Crowd scenario"><button id="scenarioNormal" type="button" aria-pressed="true">Normal flow</button><button id="scenarioPeak" type="button" aria-pressed="false">Weekday peak</button></div>
-            <div class="segmented" role="group" aria-label="Camera view"><button id="cameraIso" type="button" aria-pressed="true">Isometric</button><button id="cameraFollow" type="button" aria-pressed="false">Follow robot</button><button id="cameraClose" type="button" aria-pressed="false">Close-up</button></div>
-            <button id="viewModeBtn2" class="header-action" type="button" aria-pressed="false">2D MAP</button>
+            <div class="segmented" role="group" aria-label="客流场景"><button id="scenarioNormal" type="button" aria-pressed="true">平常客流</button><button id="scenarioPeak" type="button" aria-pressed="false">工作日高峰</button></div>
+            <div class="segmented" role="group" aria-label="相机视角"><button id="cameraIso" type="button" aria-pressed="true">等轴视角</button><button id="cameraFollow" type="button" aria-pressed="false">跟随机器人</button><button id="cameraClose" type="button" aria-pressed="false">近景特写</button></div>
+            <button id="viewModeBtn2" class="header-action" type="button" aria-pressed="false">2D 地图</button>
           </div>
         </div>
         <div class="control-layout">
           <div class="control-main">
             <div class="map-frame" id="mapFrame">
-              <div id="scene3d" class="scene-3d" role="img" aria-label="Interactive 3D supermarket with robot, shelves and planned route"></div>
-              <svg id="storeMap" class="fallback-map" viewBox="-28 -22 1456 944" role="img" aria-label="2D navigation map with shelves, obstacles and planned path" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
+              <div id="scene3d" class="scene-3d" role="img" aria-label="包含机器人、货架与规划路径的交互式 3D 超市"></div>
+              <svg id="storeMap" class="fallback-map" viewBox="-28 -22 1456 944" role="img" aria-label="含货架、障碍物与规划路径的 2D 导航地图" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
                 <defs>
                   <pattern id="floorGrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e5ece8" stroke-width="1"/></pattern>
                 </defs>
@@ -227,58 +227,58 @@
                 <g id="crowd"></g><g id="destinations"></g><g id="robotLayer"></g>
               </svg>
               <div class="scene-overlay">
-                <div class="scene-overlay-top"><div><span class="scene-chip scene-chip--teal" id="mapSituation">AISLE CLEAR · WAITING FOR ORDER</span></div><div><button id="cameraResetBtn" type="button">Reset view</button></div></div>
-                <div class="scene-overlay-bottom"><span class="scene-chip scene-hint">DRAG TO ORBIT · SCROLL TO ZOOM · 2D MAP SHOWS GRAPH NODES</span><span class="scene-chip" id="sceneFps">SIMULATION MODE</span></div>
+                <div class="scene-overlay-top"><div><span class="scene-chip scene-chip--teal" id="mapSituation">通道畅通 · 等待订单</span></div><div><button id="cameraResetBtn" type="button">重置视角</button></div></div>
+                <div class="scene-overlay-bottom"><span class="scene-chip scene-hint">拖拽旋转 · 滚轮缩放 · 2D 地图显示图节点</span><span class="scene-chip" id="sceneFps">仿真模式</span></div>
               </div>
             </div>
-            <div class="scene-toolbar"><div id="mapLegend" class="map-legend" aria-label="Route legend"></div><span class="scene-chip" id="sceneModeLabel">3D VIEW</span></div>
-            <div id="routeReason" class="route-reason">Submit an order to see the Held–Karp visit sequence and A* segment costs.</div>
+            <div class="scene-toolbar"><div id="mapLegend" class="map-legend" aria-label="路径图例"></div><span class="scene-chip" id="sceneModeLabel">3D 视图</span></div>
+            <div id="routeReason" class="route-reason">提交订单后，这里会显示 Held–Karp 访问顺序与 A* 各段代价。</div>
             <div class="playbar">
-              <button id="playBtn" class="btn btn-teal" type="button"><span id="playIcon">▶</span><span id="playLabel">Play fulfillment</span></button>
-              <button id="resetBtn" class="btn btn-secondary" type="button">↺ Restart</button>
-              <div style="flex:1;min-width:160px"><div class="progress-head"><span id="progressText">Waiting for paid order</span><span id="progressPercent">0%</span></div><div class="progress-track"><div id="progressFill" class="progress-fill"></div></div></div>
+              <button id="playBtn" class="btn btn-teal" type="button"><span id="playIcon">▶</span><span id="playLabel">开始履约</span></button>
+              <button id="resetBtn" class="btn btn-secondary" type="button">↺ 重新开始</button>
+              <div style="flex:1;min-width:160px"><div class="progress-head"><span id="progressText">等待已支付订单</span><span id="progressPercent">0%</span></div><div class="progress-track"><div id="progressFill" class="progress-fill"></div></div></div>
             </div>
           </div>
-          <aside class="control-side" aria-label="Robot task panels">
+          <aside class="control-side" aria-label="机器人任务面板">
             <div class="control-panel">
               <p class="section-kicker">CURRENT TASK</p>
-              <div class="control-hero"><span class="robot-glyph">◉</span><div><h3 id="currentAction">Waiting at entrance</h3><span class="pill pill--dark" id="motionStatus">IDLE</span></div></div>
-              <p id="currentDetail">Select products and submit an order to start the simulation.</p>
-              <div class="control-stat"><span>Next target</span><b id="nextTarget">—</b></div>
-              <div class="control-stat"><span>Robot state</span><b id="robotStateText" class="is-ok">IDLE</b></div>
-              <div class="control-stat"><span>Pickup code</span><b id="pickupCode">—</b></div>
+              <div class="control-hero"><span class="robot-glyph">◉</span><div><h3 id="currentAction">在入口待命</h3><span class="pill pill--dark" id="motionStatus">状态：待机</span></div></div>
+              <p id="currentDetail">选择商品并提交订单，即可开始仿真。</p>
+              <div class="control-stat"><span>下一目标</span><b id="nextTarget">—</b></div>
+              <div class="control-stat"><span>机器人状态</span><b id="robotStateText" class="is-ok">待机</b></div>
+              <div class="control-stat"><span>取货码</span><b id="pickupCode">—</b></div>
               <div class="control-meters">
-                <div class="meter"><span>Battery <b id="batteryText">100%</b></span><div class="meter-track"><div id="batteryFill" class="meter-fill" style="width:100%"></div></div></div>
-                <div class="meter"><span>Load <b id="loadText">0.00 / 12.00 kg</b></span><div class="meter-track"><div id="loadFill" class="meter-fill" style="width:0%"></div></div></div>
+                <div class="meter"><span>电量 <b id="batteryText">100%</b></span><div class="meter-track"><div id="batteryFill" class="meter-fill" style="width:100%"></div></div></div>
+                <div class="meter"><span>载重 <b id="loadText">0.00 / 12.00 kg</b></span><div class="meter-track"><div id="loadFill" class="meter-fill" style="width:0%"></div></div></div>
               </div>
               <div class="stockout-control" style="margin-top:10px;padding-top:10px;border-top:1px solid #263A4D">
-                <label class="field-label" for="stockoutSelect">Out-of-stock drill</label>
-                <select id="stockoutSelect"><option value="">No simulated shortage</option></select>
+                <label class="field-label" for="stockoutSelect">缺货演练</label>
+                <select id="stockoutSelect"><option value="">不模拟缺货</option></select>
               </div>
-              <div id="stockoutPanel" class="decision-panel" hidden><h4>Shortage — customer decision</h4><p id="stockoutDetail"></p><div class="btn-row"><button id="acceptSubBtn" class="btn btn-teal btn-sm" type="button">Accept substitute</button><button id="skipSubBtn" class="btn btn-secondary btn-sm" type="button">Skip item</button></div></div>
-              <div id="assistPanel" class="decision-panel" hidden><h4>Employee assistance</h4><p id="assistDetail"></p><button id="confirmAssistBtn" class="btn btn-teal btn-sm" type="button">Confirm pick-assisted</button></div>
-              <div id="handoffPanel" class="decision-panel" hidden><h4>Exit handover</h4><p id="handoffDetail"></p><button id="handoffBtn" class="btn btn-teal btn-sm" type="button">Customer collected order</button></div>
+              <div id="stockoutPanel" class="decision-panel" hidden><h4>缺货 — 顾客决策</h4><p id="stockoutDetail"></p><div class="btn-row"><button id="acceptSubBtn" class="btn btn-teal btn-sm" type="button">接受替代品</button><button id="skipSubBtn" class="btn btn-secondary btn-sm" type="button">跳过该商品</button></div></div>
+              <div id="assistPanel" class="decision-panel" hidden><h4>员工协助</h4><p id="assistDetail"></p><button id="confirmAssistBtn" class="btn btn-teal btn-sm" type="button">确认已协助取货</button></div>
+              <div id="handoffPanel" class="decision-panel" hidden><h4>出口交接</h4><p id="handoffDetail"></p><button id="handoffBtn" class="btn btn-teal btn-sm" type="button">顾客已取走订单</button></div>
             </div>
             <div class="control-panel">
               <p class="section-kicker">NAVIGATION</p>
-              <div class="control-stat"><span>Destination</span><b id="destinationText">Entrance</b></div>
-              <div class="control-stat"><span>Route length</span><b id="navDistance">—</b></div>
-              <div class="control-stat"><span>Elapsed (simulated)</span><b id="navElapsed">0.0 s</b></div>
-              <div class="control-stat"><span>Completed stops</span><b id="navStops">0 / 0</b></div>
+              <div class="control-stat"><span>目的地</span><b id="destinationText">入口</b></div>
+              <div class="control-stat"><span>路径长度</span><b id="navDistance">—</b></div>
+              <div class="control-stat"><span>已用时（仿真）</span><b id="navElapsed">0.0 秒</b></div>
+              <div class="control-stat"><span>已完成站点</span><b id="navStops">0 / 0</b></div>
               <ol id="timeline" class="timeline-dark"></ol>
             </div>
             <div class="control-panel">
               <p class="section-kicker">SIMULATION EVENTS</p>
-              <p>Trigger a rule-driven event and watch the robot slow, stop or replan.</p>
+              <p>触发规则驱动的仿真事件，观察机器人减速、停车或重新规划。</p>
               <div class="event-trigger">
-                <button type="button" data-event="pedestrian">Pedestrian crossing</button>
-                <button type="button" data-event="cart">Cart blocking</button>
-                <button type="button" data-event="aisle">Aisle closure</button>
-                <button type="button" data-event="overload">Robot overload</button>
-                <button type="button" data-event="congestion">Shelf congestion</button>
-                <button type="button" data-event="failure">Navigation failure</button>
+                <button type="button" data-event="pedestrian">行人横穿</button>
+                <button type="button" data-event="cart">购物车阻挡</button>
+                <button type="button" data-event="aisle">通道封闭</button>
+                <button type="button" data-event="overload">机器人超载</button>
+                <button type="button" data-event="congestion">货架拥堵</button>
+                <button type="button" data-event="failure">导航故障</button>
               </div>
-              <p class="assumption">Events modify the simulation state only. No real computer-vision classifier or physical safety system is involved.</p>
+              <p class="assumption">事件仅改变仿真状态，不涉及真实视觉分类或物理安全系统。</p>
             </div>
             <div class="control-panel">
               <p class="section-kicker">EVENT LOG</p>
@@ -289,91 +289,91 @@
       </div>
     </section>
 
-    <!-- ======================== ROBOT CONTROL ======================== -->
-    <section class="view-panel" id="view-robot" aria-label="Robot Control Center" hidden>
-      <div class="section-title"><div><p class="section-kicker">ROBOT CONTROL CENTER</p><h2>Fleet telemetry and task execution</h2></div><span class="badge">SIMULATED AMR-01</span></div>
+    <!-- ======================== 机器人控制 ======================== -->
+    <section class="view-panel" id="view-robot" aria-label="机器人控制中心" hidden>
+      <div class="section-title"><div><p class="section-kicker">ROBOT CONTROL CENTER</p><h2>机器人状态与任务执行</h2></div><span class="badge">仿真 AMR-01</span></div>
       <div class="robot-hero">
         <div class="robot-portrait" aria-hidden="true">
           <svg viewBox="0 0 140 140"><rect x="34" y="26" width="72" height="64" rx="15" fill="#f2f7f6" stroke="#8ed6c8" stroke-width="2"/><rect x="42" y="34" width="56" height="20" rx="6" fill="#172C40"/><rect x="48" y="39" width="44" height="10" rx="3" fill="#28B9A4" opacity=".85"/><rect x="30" y="88" width="80" height="19" rx="8" fill="#3c5364"/><circle cx="49" cy="108" r="9" fill="#172C40" stroke="#28B9A4" stroke-width="2"/><circle cx="91" cy="108" r="9" fill="#172C40" stroke="#28B9A4" stroke-width="2"/><circle cx="70" cy="22" r="5" fill="#28B9A4"/></svg>
         </div>
-        <div><p class="section-kicker" style="color:#68c8bb">AMR-01 · AUTONOMOUS MOBILE ROBOT</p><h2 id="robotStatusText">IDLE · CHARGED · AWAITING ORDER</h2><p id="robotTaskText">No active task. Submit an order in Order Management, then press Play in the 3D Supermarket view.</p><div class="btn-row"><span class="pill pill--dark" id="robotModeText">MODE: STANDBY</span><span class="pill pill--dark" id="robotStateBadge">STATE: IDLE</span></div></div>
+        <div><p class="section-kicker" style="color:#68c8bb">AMR-01 · 自主移动机器人</p><h2 id="robotStatusText">待机 · 满电 · 等待订单</h2><p id="robotTaskText">当前无任务。请在订单管理中提交订单，然后在 3D 超市页面点击播放。</p><div class="btn-row"><span class="pill pill--dark" id="robotModeText">模式：待命</span><span class="pill pill--dark" id="robotStateBadge">状态：待机</span></div></div>
       </div>
       <div class="kpi-row" style="margin-top:16px">
-        <div class="kpi"><div class="kpi-label">Destination</div><div class="kpi-value" id="robotDestination" style="font-size:19px">—</div><div class="kpi-foot">Current A* leg target</div></div>
-        <div class="kpi"><div class="kpi-label">Battery (simulated)</div><div class="kpi-value" id="robotBattery2">100%</div><div class="kpi-foot">Decreases with simulated travel</div></div>
-        <div class="kpi"><div class="kpi-label">Payload</div><div class="kpi-value" id="robotLoad2">0.00 kg</div><div class="kpi-foot">Capacity 12.00 kg (assumption)</div></div>
-        <div class="kpi kpi--dark"><div class="kpi-label">Distance traveled</div><div class="kpi-value" id="robotDistance2">0.0</div><div class="kpi-foot">Map units since start</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">DESTINATION</span>当前目的地</div><div class="kpi-value" id="robotDestination" style="font-size:19px">—</div><div class="kpi-foot">当前 A* 路段目标</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">BATTERY (SIMULATED)</span>剩余电量（仿真）</div><div class="kpi-value" id="robotBattery2">100%</div><div class="kpi-foot">随仿真行驶距离下降</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">PAYLOAD</span>当前载重</div><div class="kpi-value" id="robotLoad2">0.00 kg</div><div class="kpi-foot">容量 12.00 kg（假设）</div></div>
+        <div class="kpi kpi--dark"><div class="kpi-label"><span class="en-mini">DISTANCE TRAVELED</span>累计行驶距离</div><div class="kpi-value" id="robotDistance2">0.0</div><div class="kpi-foot">自开始起的地图单位</div></div>
       </div>
       <div class="grid grid-2">
         <div class="card card-pad">
-          <div class="card-head"><div><h3>Navigation progress</h3><p>Live values read from the running simulation.</p></div></div>
+          <div class="card-head"><div><h3>导航进度</h3><p>数值实时读取自正在运行的仿真。</p></div></div>
           <div class="control-meters" style="--ctrl-nav:var(--secondary)">
-            <div class="meter"><span>Battery <b id="batteryText2">100%</b></span><div class="meter-track"><div id="batteryFill2" class="meter-fill" style="width:100%"></div></div></div>
-            <div class="meter"><span>Load <b id="loadText2">0.00 / 12.00 kg</b></span><div class="meter-track"><div id="loadFill2" class="meter-fill" style="width:0%"></div></div></div>
-            <div class="meter"><span>Fulfillment <b id="fulfillPct">0%</b></span><div class="meter-track"><div id="fulfillFill" class="meter-fill" style="width:0%"></div></div></div>
+            <div class="meter"><span>电量 <b id="batteryText2">100%</b></span><div class="meter-track"><div id="batteryFill2" class="meter-fill" style="width:100%"></div></div></div>
+            <div class="meter"><span>载重 <b id="loadText2">0.00 / 12.00 kg</b></span><div class="meter-track"><div id="loadFill2" class="meter-fill" style="width:0%"></div></div></div>
+            <div class="meter"><span>履约进度 <b id="fulfillPct">0%</b></span><div class="meter-track"><div id="fulfillFill" class="meter-fill" style="width:0%"></div></div></div>
           </div>
           <div class="table-wrap"><table class="data-table"><tbody id="robotTelemetryTable"></tbody></table></div>
         </div>
         <div class="card card-pad">
-          <div class="card-head"><div><h3>Navigation log</h3><p>Most recent first · simulation state changes</p></div><span class="badge" id="logCount">0 entries</span></div>
+          <div class="card-head"><div><h3>导航日志</h3><p>最新在前 · 仿真状态变更</p></div><span class="badge" id="logCount">0 条记录</span></div>
           <ul id="navLogs" class="log-list"></ul>
         </div>
       </div>
       <div class="card card-pad" style="margin-top:16px">
-        <div class="card-head"><div><p class="section-kicker">FAULT DRILL</p><h3>Safe-stop and manual recovery</h3><p>Injecting a fault pauses motion. Only a manual confirmation clears it.</p></div></div>
-        <div class="btn-row"><label class="field" style="min-width:210px"><span class="field-label">Fault type</span><select id="faultSelect"><option value="sensor">Sensor unavailable</option><option value="localization">Localization lost</option><option value="network">Order network outage</option><option value="battery">Battery low</option><option value="wrongItem">Item verification mismatch</option></select></label><button id="injectFaultBtn" class="btn btn-danger" type="button" style="align-self:end">Inject fault</button><button id="clearFaultBtn" class="btn btn-secondary" type="button" style="align-self:end">Manual recovery</button></div>
-        <p id="faultState" class="order-message" role="status">No active fault.</p>
+        <div class="card-head"><div><p class="section-kicker">FAULT DRILL</p><h3>安全停车与人工恢复</h3><p>注入故障会暂停运动，只有人工确认才能清除。</p></div></div>
+        <div class="btn-row"><label class="field" style="min-width:210px"><span class="field-label">故障类型 / FAULT TYPE</span><select id="faultSelect"><option value="sensor">传感器不可用</option><option value="localization">定位丢失</option><option value="network">订单网络中断</option><option value="battery">电量过低</option><option value="wrongItem">商品核对不一致</option></select></label><button id="injectFaultBtn" class="btn btn-danger" type="button" style="align-self:end">注入故障</button><button id="clearFaultBtn" class="btn btn-secondary" type="button" style="align-self:end">人工恢复</button></div>
+        <p id="faultState" class="order-message" role="status">当前无故障。</p>
       </div>
     </section>
 
-    <!-- ====================== ROUTE OPTIMIZATION ====================== -->
-    <section class="view-panel" id="view-route" aria-label="Route Optimization" hidden>
-      <div class="section-title"><div><p class="section-kicker">ROUTE OPTIMIZATION</p><h2>Two algorithms, one executable route</h2><p>Held–Karp chooses the shelf visit order; A* plans every leg on the same grid used by the 3D scene.</p></div><span class="badge">CALCULATED RESULTS</span></div>
+    <!-- ====================== 路径优化 ====================== -->
+    <section class="view-panel" id="view-route" aria-label="路径优化" hidden>
+      <div class="section-title"><div><p class="section-kicker">ROUTE OPTIMIZATION</p><h2>两种算法，一条可执行的路线</h2><p>Held–Karp 决定货架访问顺序；A* 在 3D 场景共用的栅格图上逐段规划。</p></div><span class="badge">计算结果</span></div>
       <div class="grid grid-2">
         <div class="card card-pad">
-          <div class="card-head"><div><p class="section-kicker">HELD–KARP</p><h3>Visit sequence</h3><p id="heldKarpMethod">Waiting for an order.</p></div></div>
-          <div id="heldKarpFlow" class="route-flow"><span class="muted">Submit an order to compute the exact sequence.</span></div>
-          <div class="table-wrap" style="margin-top:12px"><table class="data-table"><thead><tr><th>#</th><th>Zone</th><th>Grid node</th><th>Items</th></tr></thead><tbody id="heldKarpTable"></tbody></table></div>
+          <div class="card-head"><div><p class="section-kicker">HELD–KARP</p><h3>访问顺序</h3><p id="heldKarpMethod">等待订单。</p></div></div>
+          <div id="heldKarpFlow" class="route-flow"><span class="muted">提交订单后计算精确顺序。</span></div>
+          <div class="table-wrap" style="margin-top:12px"><table class="data-table"><thead><tr><th>#</th><th>区域</th><th>图节点</th><th>商品</th></tr></thead><tbody id="heldKarpTable"></tbody></table></div>
         </div>
         <div class="card card-pad">
-          <div class="card-head"><div><p class="section-kicker">A* PATH PLANNING</p><h3>Segment costs</h3><p>Each leg is planned on the aisle graph with crowd, time and risk costs.</p></div></div>
-          <div class="table-wrap" style="max-height:330px;overflow:auto"><table class="data-table"><thead><tr><th>Leg</th><th class="right">Length</th><th class="right">Time</th><th class="right">Risk</th><th class="right">Cost</th></tr></thead><tbody id="astarTable"></tbody></table></div>
+          <div class="card-head"><div><p class="section-kicker">A* PATH PLANNING</p><h3>各段代价</h3><p>每一段在通道图上规划，综合考虑客流、时间与风险代价。</p></div></div>
+          <div class="table-wrap" style="max-height:330px;overflow:auto"><table class="data-table"><thead><tr><th>路段</th><th class="right">长度</th><th class="right">时间</th><th class="right">风险</th><th class="right">代价</th></tr></thead><tbody id="astarTable"></tbody></table></div>
         </div>
       </div>
       <div class="card card-pad" style="margin-top:16px">
-        <div class="card-head"><div><p class="section-kicker">ROUTE COMPARISON</p><h3>Original plan vs. current plan</h3><p id="routeCompareNote">Both plans use the same order and time slot.</p></div><button id="benchmarkBtn" class="btn btn-secondary btn-sm" type="button">Run cost benchmark</button></div>
-        <div class="table-wrap"><table class="data-table"><thead><tr><th>Metric</th><th>Original plan</th><th>Current plan</th></tr></thead><tbody id="comparisonBody"></tbody></table></div>
+        <div class="card-head"><div><p class="section-kicker">ROUTE COMPARISON</p><h3>原方案与当前方案对比</h3><p id="routeCompareNote">两种方案使用同一订单与同一时段。</p></div><button id="benchmarkBtn" class="btn btn-secondary btn-sm" type="button">运行代价基准测试</button></div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>指标</th><th>原方案</th><th>当前方案</th></tr></thead><tbody id="comparisonBody"></tbody></table></div>
         <p id="comparisonInsight" class="assumption"></p>
-        <div id="benchmarkResult" class="order-message" style="margin-top:12px">Pay for an order, then run the benchmark.</div>
+        <div id="benchmarkResult" class="order-message" style="margin-top:12px">请先模拟支付订单，再运行基准测试。</div>
       </div>
     </section>
 
-    <!-- ======================== SIMULATION CENTER ======================== -->
-    <section class="view-panel" id="view-simulation" aria-label="Simulation Center" hidden>
-      <div class="section-title"><div><p class="section-kicker">SIMULATION CENTER</p><h2>Interrupt the plan, observe the response</h2><p>Every trigger changes the same state machine that drives the 3D robot, route and task progress.</p></div><span class="badge">RULE-DRIVEN SIMULATION</span></div>
+    <!-- ======================== 仿真中心 ======================== -->
+    <section class="view-panel" id="view-simulation" aria-label="仿真中心" hidden>
+      <div class="section-title"><div><p class="section-kicker">SIMULATION CENTER</p><h2>打断规划，观察系统响应</h2><p>每个触发器都会改变驱动 3D 机器人、路径与任务进度的同一套状态机。</p></div><span class="badge">规则驱动仿真</span></div>
       <div class="sim-grid" id="simGrid">
-        <div class="sim-card" data-sim-card="pedestrian"><h3>Pedestrian crossing</h3><p>Places a simulated person on the active aisle. The safety layer slows the robot, then A* may replan.</p><button class="btn btn-secondary btn-sm" type="button" data-event="pedestrian">Trigger event</button></div>
-        <div class="sim-card" data-sim-card="cart"><h3>Shopping cart blocking</h3><p>A cart occupies part of a corridor. The robot slows and takes a feasible side path when available.</p><button class="btn btn-secondary btn-sm" type="button" data-event="cart">Trigger event</button></div>
-        <div class="sim-card" data-sim-card="aisle"><h3>Aisle closure</h3><p>Closes a central cross aisle. The graph removes that edge and A* recomputes the leg.</p><button class="btn btn-secondary btn-sm" type="button" data-event="aisle">Toggle closure</button></div>
-        <div class="sim-card" data-sim-card="overload"><h3>Robot overload</h3><p>Adds three 6 kg cases to the cart (18 kg). The 12 kg capacity check blocks departure.</p><button class="btn btn-secondary btn-sm" type="button" data-event="overload">Add test load</button></div>
-        <div class="sim-card" data-sim-card="congestion"><h3>Shelf congestion</h3><p>Switches to the weekday peak crowd sample: higher time and risk costs change the chosen corridor.</p><button class="btn btn-secondary btn-sm" type="button" data-event="congestion">Switch to peak</button></div>
-        <div class="sim-card" data-sim-card="failure"><h3>Navigation failure</h3><p>Injects a localization fault. The robot safe-stops until an operator explicitly recovers it.</p><button class="btn btn-secondary btn-sm" type="button" data-event="failure">Inject fault</button></div>
+        <div class="sim-card" data-sim-card="pedestrian"><h3>行人横穿</h3><p>在当前通道放置一名仿真行人。安全层让机器人减速，A* 可能重新规划。</p><button class="btn btn-secondary btn-sm" type="button" data-event="pedestrian">触发事件</button></div>
+        <div class="sim-card" data-sim-card="cart"><h3>购物车阻挡</h3><p>一辆购物车占据部分通道。机器人减速，并在条件允许时绕行。</p><button class="btn btn-secondary btn-sm" type="button" data-event="cart">触发事件</button></div>
+        <div class="sim-card" data-sim-card="aisle"><h3>通道封闭</h3><p>封闭中央横向通道。图中移除该边，A* 重新计算该路段。</p><button class="btn btn-secondary btn-sm" type="button" data-event="aisle">切换封闭</button></div>
+        <div class="sim-card" data-sim-card="overload"><h3>机器人超载</h3><p>向购物车加入三箱 6 kg 商品（共 18 kg），12 kg 容量检查将阻止出发。</p><button class="btn btn-secondary btn-sm" type="button" data-event="overload">加入测试载重</button></div>
+        <div class="sim-card" data-sim-card="congestion"><h3>货架拥堵</h3><p>切换到工作日高峰客流样本：更高的时间与风险代价会改变通道选择。</p><button class="btn btn-secondary btn-sm" type="button" data-event="congestion">切换到高峰</button></div>
+        <div class="sim-card" data-sim-card="failure"><h3>导航故障</h3><p>注入定位故障。机器人安全停车，直到操作员明确恢复。</p><button class="btn btn-secondary btn-sm" type="button" data-event="failure">注入故障</button></div>
       </div>
-      <p class="simulation-note" style="margin-top:14px">Simulation boundary: obstacle positions and reactions are generated by explicit rules in JavaScript. There is no trained vision classifier, no real-time inventory feed and no physical robot. Labels marked <b>REAL DATA</b> are from the supplied Instacart files; <b>CALCULATED</b> values come from the offline Apriori / K-means scripts and the online A* / Held–Karp code.</p>
+      <p class="simulation-note" style="margin-top:14px">仿真边界：障碍物位置与响应由 JavaScript 中的显式规则生成。系统没有训练好的视觉分类器、没有实时库存数据，也没有实体机器人。标注 <b>真实数据 REAL DATA</b> 的内容来自提供的 Instacart 文件；<b>计算结果 CALCULATED</b> 来自离线 Apriori / K-means 脚本与在线 A* / Held–Karp 代码。</p>
       <div class="grid grid-2" style="margin-top:16px">
-        <div class="card card-pad"><div class="card-head"><div><h3>Active conditions</h3><p>Current simulation flags read from the task state.</p></div></div><div id="activeEvents" class="list"></div></div>
-        <div class="card card-pad"><div class="card-head"><div><h3>Decision log</h3><p>Safety and planning decisions in chronological order.</p></div></div><ul id="eventLog" class="log-list" aria-live="polite"></ul></div>
+        <div class="card card-pad"><div class="card-head"><div><h3>当前生效条件</h3><p>从任务状态读取的仿真标志。</p></div></div><div id="activeEvents" class="list"></div></div>
+        <div class="card card-pad"><div class="card-head"><div><h3>决策日志</h3><p>按时间顺序记录安全与规划决策。</p></div></div><ul id="eventLog" class="log-list" aria-live="polite"></ul></div>
       </div>
     </section>
 
-    <!-- ============================ RESEARCH ============================ -->
-    <section class="view-panel" id="view-research" aria-label="Research & Methodology" hidden>
-      <div class="section-title"><div><p class="section-kicker">RESEARCH &amp; METHODOLOGY</p><h2>What is real, what is calculated, what is simulated</h2><p>English interface terms with Chinese research explanations, as required for the course presentation.</p></div><span class="badge">TRACEABLE</span></div>
+    <!-- ============================ 研究方法 ============================ -->
+    <section class="view-panel" id="view-research" aria-label="研究方法" hidden>
+      <div class="section-title"><div><p class="section-kicker">RESEARCH &amp; METHODOLOGY</p><h2>哪些是真实数据、哪些是计算、哪些是仿真</h2><p>商业界面以中文为主体，英文术语作为小号辅助标签；研究说明使用中文。</p></div><span class="badge">可追溯</span></div>
       <div class="data-class">
-        <div><b class="real">REAL DATA</b><p>Instacart cleaned CSV: 49,688 products, 3,421,108 orders, 1,384,617 train order-product lines, 131,209 train baskets. Product names and categories are unmodified.</p></div>
-        <div><b class="calc">CALCULATED RESULTS</b><p>Apriori support / confidence / lift and K-means clusters, computed offline by scripts/build_data.py. Route order and segment costs are computed in-browser by Held–Karp and A*.</p></div>
-        <div><b class="sim">SIMULATED DATA</b><p>Shelf coordinates, simulated stock, crowd samples, robot position, obstacle events, battery and travel time. Clearly marked Simulation in the interface.</p></div>
-        <div><b class="assume">ASSUMPTIONS</b><p>1 USD = ¥7 teaching rate, ¥30 minimum order, 12 kg capacity, 20 units per shelf, fixed robot speed and braking distance. No physical calibration.</p></div>
+        <div><b class="real">真实数据 / REAL DATA</b><p>Instacart 清洗数据集：49,688 件商品、3,421,108 笔订单、1,384,617 行训练订单商品记录、131,209 个训练购物篮。商品名称与类别未经修改。</p></div>
+        <div><b class="calc">计算结果 / CALCULATED RESULTS</b><p>Apriori 的 support / confidence / lift 与 K-means 聚类由 scripts/build_data.py 离线计算；访问顺序与路段代价由浏览器中的 Held–Karp 与 A* 在线计算。</p></div>
+        <div><b class="sim">仿真数据 / SIMULATED DATA</b><p>货架坐标、模拟库存、客流样本、机器人位置、障碍事件、电量与通行时间。界面中均明确标注“仿真”。</p></div>
+        <div><b class="assume">假设 / ASSUMPTIONS</b><p>教学汇率 1 USD = ¥7、最低订单 ¥30、载重 12 kg、每货位 20 件、固定机器人速度与制动距离。未做实物标定。</p></div>
       </div>
       <div class="grid grid-2" style="margin-top:16px">
         <div class="card card-pad study-card">
@@ -400,15 +400,15 @@
       </div>
     </section>
   </main>
-  <footer><span>NEXUS RETAIL · INT6143 Group 3 · Autonomous Retail Intelligence Platform</span><span>Real Instacart data · Calculated algorithms · Clearly labelled simulation</span></footer>
+  <footer><span>NEXUS RETAIL · INT6143 第三组 · 自主零售智能平台</span><span>真实 Instacart 数据 · 可复算算法 · 明确标注的仿真</span></footer>
 </div>
 
-<button id="presentationExitBtn" class="btn btn-secondary presentation-exit" type="button">Exit presentation (Esc)</button>
+<button id="presentationExitBtn" class="btn btn-secondary presentation-exit" type="button">退出演示（Esc）</button>
 <div id="presentationHud" class="presentation-hud" aria-live="polite">
-  <div class="hud-block"><span>Current task</span><b id="hudTask">Waiting for order</b></div>
-  <div class="hud-block"><span>Order</span><b id="hudOrder">—</b></div>
-  <div class="hud-block"><span>Route</span><b id="hudRoute">—</b></div>
-  <div class="hud-block"><span>Algorithm</span><b id="hudMetrics" class="is-teal">Held–Karp + A*</b></div>
+  <div class="hud-block"><span>当前任务</span><b id="hudTask">等待订单</b></div>
+  <div class="hud-block"><span>订单</span><b id="hudOrder">—</b></div>
+  <div class="hud-block"><span>路径</span><b id="hudRoute">—</b></div>
+  <div class="hud-block"><span>算法</span><b id="hudMetrics" class="is-teal">Held–Karp + A*</b></div>
 </div>
 </body>
 </html>

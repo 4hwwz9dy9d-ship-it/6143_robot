@@ -15,6 +15,8 @@
 .view-navigation button:hover { background: rgba(40,185,164,.08); color: #fff; }
 .view-navigation button.is-active { background: var(--ctrl-panel); color: #fff; box-shadow: inset 3px 0 0 var(--ctrl-nav); }
 .nav-icon { flex: none; width: 18px; text-align: center; color: #7693a5; font-size: 14px; }
+.view-navigation button > span:not(.nav-icon) small { display: block; color: #638093; font-size: 8px; font-weight: 650; letter-spacing: .1em; line-height: 1.1; }
+.view-navigation button.is-active > span:not(.nav-icon) small { color: #7fc9bd; }
 .view-navigation button.is-active .nav-icon { color: var(--ctrl-nav); }
 .nav-group { margin: 13px 10px 5px; color: #4f6b7d; font-size: 8.5px; font-weight: 800; letter-spacing: .16em; }
 .navigation-foot { margin: auto 8px 0; padding-top: 16px; border-top: 1px solid var(--ctrl-grid); color: #7b94a4; font-size: 9.5px; line-height: 1.6; }

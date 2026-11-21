@@ -10,7 +10,7 @@ export function registerSensorProvider(nextProvider) {
 }
 export function getObstacleSnapshot(scenario, slot) {
   const simulated = peopleForScenario(scenario, slot).map(person => ({ ...person, type: 'person' }));
-  simulated.push({ id: 'cart', type: 'cart', zone: 'Cart park / aisle', point: scenario === 'peak' ? [69, 34] : [116, 81] });
+  simulated.push({ id: 'cart', type: 'cart', zone: '购物车停放区 / 通道', point: scenario === 'peak' ? [69, 34] : [116, 81] });
   if (!provider) return simulated;
   try {
     const values = provider({ scenario, slot });

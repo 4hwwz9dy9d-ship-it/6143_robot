@@ -3,12 +3,14 @@
 // SIMULATED: shelves, stock, crowd, obstacles, robot motion, battery and timings.
 import { createStoreScene } from './scene3d.js';
 import { STORE, shelves, layoutFixtures, products, timeSlots, crowdSamples, shelfCrowd, peopleForScenario } from './storeData.js';
-import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml } from './instacart.js';
+import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel } from './instacart.js';
 import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js';
 
 const $ = id => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const CAPACITY = 12, MIN_ORDER = 30;
+const MOTION_CN = { idle: '待机', moving: '行驶中', turning: '转向避障', avoiding: '避障中', picking: '取货中', blocked: '安全停车', charging: '充电中', error: '故障', IDLE: '待机', MOVING: '行驶中', AVOIDING: '避障中', PICKING: '取货中', 'SAFE STOP': '安全停车', CHARGING: '充电中', FAULT: '故障' };
+const stateCn = value => MOTION_CN[value] || value;
 const key = p => p.join(',');
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const money = n => `¥${n.toFixed(2)}`;
@@ -55,11 +57,11 @@ function log(message, level = '') {
   const html = state.logs.slice(0, 18).map(entry =>
     `<li class="${entry.level ? `log-${entry.level}` : ''}"><time>${clockText(entry.time)}</time><span>${escapeHtml(entry.message)}</span></li>`).join('');
   ['eventLog', 'sceneLog', 'navLogs'].forEach(id => { const node = $(id); if (node) node.innerHTML = html; });
-  setText('logCount', `${state.logs.length} entries`);
+  setText('logCount', `${state.logs.length} 条日志`);
 }
 function status(title, detail, motion) {
   setText('currentAction', title); setText('currentDetail', detail);
-  setText('motionStatus', `STATE: ${motion}`);
+  setText('motionStatus', `状态：${stateCn(motion)}`);
 }
 function cartLines() { return [...state.cart].filter(([, qty]) => qty > 0).map(([id, qty]) => ({ product: productById.get(id), qty })); }
 function cartWeight() { return cartLines().reduce((n, x) => n + x.product.weight * x.qty, 0); }
@@ -70,7 +72,7 @@ function pickupProfile(product) {
     || ['Frozen Food', 'Dairy & Eggs', 'Seafood', 'Meat', 'Soy Products'].includes(product.category)
     || ['Seafood', 'Meat', 'Chilled Dairy'].includes(product.subcategory);
   const assist = cold || product.name === 'Beverage Pack';
-  return { cold, assist, label: assist ? `Employee assisted${cold ? ' · cold chain' : ''}` : 'Automatic pick (simulated)' };
+  return { cold, assist, label: assist ? `员工协助取货${cold ? ' · 冷链' : ''}` : '自动取货（仿真）' };
 }
 function robotState() {
   if (state.fault || state.events.has('failure')) return 'error';
@@ -90,58 +92,58 @@ function changeQty(id, delta) {
   const next = Math.max(0, Math.min(product.stock, (state.cart.get(id) || 0) + delta));
   if (next) state.cart.set(id, next); else state.cart.delete(id);
   renderCart(); renderRecommendations(); renderAll();
-  if (state.order) setText('orderMessage', 'Draft cart for the next order. The paid order and robot task are unchanged.');
+  if (state.order) setText('orderMessage', '当前为下一单的草稿购物车，已支付订单与机器人任务不受影响。');
 }
 function renderCatalogue() {
   $('catalogue').innerHTML = catalogResults.map(p => {
     const labels = propertyLabels(p);
-    return `<article class="product-card"><div><b>${escapeHtml(p.name)}</b><small>${escapeHtml(p.category)} → ${escapeHtml(p.subcategory)} · Instacart ID ${p.sourceId}<br>Zone ${p.shelfId} · node (${p.point.join(', ')}) · simulated stock ${p.stock}/${p.capacity}<br>Est. $${p.priceUsd?.toFixed(2) ?? '—'} (${labels.price}); est. ${p.weightG?.toFixed(0) ?? '—'} g (${labels.weight})<br>Train frequency ${(p.frequency ?? 0).toLocaleString()} · reorder ${p.reorderRate == null ? 'n/a' : `${(p.reorderRate * 100).toFixed(1)}%`}</small></div>
-      <div class="product-buy"><span>${money(p.price)} · ${kgText(p.weight)}</span><button type="button" data-add="${p.id}" ${p.stock ? '' : 'disabled'}>${p.stock ? 'Add' : 'Out of stock'}</button></div></article>`;
-  }).join('') || '<p class="empty">No product matched. Try an English product name or change the filters.</p>';
+    return `<article class="product-card"><div><b>${escapeHtml(p.name)}</b><small>${escapeHtml(departmentLabel(p.department))} · ${escapeHtml(zoneLabel(p.category))} → ${escapeHtml(p.subcategory)} · Instacart ID ${p.sourceId}<br>货区 ${p.shelfId} · 节点 (${p.point.join(', ')}) · 仿真库存 ${p.stock}/${p.capacity}<br>估算 $${p.priceUsd?.toFixed(2) ?? '—'}（${labels.price}）；估算 ${p.weightG?.toFixed(0) ?? '—'} g（${labels.weight}）<br>训练频次 ${(p.frequency ?? 0).toLocaleString()} · 复购率 ${p.reorderRate == null ? 'n/a' : `${(p.reorderRate * 100).toFixed(1)}%`}</small></div>
+      <div class="product-buy"><span>${money(p.price)} · ${kgText(p.weight)}</span><button type="button" data-add="${p.id}" ${p.stock ? '' : 'disabled'}>${p.stock ? '加入' : '缺货'}</button></div></article>`;
+  }).join('') || '<p class="empty">没有匹配的商品。请尝试英文商品名或调整筛选条件。</p>';
 }
 function renderCart() {
   const lines = cartLines();
   $('cartList').innerHTML = lines.length ? lines.map(({ product: p, qty }) =>
-    `<div class="cart-line"><div><b>${escapeHtml(p.name)} × ${qty}</b><small>Zone ${p.shelfId} · ${money(p.price * qty)} · ${kgText(p.weight * qty)}</small></div>
+    `<div class="cart-line"><div><b>${escapeHtml(p.name)} × ${qty}</b><small>货区 ${p.shelfId} · ${money(p.price * qty)} · ${kgText(p.weight * qty)}</small></div>
      <div class="qty-controls"><button type="button" data-minus="${p.id}" aria-label="Decrease ${escapeHtml(p.name)}">−</button><button type="button" data-plus="${p.id}" aria-label="Increase ${escapeHtml(p.name)}">＋</button></div></div>`).join('')
-    : '<p class="empty">Cart is empty. Load the sample basket or search the catalog.</p>';
+    : '<p class="empty">购物车为空。请载入示例购物篮或搜索商品目录。</p>';
   const price = cartPrice();
-  setText('cartSummary', `${lines.reduce((n, x) => n + x.qty, 0)} items · ${money(price)} · ${kgText(cartWeight())}`);
+  setText('cartSummary', `${lines.reduce((n, x) => n + x.qty, 0)} 件 · ${money(price)} · ${kgText(cartWeight())}`);
   setText('cartTotal', money(price));
-  setText('cartCountPill', `${lines.reduce((n, x) => n + x.qty, 0)} ITEMS`);
+  setText('cartCountPill', `${lines.reduce((n, x) => n + x.qty, 0)} 件`);
   const shortage = lines.some(x => x.qty > x.product.stock);
   $('submitOrderBtn').disabled = !lines.length || price < MIN_ORDER || shortage;
-  setText('minimumNotice', shortage ? 'Requested quantity exceeds simulated stock. Reduce the quantity or wait for restock.'
-    : price < MIN_ORDER ? `${money(MIN_ORDER - price)} below the ${money(MIN_ORDER)} minimum order.` : `${money(MIN_ORDER)} minimum reached.`);
+  setText('minimumNotice', shortage ? '请求数量超过仿真库存。请减少数量或等待补货。'
+    : price < MIN_ORDER ? `距最低订单金额 ${money(MIN_ORDER)} 还差 ${money(MIN_ORDER - price)}。` : `已达到 ${money(MIN_ORDER)} 起送金额。`);
   $('minimumNotice').classList.toggle('is-error', shortage || price < MIN_ORDER);
 }
-function ruleMetrics(rule) { return `Support ${(rule.support * 100).toFixed(3)}% · Confidence ${(rule.confidence * 100).toFixed(1)}% · Lift ${rule.lift.toFixed(2)}`; }
+function ruleMetrics(rule) { return `支持度 ${(rule.support * 100).toFixed(3)}% · 置信度 ${(rule.confidence * 100).toFixed(1)}% · 提升度 ${rule.lift.toFixed(2)}`; }
 function renderRules() {
   if (!research) return;
-  setText('miningMethod', `Apriori on ${research.rules.baskets.toLocaleString()} real train baskets; ${research.rules.ruleCount.toLocaleString()} rules over ${research.rules.candidateProducts} candidate products (min support count ${research.rules.minSupportCount}). Co-purchase is not causation.`);
+  setText('miningMethod', `基于 ${research.rules.baskets.toLocaleString()} 个真实训练购物篮运行 Apriori；候选商品 ${research.rules.candidateProducts} 件，共 ${research.rules.ruleCount.toLocaleString()} 条规则（最小共购计数 ${research.rules.minSupportCount}）。共购不等于因果。`);
   $('ruleTable').innerHTML = rules.filter(r => r.confidence >= .15).slice(0, 5).map(r =>
     `<div class="rule-row"><b>${escapeHtml(productById.get(r.from)?.name ?? r.from)} → ${escapeHtml(productById.get(r.to)?.name ?? r.to)}</b><small>${ruleMetrics(r)}</small></div>`).join('')
-    || '<p class="empty">No rule above the current confidence threshold.</p>';
+    || '<p class="empty">当前置信度阈值下没有符合条件的规则。</p>';
   const seen = new Set();
   const suggestions = rules.filter(r => {
     const pair = [r.from, r.to].sort().join('|');
     if (r.lift <= 1 || r.confidence < .15 || seen.has(pair) || !productById.get(r.from) || !productById.get(r.to)) return false;
     seen.add(pair); return true;
-  }).slice(0, 5).map(r => `<li>${escapeHtml(productById.get(r.from).name)} + ${escapeHtml(productById.get(r.to).name)} — consider adjacent display; manual review of cold/food/household separation and aisle width still required.</li>`);
-  $('shelfSuggestions').innerHTML = `<p class="assumption">Real co-purchase results; layout advice requires human review.</p><ul>${suggestions.join('') || '<li>No qualifying rule in the current candidate set.</li>'}</ul>`;
+  }).slice(0, 5).map(r => `<li>${escapeHtml(productById.get(r.from).name)} + ${escapeHtml(productById.get(r.to).name)} — 建议相邻陈列；冷链、食品与日化分区及通道宽度仍需人工复核。</li>`);
+  $('shelfSuggestions').innerHTML = `<p class="assumption">共购关系来自真实购物篮；陈列建议需人工复核。</p><ul>${suggestions.join('') || '<li>当前候选集中没有符合条件的规则。</li>'}</ul>`;
 }
 function renderRecommendations() {
   const ids = new Set(cartLines().map(x => x.product.id));
   const found = rules.filter(r => ids.has(r.from) && !ids.has(r.to) && r.confidence >= .1 && productById.get(r.to)).slice(0, 3);
   $('recommendations').innerHTML = found.length ? found.map(r =>
-    `<div class="recommend-item"><div><b>${escapeHtml(productById.get(r.to).name)}</b><small>Bought with ${escapeHtml(productById.get(r.from).name)} · ${ruleMetrics(r)}</small></div><button type="button" data-add="${r.to}">Add</button></div>`).join('')
-    : '<p class="empty">Add a high-frequency product to see real basket-based recommendations.</p>';
+    `<div class="recommend-item"><div><b>${escapeHtml(productById.get(r.to).name)}</b><small>与 ${escapeHtml(productById.get(r.from).name)} 共同购买 · ${ruleMetrics(r)}</small></div><button type="button" data-add="${r.to}">Add</button></div>`).join('')
+    : '<p class="empty">加入一件高频商品，即可查看基于真实购物篮的推荐。</p>';
 }
 function renderCrowd() {
   const sample = crowdSamples[state.slot], total = sample.reduce((a, b) => a + b, 0);
-  setText('crowdSummary', `${timeSlots.find(x => x.id === state.slot).label}: ${total} simulated people near 18 zones. 0–2 low, 3–4 medium, 5+ congested.`);
+  setText('crowdSummary', `${timeSlots.find(x => x.id === state.slot).label}：18 个区域附近共 ${total} 名仿真顾客。0–2 人为低，3–4 人为中，5 人及以上为拥堵。`);
   $('crowdTable').innerHTML = shelves.map((s, i) =>
-    `<div class="crowd-cell ${sample[i] >= 5 ? 'kpi--danger' : sample[i] >= 3 ? 'kpi--warn' : ''} kpi" style="padding:9px"><div class="kpi-label">${s.id} · ${sample[i]} ppl</div><div style="font-size:10px;font-weight:700;margin-top:3px">${escapeHtml(s.category)}</div></div>`).join('');
+    `<div class="crowd-cell ${sample[i] >= 5 ? 'kpi--danger' : sample[i] >= 3 ? 'kpi--warn' : ''} kpi" style="padding:9px"><div class="kpi-label">${s.id} · ${sample[i]} 人</div><div style="font-size:10px;font-weight:700;margin-top:3px">${escapeHtml(zoneLabel(s.category))}</div></div>`).join('');
   scene3d?.setScenario(state.scenario, state.slot);
 }
 
@@ -149,11 +151,11 @@ function renderCrowd() {
 function renderInventory() {
   const alerts = alertProducts();
   $('inventoryAlerts').innerHTML = alerts.length ? alerts.map(p =>
-    `<div class="alert-item ${p.stock === 0 ? 'is-out' : ''}"><div><b>${escapeHtml(p.name)}</b><p>${p.stock}/${p.capacity} units · ${p.stock ? 'Low stock' : 'Out of stock'} · simulated inventory · zone ${p.shelfId}</p></div><button class="btn btn-secondary btn-sm" type="button" data-restock="${p.id}">Confirm restock</button></div>`).join('')
-    : '<p class="empty">No product is below 10% simulated capacity.</p>';
+    `<div class="alert-item ${p.stock === 0 ? 'is-out' : ''}"><div><b>${escapeHtml(p.name)}</b><p>${p.stock}/${p.capacity} 件 · ${p.stock ? '库存偏低' : '已缺货'} · 仿真库存 · 货区 ${p.shelfId}</p></div><button class="btn btn-secondary btn-sm" type="button" data-restock="${p.id}">确认补货</button></div>`).join('')
+    : '<p class="empty">没有商品低于 10% 的仿真容量。</p>';
   $('inventoryTable').innerHTML = [...productById.values()].slice(0, 90).map(p => {
     const pct = p.stock / p.capacity;
-    return `<tr><td><b>${escapeHtml(p.name)}</b></td><td>${escapeHtml(p.category)} · ${p.shelfId}</td><td class="right num">${p.stock}/${p.capacity}</td><td><span class="pill ${pct === 0 ? 'pill--danger' : pct < .1 ? 'pill--warn' : 'pill--ok'}">${pct === 0 ? 'OUT' : pct < .1 ? 'LOW' : 'OK'}</span></td></tr>`;
+    return `<tr><td><b>${escapeHtml(p.name)}</b></td><td>${escapeHtml(p.category)} · ${p.shelfId}</td><td class="right num">${p.stock}/${p.capacity}</td><td><span class="pill ${pct === 0 ? 'pill--danger' : pct < .1 ? 'pill--warn' : 'pill--ok'}">${pct === 0 ? '缺货' : pct < .1 ? '偏低' : '正常'}</span></td></tr>`;
   }).join('');
   setText('invSkus', productById.size.toLocaleString());
   setText('invLow', alerts.filter(p => p.stock > 0).length);
@@ -164,7 +166,7 @@ function renderInventory() {
 function restock(id) {
   const product = productById.get(id); if (!product) return;
   product.stock = product.capacity; restocks++;
-  log(`${product.name} restocked to ${product.capacity} units by employee (simulation).`);
+  log(`${product.name} 已由员工补货至 ${product.capacity} 件（仿真）。`);
   renderInventory(); renderLiveOps();
 }
 
@@ -265,9 +267,9 @@ function buildPlan(lines, scenario, slot, mode = 'full') {
   const checkout = stops.map(s => leg(s.point, STORE.checkout));
   const between = stops.map((a, i) => stops.map((b, j) => i === j ? null : leg(a.point, b.point)));
   const order = []; let bestCost = Infinity;
-  let method = 'Held–Karp exact visit order';
+  let method = 'Held–Karp 精确访问顺序';
   if (n > 12) {
-    method = 'Nearest-cost heuristic (NOT globally optimal)';
+    method = '最近代价启发式（不保证全局最优）';
     const remaining = new Set(stops.map((_, i) => i)); let previous = -1;
     while (remaining.size) {
       let choice = -1, best = Infinity;
@@ -318,11 +320,11 @@ function replanCurrentLeg(reason) {
   const target = leg.points.at(-1);
   const from = nearestNode(state.position);
   const fresh = planLeg(from, target, state.scenario, state.slot);
-  if (!fresh) { state.running = false; status('No safe route', 'The aisle closure disconnected the current target. Robot safe-stopped.', 'SAFE STOP'); log(`${reason}: no safe alternative route; robot stopped.`, 'danger'); return false; }
+  if (!fresh) { state.running = false; status('无安全路径', '通道封闭导致当前目标不可达，机器人已安全停车。', 'SAFE STOP'); log(`${reason}：没有可行的替代路径，机器人已停车。`, 'danger'); return false; }
   leg.points = [state.position, ...fresh.points.slice(1)];
   leg.lengths = leg.points.slice(1).map((p, i) => dist(leg.points[i], p));
   leg.length = fresh.length; state.legDistance = 0;
-  drawRoutes(); log(`${reason}: A* replanned the active leg (${fresh.length.toFixed(1)} map units).`, 'warn');
+  drawRoutes(); log(`${reason}：A* 已重新规划当前路段（${fresh.length.toFixed(1)} 地图单位）。`, 'warn');
   return true;
 }
 
@@ -338,8 +340,8 @@ function drawBaseMap() {
   for (const s of shelves) {
     const left = s.xMin * 10, top = (90 - s.yMax) * 10, width = (s.xMax - s.xMin) * 10, height = (s.yMax - s.yMin) * 10;
     svg('rect', { x: left, y: top, width, height, rx: 5, class: `shelf-rect ${s.kind}` }, $('shelves'));
-    svg('text', { x: left + width / 2, y: top + height / 2 - 5, class: 'shelf-caption' }, $('shelves')).textContent = s.category;
-    svg('text', { x: left + width / 2, y: top + height / 2 + 13, class: 'shelf-code' }, $('shelves')).textContent = `ZONE ${s.id}`;
+    svg('text', { x: left + width / 2, y: top + height / 2 - 5, class: 'shelf-caption' }, $('shelves')).textContent = zoneLabel(s.category);
+    svg('text', { x: left + width / 2, y: top + height / 2 + 13, class: 'shelf-code' }, $('shelves')).textContent = `货区 ${s.id}`;
   }
 }
 function drawFixtures() { /* included in drawBaseMap */ }
@@ -354,7 +356,7 @@ function drawDestinations() {
     svg('circle', { cx: stop.point[0] * 10, cy: (90 - stop.point[1]) * 10, r: 14, class: `destination-circle ${i < state.stage ? 'destination-done' : ''}` }, $('destinations'));
     svg('text', { x: stop.point[0] * 10, y: (90 - stop.point[1]) * 10 + 4, class: 'destination-label' }, $('destinations')).textContent = i < state.stage ? '✓' : String(i + 1);
   });
-  drawGate(STORE.entrance, 'IN'); drawGate(STORE.checkout, 'PAY'); drawGate(STORE.exit, 'OUT');
+  drawGate(STORE.entrance, '入口'); drawGate(STORE.checkout, '结账'); drawGate(STORE.exit, '出口');
   scene3d?.setPickups(stops.map(s => s.point), Math.min(state.stage, stops.length));
 }
 function drawCrowd() {
@@ -399,35 +401,35 @@ function drawRobot() {
 /* --------------------------------------------------------- view rendering */
 function renderLiveOps() {
   const alerts = alertProducts();
-  const robotLabels = { idle: 'IDLE', moving: 'MOVING', turning: 'AVOIDING', picking: 'PICKING', blocked: 'SAFE STOP', charging: 'CHARGING', error: 'FAULT' };
+  const robotLabels = { idle: '待机', moving: '行驶中', turning: '转向避障', picking: '取货中', blocked: '安全停车', charging: '充电中', error: '故障' };
   const robotLabel = robotLabels[robotState()];
   setText('opsRobot', robotLabel);
   setText('opsOrders', activeOrderCount());
   setText('opsStock', alerts.length);
   setText('opsDone', state.completed.filter(c => c.status === 'Completed').length);
   $('opsStock').className = alerts.length > 2 ? 'is-warn' : alerts.length ? '' : 'is-ok';
-  $('opsRobot').className = robotLabel === 'FAULT' || robotLabel === 'SAFE STOP' ? 'is-danger' : robotLabel === 'IDLE' ? '' : 'is-ok';
+  $('opsRobot').className = robotLabel === '故障' || robotLabel === '安全停车' ? 'is-danger' : robotLabel === '待机' ? '' : 'is-ok';
   setText('kpiOrders', activeOrderCount());
   setText('kpiCompleted', state.completed.filter(c => c.status === 'Completed').length);
   setText('kpiStock', alerts.length);
   setText('kpiDistance', state.plan ? state.plan.length.toFixed(1) : '—');
-  $('systemPill').textContent = state.fault ? 'FAULT · SAFE STOP' : state.blocked ? 'AISLE CLOSED' : 'SIMULATION READY';
+  $('systemPill').textContent = state.fault ? '故障 · 安全停车' : state.blocked ? '通道已封闭' : '仿真就绪';
   $('systemPill').className = `pill ${state.fault || state.blocked ? 'pill--danger' : 'pill--ok'}`;
   $('systemStatusTable').innerHTML = [
-    ['Robot', `AMR-01 · ${robotLabel}`, robotLabel === 'FAULT' ? 'pill--danger' : 'pill--ok'],
-    ['Navigation graph', `${nodes.size} nodes · ${state.closedEdges.size} restricted edge(s)`, state.closedEdges.size ? 'pill--warn' : 'pill--ok'],
-    ['Crowd scenario', `${state.scenario === 'peak' ? 'Weekday peak' : 'Normal flow'} · ${timeSlots.find(t => t.id === state.slot).label}`, 'pill--info'],
-    ['Order queue', `${state.queue.length} waiting · ${state.order ? 1 : 0} active`, state.queue.length ? 'pill--warn' : 'pill--ok'],
-    ['Battery (simulated)', `${state.battery.toFixed(0)}%`, state.battery < 20 ? 'pill--danger' : 'pill--ok'],
+    ['机器人', `AMR-01 · ${robotLabel}`, robotLabel === '故障' ? 'pill--danger' : 'pill--ok'],
+    ['导航图', `${nodes.size} 个节点 · ${state.closedEdges.size} 条受限边`, state.closedEdges.size ? 'pill--warn' : 'pill--ok'],
+    ['客流场景', `${state.scenario === 'peak' ? '工作日高峰' : '平常客流'} · ${timeSlots.find(t => t.id === state.slot).label}`, 'pill--info'],
+    ['订单队列', `${state.queue.length} 单等待 · ${state.order ? 1 : 0} 单执行中`, state.queue.length ? 'pill--warn' : 'pill--ok'],
+    ['电量（仿真）', `${state.battery.toFixed(0)}%`, state.battery < 20 ? 'pill--danger' : 'pill--ok'],
   ].map(([label, value, cls]) => `<tr><td>${label}</td><td style="text-align:right"><span class="pill ${cls}">${escapeHtml(value)}</span></td></tr>`).join('');
   const preview = [
-    ['1 · Payment', state.order ? `${state.order.id} accepted` : 'Waiting for customer'],
-    ['2 · Sequencing', state.plan ? state.plan.method : 'Awaiting order lines'],
-    ['3 · Navigation', `${state.stage} / ${state.plan?.stops.length ?? 0} zones visited`],
-    ['4 · Checkout & handover', state.awaitingPickup ? 'Waiting at exit' : 'Pending'],
+    ['1 · 支付', state.order ? `${state.order.id} 已受理` : '等待顾客下单'],
+    ['2 · 排序', state.plan ? state.plan.method : '等待订单商品'],
+    ['3 · 导航', `已访问 ${state.stage} / ${state.plan?.stops.length ?? 0} 个货区`],
+    ['4 · 结账与交接', state.awaitingPickup ? '在出口等待交接' : '待处理'],
   ];
   $('livePreviewList').innerHTML = preview.map(([label, value], i) =>
-    `<li><span>${label}<small>${escapeHtml(value)}</small></span><span class="pill ${i < state.stage ? 'pill--ok' : 'pill--info'}">${i < state.stage ? 'DONE' : 'PENDING'}</span></li>`).join('');
+    `<li><span>${label}<small>${escapeHtml(value)}</small></span><span class="pill ${i < state.stage ? 'pill--ok' : 'pill--info'}">${i < state.stage ? '已完成' : '待处理'}</span></li>`).join('');
 }
 function renderOverviewPreview() {
   $('previewZones').innerHTML = shelves.map(s => {
@@ -439,24 +441,24 @@ function renderOverviewPreview() {
 }
 function renderQueue() {
   const entries = [
-    ...(state.order ? [{ order: state.order, label: state.awaitingPickup ? 'Awaiting handover' : state.running ? 'In progress' : state.shortage ? 'Shortage decision' : 'Assigned · ready' }] : []),
-    ...state.queue.map((order, i) => ({ order, label: `Queued #${i + 1}` })),
+    ...(state.order ? [{ order: state.order, label: state.awaitingPickup ? '等待交接' : state.running ? '执行中' : state.shortage ? '等待缺货决策' : '已分配 · 待出发' }] : []),
+    ...state.queue.map((order, i) => ({ order, label: `排队第 ${i + 1} 单` })),
   ];
   $('orderQueue').innerHTML = entries.length ? entries.map(({ order, label }) =>
-    `<div class="queue-item"><b>${escapeHtml(order.id)}</b><span>${order.lines.reduce((n, x) => n + x.qty, 0)} items · ${money(order.paid)}</span>
-     <span class="pill ${label === 'In progress' ? 'pill--ok' : 'pill--info'}">${label}</span>
-     ${order === state.order && state.stage === 0 && !state.running && !state.elapsed ? '<button type="button" data-cancel-active="1">Cancel active order</button>' : order !== state.order ? `<button type="button" data-cancel="${escapeHtml(order.id)}">Cancel queued</button>` : ''}</div>`).join('')
-    : '<p class="empty">No orders in the queue.</p>';
+    `<div class="queue-item"><b>${escapeHtml(order.id)}</b><span>${order.lines.reduce((n, x) => n + x.qty, 0)} 件 · ${money(order.paid)}</span>
+     <span class="pill ${label === '执行中' ? 'pill--ok' : 'pill--info'}">${label}</span>
+     ${order === state.order && state.stage === 0 && !state.running && !state.elapsed ? '<button type="button" data-cancel-active="1">取消当前订单</button>' : order !== state.order ? `<button type="button" data-cancel="${escapeHtml(order.id)}">取消排队</button>` : ''}</div>`).join('')
+    : '<p class="empty">队列中没有订单。</p>';
   const rows = [...(state.order ? [state.order] : []), ...state.queue, ...state.completed.slice(-3)];
   $('fulfillmentTable').innerHTML = rows.length ? rows.map(order => {
-    const statusText = order.status || (order === state.order ? state.awaitingPickup ? 'Waiting handover' : state.running ? 'Fulfilling' : 'Ready' : 'Queued');
-    return `<tr><td class="mono">${escapeHtml(order.id)}</td><td>${order.lines?.reduce((n, x) => n + x.qty, 0) ?? '—'}</td><td>${order.paid ? money(order.paid) : '—'}</td><td>AMR-01</td><td><span class="pill ${statusText === 'Completed' ? 'pill--ok' : 'pill--info'}">${escapeHtml(statusText)}</span></td></tr>`;
-  }).join('') : '<tr><td colspan="5" class="muted">No orders yet.</td></tr>';
+    const statusText = order.status || (order === state.order ? state.awaitingPickup ? '等待交接' : state.running ? '履约中' : '待出发' : '排队中');
+    return `<tr><td class="mono">${escapeHtml(order.id)}</td><td>${order.lines?.reduce((n, x) => n + x.qty, 0) ?? '—'}</td><td>${order.paid ? money(order.paid) : '—'}</td><td>AMR-01</td><td><span class="pill ${statusText === 'Completed' || statusText === '已完成' ? 'pill--ok' : 'pill--info'}">${escapeHtml(statusText === 'Completed' ? '已完成' : statusText === 'Cancelled' ? '已取消' : statusText)}</span></td></tr>`;
+  }).join('') : '<tr><td colspan="5" class="muted">暂无订单。</td></tr>';
 }
 function renderStockout() {
   const select = $('stockoutSelect'), previous = state.stockoutId;
-  select.innerHTML = '<option value="">No simulated shortage</option>' + (state.order?.lines || []).map(x =>
-    `<option value="${x.product.id}">${escapeHtml(x.product.name)} · zone ${x.product.shelfId}</option>`).join('');
+  select.innerHTML = '<option value="">不模拟缺货</option>' + (state.order?.lines || []).map(x =>
+    `<option value="${x.product.id}">${escapeHtml(x.product.name)} · 货区 ${x.product.shelfId}</option>`).join('');
   select.value = previous && state.order?.lines.some(x => x.product.id === previous) ? previous : '';
   select.disabled = !state.order || state.running || state.stage > 0 || state.awaitingPickup || !!state.shortage;
   $('stockoutPanel').hidden = !state.shortage;
@@ -464,16 +466,16 @@ function renderStockout() {
   $('handoffPanel').hidden = !state.awaitingPickup;
   if (state.shortage) {
     const { line, alternative } = state.shortage;
-    setText('stockoutDetail', `${line.product.name} × ${line.qty} is out of stock at zone ${line.product.shelfId}. ${alternative ? `${alternative.name} × ${line.qty} (${money(alternative.price * line.qty)}, ${kgText(alternative.weight * line.qty)}) requires customer confirmation.` : 'No preconfigured substitute; the item can be skipped.'} Price difference is displayed only.`);
+    setText('stockoutDetail', `${line.product.name} × ${line.qty} 在货区 ${line.product.shelfId} 缺货。${alternative ? `${alternative.name} × ${line.qty}（${money(alternative.price * line.qty)}，${kgText(alternative.weight * line.qty)}）需要顾客确认。` : '没有预设替代品，可跳过该商品。'}仅展示差价，不执行真实扣款。`);
     $('acceptSubBtn').disabled = !alternative;
   }
-  if (state.assistPending) setText('assistDetail', `Zone ${state.assistPending.stop.shelfId}: ${state.assistPending.names.join(', ')} requires employee verification. The web demo has no gripper, scanner or cold-chain equipment.`);
-  if (state.awaitingPickup) setText('handoffDetail', `Order ${state.order.id} (demo code ${state.order.id.slice(-4)}) is at the exit. Confirm ${state.bought.reduce((n, x) => n + x.qty, 0)} picked items; final simulated amount ${money(actualPrice())}.`);
+  if (state.assistPending) setText('assistDetail', `货区 ${state.assistPending.stop.shelfId}：${state.assistPending.names.join('、')} 需要员工核对。网页演示没有机械臂、扫码枪或冷链设备。`);
+  if (state.awaitingPickup) setText('handoffDetail', `订单 ${state.order.id}（取货码 ${state.order.id.slice(-4)}）已到出口。请核对 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件已取商品，最终模拟金额 ${money(actualPrice())}。`);
 }
 function renderOrderState() {
-  setText('orderListHeading', state.order ? `${state.order.id} · ${state.order.lines.reduce((n, x) => n + x.qty, 0)} items` : 'Awaiting order');
+  setText('orderListHeading', state.order ? `${state.order.id} · ${state.order.lines.reduce((n, x) => n + x.qty, 0)} 件` : '等待订单');
   // The sidebar heading was replaced by the control panel; keep legacy node if present.
-  const legacy = $('orderListHeading'); if (legacy) legacy.textContent = state.order ? `${state.order.id} · ${state.order.lines.reduce((n, x) => n + x.qty, 0)} items` : 'Awaiting order';
+  const legacy = $('orderListHeading'); if (legacy) legacy.textContent = state.order ? `${state.order.id} · ${state.order.lines.reduce((n, x) => n + x.qty, 0)} 件` : '等待订单';
   const loaded = state.bought.reduce((n, x) => n + x.product.weight * x.qty, 0);
   setText('loadText', `${kgText(loaded)} / ${kgText(CAPACITY)}`); setWidth('loadFill', loaded / CAPACITY * 100);
   setText('loadText2', `${kgText(loaded)} / ${kgText(CAPACITY)}`); setWidth('loadFill2', loaded / CAPACITY * 100);
@@ -483,29 +485,29 @@ function renderProgress() {
   const done = state.plan?.legs.slice(0, state.stage).reduce((n, leg) => n + leg.length, 0) || 0;
   const percent = state.awaitingPickup ? 100 : state.plan ? Math.min(100, Math.round((done + state.legDistance) / state.plan.length * 100)) : 0;
   setWidth('progressFill', percent); setText('progressPercent', `${percent}%`);
-  setText('progressText', state.awaitingPickup ? 'Awaiting exit handover' : state.shortage ? 'Awaiting shortage decision' : state.running ? `To ${nextName()}` : state.order ? 'Ready / paused' : 'Waiting for paid order');
+  setText('progressText', state.awaitingPickup ? '等待出口交接' : state.shortage ? '等待缺货决策' : state.running ? `前往${nextName()}` : state.order ? '就绪 / 已暂停' : '等待已支付订单');
   setText('nextTarget', nextName());
   setText('fulfillPct', `${percent}%`); setWidth('fulfillFill', percent);
 }
 function nextName() {
-  if (state.awaitingPickup) return 'Exit handover';
+  if (state.awaitingPickup) return '出口交接';
   if (!state.plan) return '—';
-  if (state.stage < state.plan.stops.length) return `Zone ${state.plan.stops[state.stage].shelfId} · ${state.plan.stops[state.stage].lines.map(x => x.product.name).join(', ')}`;
-  return state.stage === state.plan.stops.length ? 'Checkout' : 'Exit';
+  if (state.stage < state.plan.stops.length) return `货区 ${state.plan.stops[state.stage].shelfId} · ${state.plan.stops[state.stage].lines.map(x => x.product.name).join('、')}`;
+  return state.stage === state.plan.stops.length ? '收银台' : '出口';
 }
 function renderTimeline() {
-  const steps = ['Read paid order', 'Weight check · enter store', 'Held–Karp + A* planning',
-    ...(state.plan?.stops || []).map(s => `Pick zone ${s.shelfId}`), 'Checkout verification', 'Leave via exit', 'Customer handover'];
+  const steps = ['读取已支付订单', '载重检查 · 进入门店', 'Held–Karp + A* 规划',
+    ...(state.plan?.stops || []).map(s => `取货：货区 ${s.shelfId}`), '结账核对', '经出口离店', '顾客交接'];
   const active = Math.min(3 + state.stage, steps.length - 1);
   $('timeline').innerHTML = steps.map((step, i) => `<li class="${!state.order ? '' : i < active ? 'is-done' : i === active ? 'is-active' : ''}">${step}</li>`).join('');
 }
 function renderRobotCenter() {
-  const labels = { idle: 'IDLE', moving: 'MOVING', turning: 'AVOIDING', picking: 'PICKING', blocked: 'SAFE STOP', charging: 'CHARGING', error: 'FAULT' };
+  const labels = { idle: '待机', moving: '行驶中', turning: '转向避障', picking: '取货中', blocked: '安全停车', charging: '充电中', error: '故障' };
   const label = labels[robotState()];
-  setText('robotStatusText', `${label} · ${state.battery.toFixed(0)}% BATTERY · AMR-01`);
-  setText('robotTaskText', state.fault ? faultAdvice[state.fault] : state.order ? `${nextName()} — ${state.running ? 'robot following A* path' : 'simulation paused'}.` : 'No active task. Submit an order in Order Management, then press Play in the 3D Supermarket view.');
-  setText('robotModeText', `MODE: ${state.scenario === 'peak' ? 'PEAK FLOW' : 'NORMAL'}`);
-  setText('robotStateBadge', `STATE: ${label}`);
+  setText('robotStatusText', `${label} · 电量 ${state.battery.toFixed(0)}% · AMR-01`);
+  setText('robotTaskText', state.fault ? faultAdvice[state.fault] : state.order ? `前往${nextName()} — ${state.running ? '机器人正沿 A* 路径行驶' : '仿真已暂停'}。` : '当前无任务。请在订单管理中提交订单，然后在 3D 超市页面点击播放。');
+  setText('robotModeText', `模式：${state.scenario === 'peak' ? '高峰客流' : '平常客流'}`);
+  setText('robotStateBadge', `状态：${label}`);
   setText('robotDestination', nextName());
   setText('robotBattery2', `${state.battery.toFixed(0)}%`); setText('batteryText2', `${state.battery.toFixed(0)}%`);
   setWidth('batteryFill2', state.battery);
@@ -513,54 +515,54 @@ function renderRobotCenter() {
   setText('robotDistance2', state.traveled.toFixed(1));
   const loaded = state.bought.reduce((n, x) => n + x.product.weight * x.qty, 0);
   $('robotTelemetryTable').innerHTML = [
-    ['Position (x, y)', state.position.map(n => n.toFixed(1)).join(', ')],
-    ['Graph nodes', `${nodes.size}`],
-    ['Active restrictions', `${state.closedEdges.size}`],
-    ['Dynamic obstacles', `${state.dynamicObstacles.length}`],
-    ['Simulated elapsed', `${state.elapsed.toFixed(1)} s`],
-    ['Plan cost', state.plan ? state.plan.cost.toFixed(1) : '—'],
-    ['Plan risk', state.plan ? state.plan.risk.toFixed(1) : '—'],
-    ['Load / capacity', `${kgText(loaded)} / ${kgText(CAPACITY)}`],
+    ['当前位置 (x, y)', state.position.map(n => n.toFixed(1)).join(', ')],
+    ['图节点数', `${nodes.size}`],
+    ['生效的受限边', `${state.closedEdges.size}`],
+    ['动态障碍物', `${state.dynamicObstacles.length}`],
+    ['仿真已用时', `${state.elapsed.toFixed(1)} 秒`],
+    ['规划总代价', state.plan ? state.plan.cost.toFixed(1) : '—'],
+    ['规划风险值', state.plan ? state.plan.risk.toFixed(1) : '—'],
+    ['载重 / 容量', `${kgText(loaded)} / ${kgText(CAPACITY)}`],
   ].map(([k, v]) => `<tr><td>${k}</td><td class="right mono">${escapeHtml(v)}</td></tr>`).join('');
   setText('destinationText', nextName());
-  setText('navDistance', state.plan ? `${state.plan.length.toFixed(1)} map units` : '—');
-  setText('navElapsed', `${state.elapsed.toFixed(1)} s`);
+  setText('navDistance', state.plan ? `${state.plan.length.toFixed(1)} 地图单位` : '—');
+  setText('navElapsed', `${state.elapsed.toFixed(1)} 秒`);
   setText('navStops', `${Math.min(state.stage, state.plan?.stops.length ?? 0)} / ${state.plan?.stops.length ?? 0}`);
-  setText('faultState', state.fault ? faultAdvice[state.fault] : 'No active fault.');
+  setText('faultState', state.fault ? faultAdvice[state.fault] : '当前无故障。');
   $('suddenPersonFix')?.removeAttribute('hidden');
   $('injectFaultBtn').setAttribute('aria-pressed', String(!!state.fault));
   setText('pickupCode', state.order ? state.order.id.slice(-4) : '—');
 }
 function renderRouteView() {
-  setText('heldKarpMethod', state.plan ? `${state.plan.method} · ${state.plan.stops.length} unique zones` : 'Waiting for an order.');
+  setText('heldKarpMethod', state.plan ? `${state.plan.method} · ${state.plan.stops.length} 个不同货区` : '等待订单。');
   const stops = state.plan?.stops || [];
   $('heldKarpFlow').innerHTML = stops.length ? [STORE.entrance, ...stops.map(s => s.point), STORE.checkout, STORE.exit]
-    .map((p, i, arr) => `${i ? '<span class="route-arrow">→</span>' : ''}<span class="route-node ${i <= state.stage ? 'route-node--done' : ''}">${i === 0 ? 'IN' : i === arr.length - 1 ? 'OUT' : i === arr.length - 2 ? 'PAY' : `Z${stops[i - 1].shelfId}`}</span>`).join('')
-    : '<span class="muted">Submit an order to compute the exact sequence.</span>';
+    .map((p, i, arr) => `${i ? '<span class="route-arrow">→</span>' : ''}<span class="route-node ${i <= state.stage ? 'route-node--done' : ''}">${i === 0 ? '入口' : i === arr.length - 1 ? '出口' : i === arr.length - 2 ? '结账' : `货区${stops[i - 1].shelfId}`}</span>`).join('')
+    : '<span class="muted">提交订单后计算精确访问顺序。</span>';
   $('heldKarpTable').innerHTML = stops.length ? stops.map((s, i) =>
     `<tr><td>${i + 1}</td><td><b>${escapeHtml(s.category || shelves.find(x => x.id === s.shelfId)?.category || s.shelfId)}</b></td><td class="mono">${s.point.join(', ')}</td><td>${s.lines.map(x => escapeHtml(x.product.name)).join(', ')}</td></tr>`).join('')
-    : '<tr><td colspan="4" class="muted">No plan yet.</td></tr>';
+    : '<tr><td colspan="4" class="muted">尚无路径规划。</td></tr>';
   $('astarTable').innerHTML = state.plan ? state.plan.legs.map((leg, i) =>
-    `<tr><td>${i === 0 ? 'Entrance → Z1' : i < stops.length ? `Z${stops[i - 1].shelfId} → Z${stops[i].shelfId}` : i === stops.length ? `Z${stops.at(-1).shelfId} → Checkout` : 'Checkout → Exit'}</td><td class="right num">${leg.length.toFixed(1)}</td><td class="right num">${leg.time.toFixed(1)}</td><td class="right num">${leg.risk.toFixed(1)}</td><td class="right num">${leg.cost.toFixed(1)}</td></tr>`).join('')
-    : '<tr><td colspan="5" class="muted">No plan yet.</td></tr>';
+    `<tr><td>${i === 0 ? '入口 → 货区1' : i < stops.length ? `货区${stops[i - 1].shelfId} → 货区${stops[i].shelfId}` : i === stops.length ? `货区${stops.at(-1).shelfId} → 收银台` : '收银台 → 出口'}</td><td class="right num">${leg.length.toFixed(1)}</td><td class="right num">${leg.time.toFixed(1)}</td><td class="right num">${leg.risk.toFixed(1)}</td><td class="right num">${leg.cost.toFixed(1)}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="muted">尚无路径规划。</td></tr>';
   if (!state.order) {
-    $('comparisonBody').innerHTML = '<tr><td colspan="3" class="muted">Submit an order to compare plans.</td></tr>';
-    setText('comparisonInsight', 'Both plans are computed with the same order, time slot and cost function.');
-    setText('routeCompareNote', 'Original plan = same order evaluated as a normal-flow baseline.');
+    $('comparisonBody').innerHTML = '<tr><td colspan="3" class="muted">提交订单后可对比方案。</td></tr>';
+    setText('comparisonInsight', '两种方案均使用同一订单、同一时段与同一代价函数计算。');
+    setText('routeCompareNote', '原方案 = 同一订单在平常客流下的基线结果。');
     return;
   }
   const a = scoreExistingRoute(state.normalPlan, state.scenario, state.slot), b = state.plan;
   const changed = a.points.map(key).join('|') !== b.points.map(key).join('|');
-  setText('routeCompareNote', `${b.method} · visit order: IN → ${b.stops.map(s => `Z${s.shelfId}`).join(' → ')} → PAY → OUT.`);
+  setText('routeCompareNote', `${b.method} · 访问顺序：入口 → ${b.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 收银台 → 出口。`);
   const rows = [
-    ['Route length', `${a.length.toFixed(1)} map units`, `${b.length.toFixed(1)} map units`],
-    ['Estimated time (simulated)', `${a.time.toFixed(1)} s`, `${b.time.toFixed(1)} s`],
-    ['Risk value', a.risk.toFixed(1), b.risk.toFixed(1)],
-    ['Total cost', a.cost.toFixed(1), b.cost.toFixed(1)],
-    ['Replans', '0', changed ? '1' : '0'],
+    ['路径长度', `${a.length.toFixed(1)} 地图单位`, `${b.length.toFixed(1)} 地图单位`],
+    ['预计用时（仿真）', `${a.time.toFixed(1)} s`, `${b.time.toFixed(1)} s`],
+    ['风险值', a.risk.toFixed(1), b.risk.toFixed(1)],
+    ['总代价', a.cost.toFixed(1), b.cost.toFixed(1)],
+    ['重新规划次数', '0', changed ? '1' : '0'],
   ];
   $('comparisonBody').innerHTML = rows.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('');
-  setText('comparisonInsight', `Same order and ${timeSlots.find(t => t.id === state.slot).label} sample. Cost = distance + 0.45 × time + 1.3 × risk. All timing values are simulation assumptions.`);
+  setText('comparisonInsight', `同一订单、同一${timeSlots.find(t => t.id === state.slot).label}样本。代价 = 距离 + 0.45 × 时间 + 1.3 × 风险；所有时间值均为仿真假设。`);
 }
 function scoreExistingRoute(plan, scenario, slot) {
   if (!plan) return { cost: 0, time: 0, risk: 0, length: 0, points: [] };
@@ -576,16 +578,16 @@ function scoreExistingRoute(plan, scenario, slot) {
 }
 function renderSimulationView() {
   const conditions = [
-    ['Pedestrian crossing', state.events.has('pedestrian')],
-    ['Shopping cart blocking', state.events.has('cart')],
-    ['Central aisle closed', state.closedEdges.size > 0],
-    ['Overload test', orderWeight() > CAPACITY || state.events.has('overload')],
-    ['Shelf congestion / peak', state.scenario === 'peak' || state.events.has('congestion')],
-    ['Navigation fault', !!state.fault || state.events.has('failure')],
+    ['行人横穿', state.events.has('pedestrian')],
+    ['购物车阻挡', state.events.has('cart')],
+    ['中央通道封闭', state.closedEdges.size > 0],
+    ['超载测试', orderWeight() > CAPACITY || state.events.has('overload')],
+    ['货架拥堵 / 高峰', state.scenario === 'peak' || state.events.has('congestion')],
+    ['导航故障', !!state.fault || state.events.has('failure')],
   ];
   $('activeEvents').innerHTML = conditions.map(([label, active]) =>
-    `<li><span>${label}</span><span class="pill ${active ? 'pill--warn' : 'pill--ok'}">${active ? 'ACTIVE' : 'CLEAR'}</span></li>`).join('')
-    + '<li><span>Simulation data source</span><span class="pill pill--info">RULE-DRIVEN</span></li>';
+    `<li><span>${label}</span><span class="pill ${active ? 'pill--warn' : 'pill--ok'}">${active ? '生效' : '未生效'}</span></li>`).join('')
+    + '<li><span>仿真数据来源</span><span class="pill pill--info">规则驱动</span></li>';
   document.querySelectorAll('[data-event]').forEach(button => {
     const type = button.dataset.event;
     const active = type === 'aisle' ? state.closedEdges.size > 0 : type === 'overload' ? state.events.has('overload')
@@ -597,9 +599,9 @@ function renderSimulationView() {
     card.dataset.simCard === 'aisle' ? state.closedEdges.size > 0 : state.events.has(card.dataset.simCard)));
 }
 function renderPresentationHud() {
-  setText('hudTask', state.running ? `To ${nextName()}` : state.order ? 'Paused / ready' : 'Waiting for order');
-  setText('hudOrder', state.order ? `${state.order.id} · ${state.stage}/${state.plan?.stops.length ?? 0} zones` : '—');
-  setText('hudRoute', state.plan ? `${state.plan.length.toFixed(1)} units · cost ${state.plan.cost.toFixed(1)}` : '—');
+  setText('hudTask', state.running ? `前往${nextName()}` : state.order ? '已暂停 / 就绪' : '等待订单');
+  setText('hudOrder', state.order ? `${state.order.id} · ${state.stage}/${state.plan?.stops.length ?? 0} 个货区` : '—');
+  setText('hudRoute', state.plan ? `${state.plan.length.toFixed(1)} 单位 · 代价 ${state.plan.cost.toFixed(1)}` : '—');
   setText('hudMetrics', state.plan ? state.plan.method : 'Held–Karp + A*');
 }
 function renderAll() {
@@ -627,18 +629,18 @@ function resetPlayback(preserveSafety = false) {
   state.dynamicObstacles = preserveSafety ? dynamic : [];
   state.plan = state.order ? buildPlan(state.order.lines, state.scenario, state.slot) : null;
   state.normalPlan = state.order ? buildPlan(state.order.lines, 'normal', state.slot) : null;
-  setText('playLabel', 'Play fulfillment'); setText('playIcon', '▶');
-  status(state.order ? 'Paid order received' : 'Awaiting order',
-    state.order ? 'Press Play to check weight and leave the entrance.' : 'Select products and submit an order first.', 'IDLE');
-  if (state.fault) status('Fault safe-stop', faultAdvice[state.fault], 'FAULT');
+  setText('playLabel', '开始履约'); setText('playIcon', '▶');
+  status(state.order ? '已收到支付订单' : '等待订单',
+    state.order ? '点击播放以检查载重并从入口出发。' : '请先选择商品并提交订单。', 'IDLE');
+  if (state.fault) status('故障安全停车', faultAdvice[state.fault], 'FAULT');
   renderAll();
 }
 function actualPrice() { return state.bought.reduce((n, x) => n + x.product.price * x.qty, 0); }
 function activateNext() {
   state.order = state.queue.shift() || null; state.stockoutId = ''; resetPlayback();
   if (state.order) {
-    log(`Queue advanced to ${state.order.id}: paid order loaded.`);
-    if (orderWeight() > CAPACITY) status('Cannot depart · overload', `${kgText(orderWeight())} exceeds the ${kgText(CAPACITY)} limit.`, 'FAULT');
+    log(`队列推进至 ${state.order.id}：已载入支付订单。`);
+    if (orderWeight() > CAPACITY) status('无法出发 · 超载', `${kgText(orderWeight())} 超过 ${kgText(CAPACITY)} 上限。`, 'FAULT');
   }
 }
 function submitOrder() {
@@ -648,12 +650,12 @@ function submitOrder() {
   const order = { id, lines: lines.map(x => ({ product: x.product, qty: x.qty })), paid: cartPrice() };
   state.queue.push(order); state.cart.clear(); renderCart(); renderRecommendations();
   if (!state.order) activateNext(); else renderAll();
-  setText('orderMessage', `${id}: simulated payment accepted (${money(order.paid)}); ${state.order === order ? 'robot loaded the order.' : `queue position ${state.queue.length}.`} No real transaction.`);
-  log(`${id} submitted · ${state.order === order ? 'assigned to AMR-01' : `queued #${state.queue.length}`}.`);
+  setText('orderMessage', `${id}：模拟支付已受理（${money(order.paid)}）；${state.order === order ? '机器人已载入订单。' : `当前排队第 ${state.queue.length} 位。`}无真实交易。`);
+  log(`${id} 已提交 · ${state.order === order ? '已分配给 AMR-01' : `排队第 ${state.queue.length} 位`}。`);
 }
 function updateScenario(source = 'manual') {
   if (state.order && !state.awaitingPickup) resetPlayback(true);
-  if (source === 'manual') log(`Scenario changed to ${state.scenario === 'peak' ? 'weekday peak' : 'normal flow'} at ${state.slot}: candidate routes recalculated.`);
+  if (source === 'manual') log(`场景已切换为${state.scenario === 'peak' ? '工作日高峰' : '平常客流'}（${state.slot}）：候选路径已重新计算。`);
   renderAll();
 }
 function positionOnLeg(leg, at) {
@@ -671,15 +673,15 @@ function positionOnLeg(leg, at) {
 function completeStop(stop) {
   for (const line of stop.lines) {
     const resolution = state.resolutions.get(line.product.id);
-    if (resolution?.kind === 'skip') { log(`${line.product.name} skipped: customer declined substitute.`); continue; }
+    if (resolution?.kind === 'skip') { log(`${line.product.name} 已跳过：顾客拒绝替代品。`); continue; }
     const actual = resolution?.kind === 'accept' ? resolution.replacement : line.product;
     actual.stock = Math.max(0, actual.stock - line.qty);
     state.bought.push({ product: actual, qty: line.qty });
-    log(`Zone ${stop.shelfId}: picked ${actual.name} × ${line.qty}${resolution ? ' (accepted substitute)' : ''}.`);
+    log(`货区 ${stop.shelfId}：已取 ${actual.name} × ${line.qty}${resolution ? '（已接受替代品）' : ''}。`);
   }
   state.stage++; state.pauseLeft = .6;
   const loaded = state.bought.reduce((n, x) => n + x.product.weight * x.qty, 0);
-  status('Items verified', `Current load ${kgText(loaded)}. Proceeding to the next zone.`, 'PICKING');
+  status('商品已核对', `当前载重 ${kgText(loaded)}。前往下一货区。`, 'PICKING');
   renderInventory(); renderAll();
 }
 function requestPickupAssist(stop, wasRunning) {
@@ -688,18 +690,18 @@ function requestPickupAssist(stop, wasRunning) {
     .filter(p => pickupProfile(p).assist).map(p => p.name);
   if (!names.length || state.assistedShelves.has(stop.shelfId)) return false;
   state.assistPending = { stop, names, wasRunning }; state.running = false;
-  status('Employee assistance required', `${names.join(', ')} needs verification. Robot stopped.`, 'PICKING');
-  log(`Zone ${stop.shelfId}: employee assistance required for ${names.join(', ')}.`, 'warn');
+  status('需要员工协助', `${names.join('、')} 需要核对，机器人已停车。`, 'PICKING');
+  log(`货区 ${stop.shelfId}：${names.join('、')} 需要员工协助。`, 'warn');
   renderAll(); return true;
 }
 function confirmPickupAssist() {
   if (!state.assistPending) return;
   const { stop, wasRunning } = state.assistPending;
   state.assistedShelves.add(stop.shelfId); state.assistPending = null;
-  log(`Employee verified assisted pick at zone ${stop.shelfId}.`);
+  log(`员工已确认货区 ${stop.shelfId} 的协助取货。`);
   completeStop(stop);
   if (wasRunning && !state.fault && !state.events.has('failure')) {
-    state.running = true; state.lastFrame = 0; setText('playLabel', 'Pause fulfillment'); setText('playIcon', 'Ⅱ'); requestAnimationFrame(animate);
+    state.running = true; state.lastFrame = 0; setText('playLabel', '暂停履约'); setText('playIcon', 'Ⅱ'); requestAnimationFrame(animate);
   }
 }
 function arrive() {
@@ -712,22 +714,22 @@ function arrive() {
     if (line) {
       const candidate = substituteFor(line.product), alternative = candidate?.stock >= line.qty ? candidate : null;
       state.shortage = { line, alternative, wasRunning: state.running }; state.running = false;
-      status('Shortage · awaiting decision', `${line.product.name} is out of stock at zone ${stop.shelfId}.`, 'PICKING');
-      log(`${line.product.name} shortage: robot stopped; no automatic substitution.`, 'warn'); renderAll(); return;
+      status('缺货 · 等待决策', `${line.product.name} 在货区 ${stop.shelfId} 缺货。`, 'PICKING');
+      log(`${line.product.name} 缺货：机器人已停车，不会自动替换商品。`, 'warn'); renderAll(); return;
     }
     if (requestPickupAssist(stop, state.running)) return;
     completeStop(stop);
   } else if (index === stops.length) {
-    log(`Checkout: ${state.bought.reduce((n, x) => n + x.qty, 0)} items, final simulated amount ${money(actualPrice())}.`);
-    status('Checkout complete', 'Robot proceeds to the exit handover point.', 'PICKING');
+    log(`结账：共 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件，最终模拟金额 ${money(actualPrice())}。`);
+    status('结账完成', '机器人前往出口交接点。', 'PICKING');
     state.pauseLeft = .8; state.stage++; renderAll();
   } else {
     state.running = false; state.finished = true; state.awaitingPickup = true; state.stage++;
-    log('Robot reached the exit. Waiting for customer handover.');
-    status('Awaiting exit handover', `Order ${state.order.id} is ready for collection.`, 'CHARGING');
-    setText('playLabel', 'Awaiting handover'); setText('playIcon', '✓'); renderAll();
+    log('机器人已到达出口，等待顾客交接。');
+    status('等待出口交接', `订单 ${state.order.id} 已备好，等待取货。`, 'CHARGING');
+    setText('playLabel', '等待交接'); setText('playIcon', '✓'); renderAll();
   }
-  if (state.order) setText('orderMessage', `${state.order.id}: ${state.awaitingPickup ? 'at exit, awaiting handover' : 'robot fulfilling'}; simulated payment only.`);
+  if (state.order) setText('orderMessage', `${state.order.id}：${state.awaitingPickup ? '已在出口等待交接' : '机器人履约中'}；仅为模拟支付。`);
 }
 function decideSubstitution(accept) {
   if (!state.shortage) return;
@@ -735,41 +737,41 @@ function decideSubstitution(accept) {
   if (accept && !alternative) return;
   if (accept) {
     const projected = orderWeight() - line.product.weight * line.qty + alternative.weight * line.qty;
-    if (projected > CAPACITY) { status('Substitute overload', `Projected load ${kgText(projected)} exceeds capacity. Decline the substitute.`, 'FAULT'); return; }
+    if (projected > CAPACITY) { status('替代品导致超载', `预计载重 ${kgText(projected)} 超过上限，请拒绝该替代品。`, 'FAULT'); return; }
   }
   state.resolutions.set(line.product.id, accept ? { kind: 'accept', replacement: alternative } : { kind: 'skip' });
-  log(accept ? `Customer accepted ${line.product.name} → ${alternative.name}.` : `Customer declined substitute for ${line.product.name}; item skipped.`);
+  log(accept ? `顾客接受 ${line.product.name} → ${alternative.name}。` : `顾客拒绝 ${line.product.name} 的替代品，已跳过该商品。`);
   state.shortage = null;
   if (requestPickupAssist(state.plan.stops[state.stage], wasRunning)) return;
   completeStop(state.plan.stops[state.stage]);
   if (wasRunning && !state.fault && !state.events.has('failure')) {
-    state.running = true; state.lastFrame = 0; setText('playLabel', 'Pause fulfillment'); setText('playIcon', 'Ⅱ'); requestAnimationFrame(animate);
+    state.running = true; state.lastFrame = 0; setText('playLabel', '暂停履约'); setText('playIcon', 'Ⅱ'); requestAnimationFrame(animate);
   }
 }
 function confirmHandoff() {
   if (!state.awaitingPickup) return;
   const finished = state.order;
-  log(`Exit handover complete: ${finished.id} collected; final simulated amount ${money(actualPrice())}.`);
+  log(`出口交接完成：${finished.id} 已取走，最终模拟金额 ${money(actualPrice())}。`);
   state.completed.push({ id: finished.id, status: 'Completed' });
   state.order = null; state.awaitingPickup = false; state.stockoutId = '';
   activateNext();
-  setText('orderMessage', state.order ? `${finished.id} handed over. Next order ${state.order.id} loaded.` : `${finished.id} handed over. Queue empty.`);
+  setText('orderMessage', state.order ? `${finished.id} 已交接，下一单 ${state.order.id} 已载入。` : `${finished.id} 已交接，队列为空。`);
 }
 function cancelOrder(id) {
   const index = state.queue.findIndex(order => order.id === id); if (index < 0) return;
-  state.queue.splice(index, 1); state.completed.push({ id, status: 'Cancelled' }); renderAll(); log(`${id} cancelled from queue.`);
+  state.queue.splice(index, 1); state.completed.push({ id, status: 'Cancelled' }); renderAll(); log(`${id} 已从队列中取消。`);
 }
 function cancelActive() {
   if (!state.order || state.running || state.stage > 0 || state.elapsed > 0 || state.awaitingPickup) return;
   const id = state.order.id; state.completed.push({ id, status: 'Cancelled' }); state.order = null; activateNext();
-  log(`${id} cancelled; next queued order loaded.`);
+  log(`${id} 已取消，已载入下一笔排队订单。`);
 }
 const faultAdvice = {
-  sensor: 'Sensor unavailable: robot safe-stopped. Inspect the sensor and manually clear the fault.',
-  localization: 'Localization lost: safe-stop. Re-localize and verify the shelf map before recovery.',
-  network: 'Order network outage: safe-stop. Reconcile the local order with the server before recovery.',
-  battery: 'Low battery: safe-stop. Operator must charge or take over the order.',
-  wrongItem: 'Item verification mismatch: safe-stop. Operator must recheck name and barcode.',
+  sensor: '传感器不可用：机器人已安全停车。请检查传感器并人工清除故障。',
+  localization: '定位丢失：已安全停车。恢复前请重新定位并核对货架地图。',
+  network: '订单网络中断：已安全停车。恢复前请与服务端核对本地订单。',
+  battery: '电量过低：已安全停车。操作员需充电或接管订单。',
+  wrongItem: '商品核对不一致：已安全停车。操作员需复核名称与条码。',
 };
 function setFault(active) {
   state.fault = active ? $('faultSelect').value : '';
@@ -777,11 +779,11 @@ function setFault(active) {
   state.running = false; state.lastFrame = 0;
   if (active) {
     state.events.add('failure');
-    status('Fault safe-stop', faultAdvice[state.fault], 'FAULT');
-    log(`Fault drill: ${faultAdvice[state.fault]}`, 'danger');
+    status('故障安全停车', faultAdvice[state.fault], 'FAULT');
+    log(`故障演练：${faultAdvice[state.fault]}`, 'danger');
   } else {
-    status('Fault cleared', 'Press Play to continue the current order from its position.', 'IDLE');
-    log('Operator cleared the fault; robot is waiting for a continue command.');
+    status('故障已清除', '点击播放，从当前位置继续执行订单。', 'IDLE');
+    log('操作员已清除故障，机器人等待继续指令。');
   }
   drawRobot(); renderAll();
 }
@@ -789,8 +791,8 @@ function toggleSuddenPerson() {
   const active = !state.events.has('pedestrian');
   if (active) state.events.add('pedestrian'); else state.events.delete('pedestrian');
   state.running = false; state.lastFrame = 0;
-  if (active) { status('Sudden pedestrian · safe-stop', 'Independent near-field layer prevents further motion.', 'SAFE STOP'); log('Sudden pedestrian: immediate safe-stop (simulation).', 'danger'); }
-  else { status('Pedestrian cleared', 'Press Play to re-check the route and continue.', 'IDLE'); log('Simulated pedestrian left the aisle.'); }
+  if (active) { status('行人突现 · 安全停车', '独立近场规则层阻止继续移动。', 'SAFE STOP'); log('行人突现：立即安全停车（仿真）。', 'danger'); }
+  else { status('行人已离开', '点击播放可重新检查路径并继续。', 'IDLE'); log('仿真行人已离开通道。'); }
   drawRobot(); renderAll();
 }
 
@@ -801,23 +803,23 @@ function handleSimEvent(type) {
     const point = [Math.max(8, Math.min(132, state.position[0] + (nextPoint[0] - state.position[0]) * .55)),
       Math.max(8, Math.min(82, state.position[1] + (nextPoint[1] - state.position[1]) * .55))];
     state.dynamicObstacles = state.dynamicObstacles.filter(o => o.type !== (type === 'pedestrian' ? 'person' : 'cart'));
-    state.dynamicObstacles.push({ id: `EVT-${type}`, type: type === 'pedestrian' ? 'person' : 'cart', zone: 'Simulation event', point });
+    state.dynamicObstacles.push({ id: `EVT-${type}`, type: type === 'pedestrian' ? 'person' : 'cart', zone: '仿真事件', point });
     state.events.add(type); state.slowLeft = type === 'cart' ? 2.4 : 1.8;
-    log(`${type === 'pedestrian' ? 'Pedestrian crossing' : 'Shopping cart'} simulation: obstacle at (${point.map(n => n.toFixed(1)).join(', ')}); robot slowing and checking the path.`, 'warn');
-    status(type === 'pedestrian' ? 'Pedestrian detected' : 'Cart blocking aisle', 'Rule-driven safety layer: slowing down, then replanning if needed.', 'AVOIDING');
-    if (state.plan && state.running) replanCurrentLeg('Obstacle event');
+    log(`${type === 'pedestrian' ? '行人横穿' : '购物车阻挡'}仿真：障碍物位于 (${point.map(n => n.toFixed(1)).join(', ')})；机器人减速并检查路径。`, 'warn');
+    status(type === 'pedestrian' ? '检测到行人' : '购物车阻挡通道', '规则安全层：减速，必要时重新规划。', 'AVOIDING');
+    if (state.plan && state.running) replanCurrentLeg('障碍物事件');
     drawCrowd(); renderAll(); return;
   }
   if (type === 'aisle') {
     const edge = [[60, 34], [80, 34]], id = edgeKey(...edge);
     if (state.closedEdges.has(id)) {
       state.closedEdges.delete(id); state.events.delete('aisle');
-      log('Central aisle reopened; A* may use the direct corridor again.');
+      log('中央通道已重新开放，A* 可再次使用直达通道。');
     } else {
       state.closedEdges.add(id); state.events.add('aisle');
-      log('Aisle closure simulation: central corridor edge removed from the graph.', 'warn');
-      status('Aisle closed', 'Restricted edge shown in red. Replanning around the closure.', 'SAFE STOP');
-      if (state.running) replanCurrentLeg('Aisle closure');
+      log('通道封闭仿真：图中已移除中央通道边。', 'warn');
+      status('通道已封闭', '受限边以红色显示，正在绕行重新规划。', 'SAFE STOP');
+      if (state.running) replanCurrentLeg('通道封闭');
     }
     drawRoutes(); renderAll(); return;
   }
@@ -825,13 +827,13 @@ function handleSimEvent(type) {
     const product = products.find(p => p.name === 'Beverage Pack');
     if (state.cart.has(product.id)) state.cart.delete(product.id); else state.cart.set(product.id, 3);
     state.events.add('overload');
-    log(state.cart.has(product.id) ? 'Overload drill: 3 × 6 kg cases added to the cart. A 12 kg limit will block departure.' : 'Overload drill load removed.', 'warn');
+    log(state.cart.has(product.id) ? '超载演练：已加入 3 箱 6 kg 商品，12 kg 上限将阻止出发。' : '已移除演练用载重。', 'warn');
     renderCart(); renderAll(); return;
   }
   if (type === 'congestion') {
     state.scenario = state.scenario === 'peak' ? 'normal' : 'peak';
     state.events.add('congestion');
-    updateScenario(); log(`Shelf congestion drill: scenario is now ${state.scenario === 'peak' ? 'weekday peak' : 'normal flow'}.`, 'warn');
+    updateScenario(); log(`货架拥堵演练：当前场景为${state.scenario === 'peak' ? '工作日高峰' : '平常客流'}。`, 'warn');
     return;
   }
   if (type === 'failure') { setFault(!state.fault); return; }
@@ -844,20 +846,20 @@ function animate(now) {
   const delta = Math.min((now - state.lastFrame) / 1000, .08);
   state.lastFrame = now; state.elapsed += delta;
   if (state.fault || state.events.has('failure')) {
-    state.running = false; status('Fault safe-stop', faultAdvice[state.fault || 'localization'], 'FAULT'); renderAll(); return;
+    state.running = false; status('故障安全停车', faultAdvice[state.fault || 'localization'], 'FAULT'); renderAll(); return;
   }
-  if (state.blocked) { status('Safe stop', 'All aisles closed; robot holds position.', 'SAFE STOP'); requestAnimationFrame(animate); return; }
+  if (state.blocked) { status('安全停车', '所有通道已封闭，机器人保持当前位置。', 'SAFE STOP'); requestAnimationFrame(animate); return; }
   if (state.pauseLeft > 0) { state.pauseLeft = Math.max(0, state.pauseLeft - delta); requestAnimationFrame(animate); return; }
   const leg = state.plan?.legs[state.stage]; if (!leg) return;
   const sensed = getObstacleSnapshot(state.scenario, state.slot);
   const person = sensed.find(p => p.type === 'person' && !state.detected.has(p.id) && dist(state.position, p.point) < 5.5);
   if (person) {
     state.detected.add(person.id); state.slowLeft = 1;
-    log(`Rule layer: pedestrian near ${person.zone}; slowing and keeping clearance.`);
-    status('Pedestrian · slow down', 'Low speed through the aisle; path remains feasible.', 'AVOIDING');
+    log(`规则层：${person.zone} 附近有行人，减速并保持安全距离。`);
+    status('行人 · 减速', '低速通过通道，当前路径仍可行。', 'AVOIDING');
   }
   const cart = sensed.find(o => o.type === 'cart' && !state.detected.has('cart') && dist(state.position, o.point) < 5.5);
-  if (cart) { state.detected.add('cart'); state.slowLeft = 1; log('Rule layer: shopping cart detected; slowing and steering to the side.'); }
+  if (cart) { state.detected.add('cart'); state.slowLeft = 1; log('规则层：检测到购物车，已减速并向一侧避让。'); }
   const slow = state.slowLeft > 0; state.slowLeft = Math.max(0, state.slowLeft - delta);
   const step = delta * (state.scenario === 'peak' ? 22 : 26) * (slow ? .45 : 1);
   const previous = state.position;
@@ -866,7 +868,7 @@ function animate(now) {
   const travelled = dist(previous, state.position);
   state.traveled += travelled; state.battery = Math.max(0, state.battery - travelled * .09);
   if (state.battery < 15 && !state.events.has('lowBattery')) {
-    state.events.add('lowBattery'); log('Simulated battery below 15%; operator should plan a charge.', 'warn');
+    state.events.add('lowBattery'); log('仿真电量低于 15%，操作员应安排充电。', 'warn');
   }
   if (dist(state.history.at(-1), state.position) > .15) state.history.push([...state.position]);
   drawHistory(); drawRobot(); renderProgress();
@@ -875,33 +877,33 @@ function animate(now) {
   if (state.running) requestAnimationFrame(animate);
 }
 function playPause() {
-  if (state.shortage) { status('Decide shortage first', 'Choose accept substitute or skip in the task panel.', 'PICKING'); return; }
-  if (state.assistPending) { status('Confirm assisted pick', 'The employee must verify the items before the robot moves.', 'PICKING'); return; }
-  if (state.fault || state.events.has('failure')) { status('Fault safe-stop', faultAdvice[state.fault || 'localization'], 'FAULT'); return; }
-  if (state.awaitingPickup) { status('Confirm handover', 'Customer must collect the order at the exit.', 'CHARGING'); return; }
-  if (!state.order) { status('Submit an order first', 'Select products and simulate payment to start the robot.', 'IDLE'); log('No paid order; robot stays at the entrance.'); return; }
-  if (orderWeight() > CAPACITY) { status('Cannot depart · overload', `${kgText(orderWeight())} exceeds ${kgText(CAPACITY)}.`, 'FAULT'); log('Weight check failed; robot remains at the entrance.', 'danger'); return; }
+  if (state.shortage) { status('请先处理缺货', '请在任务面板选择接受替代品或跳过。', 'PICKING'); return; }
+  if (state.assistPending) { status('请确认协助取货', '员工核对商品后机器人才能移动。', 'PICKING'); return; }
+  if (state.fault || state.events.has('failure')) { status('故障安全停车', faultAdvice[state.fault || 'localization'], 'FAULT'); return; }
+  if (state.awaitingPickup) { status('请确认交接', '顾客需在出口取走订单。', 'CHARGING'); return; }
+  if (!state.order) { status('请先提交订单', '选择商品并模拟支付后才能启动机器人。', 'IDLE'); log('没有已支付订单，机器人停留在入口。'); return; }
+  if (orderWeight() > CAPACITY) { status('无法出发 · 超载', `${kgText(orderWeight())} 超过 ${kgText(CAPACITY)}。`, 'FAULT'); log('载重检查未通过，机器人停留在入口。', 'danger'); return; }
   if (state.running) {
-    state.running = false; state.lastFrame = 0; setText('playLabel', 'Continue fulfillment'); setText('playIcon', '▶');
-    status('Simulation paused', 'Press continue to resume from the current position.', 'IDLE');
+    state.running = false; state.lastFrame = 0; setText('playLabel', '继续履约'); setText('playIcon', '▶');
+    status('仿真已暂停', '点击继续从当前位置恢复。', 'IDLE');
     renderProgress(); renderQueue(); return;
   }
   if (state.stage === 0 && state.elapsed === 0) {
-    log(`Weight check passed: ${kgText(orderWeight())} / ${kgText(CAPACITY)}.`);
-    log(`${state.plan.method}; ${state.plan.stops.length} zones; A* planned every leg.`);
+    log(`载重检查通过：${kgText(orderWeight())} / ${kgText(CAPACITY)}。`);
+    log(`${state.plan.method}；共 ${state.plan.stops.length} 个货区；A* 已完成逐段规划。`);
   }
-  state.running = true; state.lastFrame = 0; setText('playLabel', 'Pause fulfillment'); setText('playIcon', 'Ⅱ');
-  status(`To ${nextName()}`, 'Following the A* path; rule layer handles pedestrians and carts.', 'MOVING');
+  state.running = true; state.lastFrame = 0; setText('playLabel', '暂停履约'); setText('playIcon', 'Ⅱ');
+  status(`前往${nextName()}`, '沿 A* 路径行驶，规则层处理行人与购物车。', 'MOVING');
   renderProgress(); renderQueue(); requestAnimationFrame(animate);
 }
 function toggleBlock() {
   state.blocked = !state.blocked;
-  log(state.blocked ? 'All aisle closure test: robot safe-stopped.' : 'Aisles reopened; robot may continue.');
-  status(state.blocked ? 'Safe stop' : 'Route available', state.blocked ? 'Robot holds position.' : 'Continue when ready.', state.blocked ? 'SAFE STOP' : 'IDLE');
+  log(state.blocked ? '全部通道封闭测试：机器人已安全停车。' : '通道已重新开放，机器人可继续。');
+  status(state.blocked ? '安全停车' : '路径可用', state.blocked ? '机器人保持当前位置。' : '就绪后可继续。', state.blocked ? 'SAFE STOP' : 'IDLE');
   renderAll();
 }
 function demoOrder() {
-  if (!research) { setText('orderMessage', 'Real catalog is still loading. Please retry.'); return; }
+  if (!research) { setText('orderMessage', '真实商品目录仍在加载，请稍后重试。'); return; }
   const used = new Set();
   const examples = research.top.filter(p => {
     const item = productById.get(`I${p.id}`);
@@ -910,21 +912,21 @@ function demoOrder() {
   }).slice(0, 4);
   state.cart = new Map(examples.map(p => [`I${p.id}`, 1]));
   renderCart(); renderRecommendations(); renderAll();
-  setText('orderMessage', 'Four real sample products loaded. Simulate payment; an active order will queue this basket.');
+  setText('orderMessage', '已载入四件真实示例商品。模拟支付后，该购物篮将进入队列。');
 }
 function toggleOverload() {
   const product = products.find(p => p.name === 'Beverage Pack');
   changeQty(product.id, state.cart.has(product.id) ? -state.cart.get(product.id) : 3);
-  setText('orderMessage', state.cart.has(product.id) ? 'Three 6 kg cases added; a 12 kg order will be blocked.' : 'Test cases removed; paid orders are unaffected.');
+  setText('orderMessage', state.cart.has(product.id) ? '已加入三箱 6 kg 商品；12 kg 订单将被阻止。' : '已移除测试商品；已支付订单不受影响。');
 }
 function runBenchmark() {
-  if (!state.order) { setText('benchmarkResult', 'Simulate payment first, then compare the same order.'); return; }
-  const modes = [['Distance only', 'distance'], ['Distance + time', 'time'], ['Distance + time + risk', 'full']];
+  if (!state.order) { setText('benchmarkResult', '请先模拟支付订单，再对同一订单进行对比。'); return; }
+  const modes = [['仅距离', 'distance'], ['距离 + 时间', 'time'], ['距离 + 时间 + 风险', 'full']];
   const rows = modes.map(([label, mode]) => {
     const plan = buildPlan(state.order.lines, state.scenario, state.slot, mode);
     return { label, score: plan && scoreExistingRoute(plan, state.scenario, state.slot) };
   });
-  if (rows.some(row => !row.score)) { setText('benchmarkResult', 'No comparable route exists under the current restrictions.'); return; }
+  if (rows.some(row => !row.score)) { setText('benchmarkResult', '当前限制条件下没有可对比的路径。'); return; }
   const body = rows.map(({ label, score }) => `<tr><td>${label}</td><td>${score.length.toFixed(1)}</td><td>${score.time.toFixed(1)}</td><td>${score.risk.toFixed(1)}</td></tr>`).join('');
   let checked = 0, safer = 0;
   for (const scenario of ['normal', 'peak']) for (const slot of timeSlots.map(t => t.id)) {
@@ -935,13 +937,13 @@ function runBenchmark() {
     state.closedEdges = savedEdges;
     if (baseline && full) { checked++; if (full.risk < scoreExistingRoute(baseline, scenario, slot).risk) safer++; }
   }
-  $('benchmarkResult').innerHTML = `<table class="data-table"><thead><tr><th>Planning input</th><th>Length</th><th>Sim seconds</th><th>Risk</th></tr></thead><tbody>${body}</tbody></table><p>Across ${checked} fixed teaching scenarios, the full cost produced lower risk than the distance-only baseline ${safer} times. Not a randomized experiment.</p>`;
+  $('benchmarkResult').innerHTML = `<table class="data-table"><thead><tr><th>规划输入</th><th>长度</th><th>仿真秒数</th><th>风险</th></tr></thead><tbody>${body}</tbody></table><p>在 ${checked} 个固定教学场景中，完整代价函数有 ${safer} 次比仅距离基线得到更低风险。这不是随机对照实验。</p>`;
 }
 function renderDataAudit() {
   const counts = crowdSamples[state.slot], base = crowdSamples['09'];
   const changed = counts.filter((n, i) => Math.abs(n - base[i]) >= 3).length;
-  setText('dataAudit', research ? `Cleaned files: ${research.summary.products.toLocaleString()} products, ${research.summary.orders.toLocaleString()} orders, ${research.summary.basketOrders.toLocaleString()} train baskets. Pre-cleaning deletion counts cannot be reconstructed from cleaned CSVs.` : 'Reading real data statistics…');
-  setText('driftAudit', `${timeSlots.find(t => t.id === state.slot).label} vs 09:00 teaching baseline: ${changed}/${shelves.length} zones differ by at least 3 simulated people. This is a resampling prompt, not real model drift.`);
+  setText('dataAudit', research ? `清洗文件：${research.summary.products.toLocaleString()} 件商品、${research.summary.orders.toLocaleString()} 笔订单、${research.summary.basketOrders.toLocaleString()} 个训练购物篮。清洗前的删除量无法从已清洗文件反推。` : '正在读取真实数据统计……');
+  setText('driftAudit', `${timeSlots.find(t => t.id === state.slot).label} 与 09:00 教学基线相比：${changed}/${shelves.length} 个区域的仿真人数相差至少 3 人。这是重新抽样的提示，不是真实的模型漂移。`);
 }
 function renderPickupFeasibility() {
   const lines = state.order?.lines || ['Apple', 'Shrimp', 'Frozen Dumplings', 'Beverage Pack'].map(name => ({ product: products.find(p => p.name === name), qty: 1 }));
@@ -951,7 +953,7 @@ function renderPickupFeasibility() {
 /* ------------------------------------------------------------------ binding */
 function populateFilters() {
   if (research) {
-    $('categoryFilter').innerHTML = '<option value="">All departments</option>' + research.index.departments.map(x =>
+    $('categoryFilter').innerHTML = '<option value="">全部部门</option>' + research.index.departments.map(x =>
       `<option value="${x.id}">${escapeHtml(x.name)} (${x.count})</option>`).join('');
     updateSubcategories();
   }
@@ -961,14 +963,14 @@ function updateSubcategories() {
   if (!research) return;
   const dept = $('categoryFilter').value;
   const aisles = research.index.aisles.filter(x => !dept || x.departmentId === Number(dept));
-  $('subcategoryFilter').innerHTML = '<option value="">All aisles</option>' + aisles.map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
+  $('subcategoryFilter').innerHTML = '<option value="">全部货区</option>' + aisles.map(x => `<option value="${x.id}">${escapeHtml(x.name)}</option>`).join('');
   scheduleCatalogSearch();
 }
 function scheduleCatalogSearch() {
   if (!research) return;
   clearTimeout(catalogTimer);
   const request = ++catalogRequest;
-  $('catalogue').innerHTML = '<p class="empty">Searching real product catalog…</p>';
+  $('catalogue').innerHTML = '<p class="empty">正在搜索真实商品目录……</p>';
   catalogTimer = setTimeout(async () => {
     try {
       const query = $('productSearch').value, dept = $('categoryFilter').value, aisle = $('subcategoryFilter').value;
@@ -978,7 +980,7 @@ function scheduleCatalogSearch() {
         const id = `I${row.id}`; if (!productById.has(id)) productById.set(id, convertProduct(row)); return productById.get(id);
       });
       renderCatalogue();
-    } catch (error) { if (request === catalogRequest) $('catalogue').textContent = `Catalog load failed: ${error.message}`; }
+    } catch (error) { if (request === catalogRequest) $('catalogue').textContent = `商品目录加载失败：${error.message}`; }
   }, 240);
 }
 function bindEvents() {
@@ -1004,7 +1006,7 @@ function bindEvents() {
   $('scenarioPeak').addEventListener('click', () => { state.scenario = 'peak'; updateScenario(); });
   $('timeSlot').addEventListener('change', () => { state.slot = $('timeSlot').value; renderCrowd(); updateScenario(); });
   $('playBtn').addEventListener('click', playPause);
-  $('resetBtn').addEventListener('click', () => { resetPlayback(); log('Current order restarted; robot returned to the entrance.'); });
+  $('resetBtn').addEventListener('click', () => { resetPlayback(); log('当前订单已重新开始，机器人已返回入口。'); });
   $('safetyTestBtn')?.addEventListener('click', toggleBlock);
   $('cameraResetBtn').addEventListener('click', () => scene3d.resetCamera());
   $('cameraIso').addEventListener('click', () => setCamera('iso'));
@@ -1012,7 +1014,7 @@ function bindEvents() {
   $('cameraClose').addEventListener('click', () => setCamera('close'));
   $('stockoutSelect').addEventListener('change', () => {
     state.stockoutId = $('stockoutSelect').value;
-    log(state.stockoutId ? `Shortage drill selected for ${productById.get(state.stockoutId).name}.` : 'Shortage drill disabled.');
+    log(state.stockoutId ? `已为 ${productById.get(state.stockoutId).name} 选择缺货演练。` : '已关闭缺货演练。');
   });
   $('acceptSubBtn').addEventListener('click', () => decideSubstitution(true));
   $('skipSubBtn').addEventListener('click', () => decideSubstitution(false));
@@ -1049,7 +1051,7 @@ scene3d.setScenario(state.scenario, state.slot);
 drawBaseMap(); drawFixtures(); populateFilters(); renderCatalogue(); renderCart();
 renderInventory(); renderRecommendations(); renderCrowd(); resetPlayback(); bindEvents();
 scene3d.setActive(false);
-log('NEXUS RETAIL simulation initialised. Real catalog loading…');
+log('NEXUS RETAIL 仿真已初始化，正在加载真实商品目录……');
 
 loadResearch().then(data => {
   research = data;
@@ -1059,9 +1061,9 @@ loadResearch().then(data => {
   rules = data.rules.rules.map(rule => ({ ...rule, from: `I${rule.from}`, to: `I${rule.to}` }));
   populateFilters(); scheduleCatalogSearch(); renderRules(); renderRecommendations();
   renderResearchDashboard(data); renderDataAudit(); renderPickupFeasibility(); renderInventory();
-  log(`Real catalog loaded: ${data.summary.products.toLocaleString()} products; ${data.rules.ruleCount.toLocaleString()} Apriori rules.`);
+  log(`真实商品目录已加载：${data.summary.products.toLocaleString()} 件商品，${data.rules.ruleCount.toLocaleString()} 条 Apriori 规则。`);
 }).catch(error => {
-  $('catalogue').textContent = `Real data failed to load: ${error.message}`;
-  setText('miningMethod', 'Real analysis data unavailable; check public/data.');
+  $('catalogue').textContent = `真实数据加载失败：${error.message}`;
+  setText('miningMethod', '真实分析数据不可用，请检查 public/data 目录。');
   console.error(error);
 });

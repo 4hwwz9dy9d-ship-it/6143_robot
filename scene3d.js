@@ -2,7 +2,7 @@
 // All geometry is generated from storeData.js; no paid or external 3D assets.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { STORE, shelves, layoutFixtures, peopleForScenario, shelfCrowd } from './storeData.js';
+import { STORE, shelves, layoutFixtures, peopleForScenario, shelfCrowd, zoneName } from './storeData.js';
 
 const X_SCALE = .17;
 const floorPoint = ([x, y], height = .025) => new THREE.Vector3((x - STORE.width / 2) * X_SCALE, height, (STORE.height / 2 - y) * X_SCALE);
@@ -294,9 +294,10 @@ function buildScene(container) {
         }
       }
     }
-    const label = makeLabel(shelf.category, '#ffffff', '#1d5647', shelf.category.length > 13 ? .72 : .88);
+    const displayName = zoneName(shelf.category);
+    const label = makeLabel(displayName, '#ffffff', '#1d5647', displayName.length > 8 ? .72 : .88);
     label.position.set(center.x, shelf.shelfHeight + .36, center.z); scene.add(label);
-    const code = makeLabel(`ZONE ${shelf.id}`, '#172C40', '#9ee8d9', .48);
+    const code = makeLabel(`货区 ${shelf.id}`, '#172C40', '#9ee8d9', .48);
     code.position.set(center.x, shelf.shelfHeight + .09, center.z); scene.add(code);
   });
   flushProducts();
@@ -338,9 +339,9 @@ function buildScene(container) {
     label.position.set(p.x, h + .42, p.z); scene.add(label);
   });
   flushProducts(); // promo products were queued after the first flush
-  const zoneSign = makeLabel('FRESH PRODUCE  ·  DAIRY  ·  FROZEN  ·  BEVERAGES', '#172C40', '#9fe6d8', 1.5);
+  const zoneSign = makeLabel('生鲜果蔬  ·  乳制品  ·  冷冻食品  ·  饮品', '#172C40', '#9fe6d8', 1.5);
   zoneSign.position.set(0, 2.75, -floorD / 2 + .18); scene.add(zoneSign);
-  [['FRESH & CHILLED', -5.5], ['GROCERY', 0], ['HOUSEHOLD', 5.5]].forEach(([label, x]) => {
+  [['生鲜与冷藏', -5.5], ['食品杂货', 0], ['家庭日用', 5.5]].forEach(([label, x]) => {
     const sign = makeLabel(label, '#ffffff', '#1c6b5c', .95);
     sign.position.set(x, 1.65, -floorD / 2 + .18); scene.add(sign);
   });

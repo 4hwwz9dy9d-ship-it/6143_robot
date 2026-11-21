@@ -34,12 +34,12 @@ Test order: `demoOrderBtn` → 4 real products (¥58.94, 1.90 kg) → simulated 
 | Step | Result |
 |---|---|
 | Order accepted, robot assigned, live ops counters updated | PASS |
-| Held–Karp produced exact visit order for 4 zones | PASS (`Held–Karp exact visit order`) |
+| Held–Karp produced exact visit order for 4 zones | PASS（`Held–Karp 精确访问顺序`） |
 | A* planned 6 legs (entrance → 4 zones → checkout → exit) | PASS |
 | Robot followed path; progress advanced 0% → 100% | PASS |
 | Cold-chain item triggered employee-assistance gate | PASS (2/4 stops, robot stopped) |
 | Employee confirmation resumed task | PASS |
-| Checkout and exit handover reached | PASS (`Awaiting exit handover`) |
+| Checkout and exit handover reached | PASS（`等待出口交接`） |
 | Handover incremented completed orders and cleared active order | PASS (`done: 1`, `orders: 0`) |
 
 Note: the earlier display `6 / 4` for navigation stops was corrected to cap the counter at the number of zones.
@@ -78,3 +78,18 @@ Note: the earlier display `6 / 4` for navigation stops was corrected to cap the 
 - Apriori is limited to the top 600 candidate products and 2-item frequent sets in the offline build; browser filters only re-filter precomputed rules.
 - K-means uses pre-existing estimated price/weight/calorie fields; the PCA plot is for inspection, not a validated layout recommendation.
 - GitHub Pages deployment is validated by the committed workflow structure; the live URL was not re-pushed during this local test run.
+
+## 7. 中文主体界面回归（2026-11-22 追加）
+
+| Check | Result |
+|---|---|
+| 9 个页面的导航、标题、按钮、表头、状态与提示均为中文主体 | PASS |
+| 英文仅作为小号辅助标签（如 `SYSTEM STATUS` / `SEARCH`）或真实商品原始名称保留 | PASS |
+| 3D 场景货区标牌、通道封闭/行人等事件日志中文显示，无乱码方框 | PASS |
+| 订单支付、缺货决策、员工协助、出口交接提示中文显示 | PASS（`NX-0001：模拟支付已受理…无真实交易。`） |
+| Held–Karp / A* 方法与路段对比表中文显示 | PASS（`Held–Karp 精确访问顺序`） |
+| Apriori / K-means 图表说明、支持度/置信度/提升度中文显示 | PASS |
+| 中文版重新加载后控制台错误与警告 | PASS — 0 |
+| WebGL 画布在 3D 视图中正确缩放 | PASS — 941 × 508 px |
+
+说明：研究算法名、术语缩写（Held–Karp、A*、Apriori、K-means）与 Instacart 商品原始英文名称按数据真实性要求保留；它们以中文语境中的专有名词出现，不构成英文主体界面。

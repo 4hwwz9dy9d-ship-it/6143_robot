@@ -1,16 +1,16 @@
-// NEXUS RETAIL — view routing, 2D/3D mode and presentation mode.
-// All task logic stays in app.js; this file only coordinates the shell.
+// NEXUS RETAIL — 视图路由、2D/3D 切换与演示模式。
+// 任务逻辑全部保留在 app.js，本文件只负责应用外壳的协调。
 (() => {
   const titles = {
-    overview: 'Overview',
-    order: 'Order Management',
-    inventory: 'Inventory Management',
-    analytics: 'Retail Analytics',
-    supermarket: '3D Supermarket',
-    robot: 'Robot Control Center',
-    route: 'Route Optimization',
-    simulation: 'Simulation Center',
-    research: 'Research & Methodology',
+    overview: '总览',
+    order: '订单管理',
+    inventory: '库存管理',
+    analytics: '零售分析',
+    supermarket: '3D 超市',
+    robot: '机器人控制中心',
+    route: '路径优化',
+    simulation: '仿真中心',
+    research: '研究方法',
   };
   const panels = new Map(Object.keys(titles).map(name => [name, document.getElementById(`view-${name}`)]));
   const navButtons = [...document.querySelectorAll('[data-view]')];
@@ -42,12 +42,12 @@
     mode = next === '2d' ? '2d' : '3d';
     modeButtons.forEach(button => {
       if (!button) return;
-      button.textContent = mode === '2d' ? '3D SCENE' : '2D MAP';
+      button.textContent = mode === '2d' ? '3D 场景' : '2D 地图';
       button.setAttribute('aria-pressed', String(mode === '2d'));
       button.classList.toggle('is-active', mode === '2d');
     });
     const label = document.getElementById('sceneModeLabel');
-    if (label) label.textContent = mode === '2d' ? '2D NAVIGATION MAP' : '3D STORE VIEW';
+    if (label) label.textContent = mode === '2d' ? '2D 导航地图' : '3D 门店视图';
     emit('viewmode', { mode });
   }
 
@@ -57,7 +57,7 @@
     presentation = !!on;
     document.body.classList.toggle('presentation', presentation);
     const button = document.getElementById('presentationBtn');
-    if (button) button.textContent = presentation ? 'Exit presentation' : 'Presentation';
+    if (button) button.textContent = presentation ? '退出演示' : '演示模式';
     if (presentation) showView('supermarket', false);
     emit('presentation', { active: presentation });
   }
@@ -71,7 +71,7 @@
     try {
       if (document.fullscreenElement) await document.exitFullscreen();
       else await document.documentElement.requestFullscreen();
-    } catch (error) { console.warn('Fullscreen unavailable:', error.message); }
+    } catch (error) { console.warn('全屏不可用：', error.message); }
   });
   document.getElementById('btnOverviewOrder')?.addEventListener('click', () => showView('order'));
   document.getElementById('btnOverview3D')?.addEventListener('click', () => showView('supermarket'));
