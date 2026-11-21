@@ -5,6 +5,16 @@
 // declared here (shelf position, stock, crowd, robot capacity) is a SIMULATION
 // ASSUMPTION and is labelled as such in the interface.
 
+// 物理比例（仿真初始设计值，非真实场所安全规范）
+// 1 地图单位 = 0.17 m；3D 场景的 X_SCALE 与此处一致。
+export const PHYSICS = Object.freeze({
+  metersPerUnit: 0.17,
+  robot: Object.freeze({ width: .62, length: .82, height: .92, radius: .36, maxSpeed: .78, accel: .42, brake: .62, turnRadius: .55 }),
+  pedestrian: Object.freeze({ radius: .26, bodyWidth: .46 }),
+  safety: Object.freeze({ buffer: .80, warnDistance: 2.0, yieldDistance: 1.35, emergencyGap: .06 }),
+  aisles: Object.freeze({ main: 2.6, secondary: 1.9, access: 1.3 }),
+});
+
 export const STORE = {
   width: 140, height: 90,
   entrance: [5, 8], checkout: [130, 8], exit: [138, 8],
@@ -13,31 +23,48 @@ export const STORE = {
   verticalYs: [8, 22, 34, 45, 56, 67, 82],
 };
 
-// 18 deliberately irregular zones. Width, height and placement vary per zone;
-// every zone stays inside its aisle cell so A* edges never cross a fixture.
-// kind drives the 3D module: gondola | cooler | produce | bulk | promo.
+export const nodeKey = p => p.join(',');
+
+// 机器人与行人共用同一张通道图，避免两套坐标/连通性。
+export function buildNavNodes() {
+  const nodes = new Map();
+  const edge = (a, b) => {
+    for (const p of [a, b]) if (!nodes.has(nodeKey(p))) nodes.set(nodeKey(p), { point: p, neighbors: [] });
+    nodes.get(nodeKey(a)).neighbors.push(nodeKey(b));
+    nodes.get(nodeKey(b)).neighbors.push(nodeKey(a));
+  };
+  const bottom = [STORE.entrance[0], ...STORE.aisleXs, STORE.checkout[0], STORE.exit[0]];
+  for (let i = 1; i < bottom.length; i++) edge([bottom[i - 1], 8], [bottom[i], 8]);
+  for (const y of STORE.crossYs.slice(1)) for (let i = 1; i < STORE.aisleXs.length; i++) edge([STORE.aisleXs[i - 1], y], [STORE.aisleXs[i], y]);
+  for (const x of STORE.aisleXs) for (let i = 1; i < STORE.verticalYs.length; i++) edge([x, STORE.verticalYs[i - 1]], [x, STORE.verticalYs[i]]);
+  return nodes;
+}
+
+// 18 个不规则货区。通道净宽按 PHYSICS.aisles 设计：
+// 横向主通道（y=34/56）净宽约 2.4–2.6 m；纵向次通道（x=20…120）净宽约 1.9 m。
+// 每个货区仍位于其通道单元内，A* 边不会穿过货架。
 const zoneDefs = [
-  // Row 1 — personal care / household (y corridor 8..34)
-  { category: 'Personal Care',      x: 24, y: 15, w: 12, h: 11, kind: 'gondola', height: 1.62 },
-  { category: 'Household Essentials',x: 44, y: 13, w: 9,  h: 14, kind: 'gondola', height: 1.86 },
-  { category: 'Cleaning Supplies',  x: 62, y: 18, w: 13, h: 9,  kind: 'gondola', height: 1.45 },
-  { category: 'Baby Care',          x: 84, y: 14, w: 10, h: 12, kind: 'gondola', height: 1.72 },
-  { category: 'Stationery',         x: 104,y: 16, w: 12, h: 10, kind: 'bulk',    height: 1.38 },
-  { category: 'Pet Supplies',       x: 126,y: 13, w: 8,  h: 14, kind: 'gondola', height: 1.70 },
-  // Row 2 — food & drink (y corridor 34..56)
-  { category: 'Beverages',          x: 24, y: 39, w: 11, h: 10, kind: 'cooler',  height: 2.05 },
-  { category: 'Dairy & Eggs',       x: 43, y: 41, w: 13, h: 9,  kind: 'cooler',  height: 2.05 },
-  { category: 'Bakery',             x: 64, y: 38, w: 9,  h: 13, kind: 'bulk',    height: 1.35 },
-  { category: 'Snacks',             x: 82, y: 39, w: 12, h: 11, kind: 'gondola', height: 1.55 },
-  { category: 'Ready Meals',        x: 103,y: 38, w: 10, h: 12, kind: 'gondola', height: 1.68 },
-  { category: 'Frozen Food',        x: 124,y: 42, w: 9,  h: 9,  kind: 'cooler',  height: 2.10 },
-  // Row 3 — fresh & staples (y corridor 56..82)
-  { category: 'Fresh Produce',      x: 23, y: 60, w: 13, h: 11, kind: 'produce', height: 1.12 },
-  { category: 'Seafood',            x: 45, y: 59, w: 10, h: 14, kind: 'cooler',  height: 1.95 },
-  { category: 'Meat',               x: 63, y: 62, w: 12, h: 10, kind: 'cooler',  height: 1.95 },
-  { category: 'Grains & Oils',      x: 84, y: 60, w: 9,  h: 12, kind: 'gondola', height: 1.78 },
-  { category: 'Soy Products',       x: 102,y: 61, w: 13, h: 11, kind: 'cooler',  height: 1.90 },
-  { category: 'Condiments',         x: 124,y: 60, w: 10, h: 13, kind: 'gondola', height: 1.64 },
+  // 第一排 — 日用 / 个人护理（y 通道 8..34，货架 15..26）
+  { category: 'Personal Care',      x: 25, y: 15, w: 9,  h: 10, kind: 'gondola', height: 1.62 },
+  { category: 'Household Essentials',x: 45, y: 15, w: 8,  h: 11, kind: 'gondola', height: 1.86 },
+  { category: 'Cleaning Supplies',  x: 64, y: 16, w: 9,  h: 8,  kind: 'gondola', height: 1.45 },
+  { category: 'Baby Care',          x: 84, y: 15, w: 8,  h: 10, kind: 'gondola', height: 1.72 },
+  { category: 'Stationery',         x: 104,y: 16, w: 9,  h: 9,  kind: 'bulk',    height: 1.38 },
+  { category: 'Pet Supplies',       x: 125,y: 15, w: 8,  h: 11, kind: 'gondola', height: 1.70 },
+  // 第二排 — 食品饮料（y 通道 34..56，货架 41..49）
+  { category: 'Beverages',          x: 25, y: 41, w: 8,  h: 8,  kind: 'cooler',  height: 2.05 },
+  { category: 'Dairy & Eggs',       x: 44, y: 41, w: 9,  h: 8,  kind: 'cooler',  height: 2.05 },
+  { category: 'Bakery',             x: 64, y: 41, w: 8,  h: 8,  kind: 'bulk',    height: 1.35 },
+  { category: 'Snacks',             x: 83, y: 41, w: 9,  h: 8,  kind: 'gondola', height: 1.55 },
+  { category: 'Ready Meals',        x: 103,y: 41, w: 9,  h: 8,  kind: 'gondola', height: 1.68 },
+  { category: 'Frozen Food',        x: 124,y: 41, w: 8,  h: 8,  kind: 'cooler',  height: 2.10 },
+  // 第三排 — 生鲜与粮油（y 通道 56..82，货架 63..75）
+  { category: 'Fresh Produce',      x: 24, y: 63, w: 10, h: 12, kind: 'produce', height: 1.12 },
+  { category: 'Seafood',            x: 44, y: 63, w: 9,  h: 11, kind: 'cooler',  height: 1.95 },
+  { category: 'Meat',               x: 64, y: 63, w: 10, h: 12, kind: 'cooler',  height: 1.95 },
+  { category: 'Grains & Oils',      x: 84, y: 63, w: 8,  h: 11, kind: 'gondola', height: 1.78 },
+  { category: 'Soy Products',       x: 103,y: 63, w: 10, h: 12, kind: 'cooler',  height: 1.90 },
+  { category: 'Condiments',         x: 124,y: 63, w: 9,  h: 12, kind: 'gondola', height: 1.64 },
 ];
 
 export const shelves = zoneDefs.map((d, i) => {

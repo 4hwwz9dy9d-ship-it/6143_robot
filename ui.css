@@ -269,6 +269,31 @@ body.presentation .presentation-exit { display: inline-flex; }
 .gate { fill: #204e58; }
 .gate-label { text-anchor: middle; font: 800 9px Inter, sans-serif; fill: #d5f3ec; }
 
+/* ---- pedestrian control center ------------------------------------------- */
+.ped-control-panel { border-left: 3px solid var(--ctrl-nav); }
+.ped-state-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 10px; }
+.ped-state-badge { display: inline-flex; align-items: center; min-width: 0; padding: 5px 9px; border-radius: 7px; background: rgba(40,185,164,.14); border: 1px solid rgba(40,185,164,.45); color: #9ee8d9; font: 800 10px/1.2 Inter, sans-serif; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ped-state-badge.is-warn { background: rgba(232,163,74,.16); border-color: rgba(232,163,74,.55); color: #f1c98a; }
+.ped-state-badge.is-danger { background: rgba(217,108,104,.18); border-color: rgba(217,108,104,.6); color: #f0a8a5; }
+.ped-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.ped-metrics > div { padding: 7px 8px; border-radius: 7px; background: rgba(255,255,255,.035); border: 1px solid var(--ctrl-grid); min-width: 0; }
+.ped-metrics span { display: block; color: #7f96a4; font-size: 9px; letter-spacing: .02em; }
+.ped-metrics b { display: block; margin-top: 3px; color: #e6f4f1; font: 700 12px Inter, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ped-actions { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 6px; margin: 10px 0; }
+.ped-actions .btn { padding: 0 4px; font-size: 10px; min-height: 31px; }
+.ped-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ped-control-panel .field { margin-bottom: 8px; }
+.ped-control-panel select { width: 100%; min-height: 31px; padding: 0 6px; font-size: 10px; background: #101F2B; color: #dcece8; border: 1px solid var(--ctrl-grid); border-radius: 6px; }
+.ped-scenarios { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 5px; }
+.ped-scenarios button { min-height: 30px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--ctrl-grid); background: rgba(255,255,255,.04); color: #b8cfcc; font: 700 10px Inter, sans-serif; cursor: pointer; }
+.ped-scenarios button:hover { border-color: var(--ctrl-nav); }
+.ped-scenarios button.is-active { background: rgba(40,185,164,.18); border-color: var(--ctrl-nav); color: #eafff9; }
+.ped-counters { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 5px; margin-top: 10px; font-size: 10px; color: #9db6b3; }
+.ped-counters span { display: flex; justify-content: space-between; gap: 5px; padding: 4px 6px; border-radius: 5px; background: rgba(255,255,255,.03); }
+.ped-counters b { color: #e6f4f1; font-variant-numeric: tabular-nums; }
+.scene-inspect { position: absolute; right: 12px; top: 54px; max-width: 240px; padding: 9px 11px; border-radius: 8px; background: rgba(16,28,40,.9); border: 1px solid rgba(40,185,164,.5); color: #e8f6f2; font-size: 10px; line-height: 1.55; z-index: 4; pointer-events: none; }
+.scene-inspect b { display: block; color: #9ee8d9; font-size: 11px; margin-bottom: 2px; }
+
 /* ---- responsive ----------------------------------------------------------- */
 @media (max-width: 1400px) {
   .live-ops .ops-item { min-width: 70px; padding: 6px 9px; }

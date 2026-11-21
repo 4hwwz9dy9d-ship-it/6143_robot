@@ -228,8 +228,9 @@
               </svg>
               <div class="scene-overlay">
                 <div class="scene-overlay-top"><div><span class="scene-chip scene-chip--teal" id="mapSituation">通道畅通 · 等待订单</span></div><div><button id="cameraResetBtn" type="button">重置视角</button></div></div>
-                <div class="scene-overlay-bottom"><span class="scene-chip scene-hint">拖拽旋转 · 滚轮缩放 · 2D 地图显示图节点</span><span class="scene-chip" id="sceneFps">仿真模式</span></div>
-              </div>
+              <div class="scene-overlay-bottom"><span class="scene-chip scene-hint">拖拽旋转 · 滚轮缩放 · 点击机器人 / 行人 / 货架查看详情</span><span class="scene-chip" id="sceneFps">仿真模式</span></div>
+              <div class="scene-inspect" id="sceneInspect" hidden></div>
+            </div>
             </div>
             <div class="scene-toolbar"><div id="mapLegend" class="map-legend" aria-label="路径图例"></div><span class="scene-chip" id="sceneModeLabel">3D 视图</span></div>
             <div id="routeReason" class="route-reason">提交订单后，这里会显示 Held–Karp 访问顺序与 A* 各段代价。</div>
@@ -266,6 +267,38 @@
               <div class="control-stat"><span>已用时（仿真）</span><b id="navElapsed">0.0 秒</b></div>
               <div class="control-stat"><span>已完成站点</span><b id="navStops">0 / 0</b></div>
               <ol id="timeline" class="timeline-dark"></ol>
+            </div>
+            <div class="control-panel ped-control-panel">
+              <p class="section-kicker">PEDESTRIAN CONTROL CENTER</p>
+              <div class="ped-state-row">
+                <span class="ped-state-badge" id="pedBehaviorState">NORMAL · 正常行驶</span>
+                <span class="pill pill--info" id="pedSafetyStatus">安全</span>
+              </div>
+              <div class="ped-metrics">
+                <div><span>当前速度 / SPEED</span><b id="pedSpeed">0.00 m/s</b></div>
+                <div><span>行人距离 / DISTANCE</span><b id="pedDistance">—</b></div>
+                <div><span>预计碰撞时间 / TTC</span><b id="pedTtc">—</b></div>
+                <div><span>当前目的地 / DESTINATION</span><b id="pedDestination">—</b></div>
+              </div>
+              <div class="ped-actions">
+                <button id="pedStartBtn" class="btn btn-teal btn-sm" type="button">▶ 启动行人</button>
+                <button id="pedPauseBtn" class="btn btn-secondary btn-sm" type="button">Ⅱ 暂停</button>
+                <button id="pedResetBtn" class="btn btn-secondary btn-sm" type="button">↺ 重置</button>
+              </div>
+              <div class="ped-fields">
+                <label class="field"><span class="field-label">行人密度 / DENSITY</span><select id="pedDensitySelect"><option value="low">低密度 · Low</option><option value="medium">中密度 · Medium</option><option value="high">高密度 · High</option></select></label>
+                <label class="field"><span class="field-label">行走速度 / WALKING SPEED</span><select id="pedWalkSpeedSelect"><option value="0.7">慢速 · Slow</option><option value="1" selected>正常 · Normal</option><option value="1.35">快速 · Fast</option></select></label>
+              </div>
+              <label class="field"><span class="field-label">运动模式 / MOVEMENT MODE</span><select id="pedModeSelect"><option value="natural">自然行走 · Natural Walking</option><option value="shopping" selected>购物行为 · Shopping Behavior</option><option value="crossing">横穿通道 · Crossing Scenario</option><option value="crowded">通道拥堵 · Crowded Aisle</option></select></label>
+              <p class="field-label" style="margin-top:8px">预设场景 / PRESET SCENARIOS</p>
+              <div class="ped-scenarios">
+                <button type="button" data-ped-scenario="normal" class="is-active">1 正常购物</button>
+                <button type="button" data-ped-scenario="crossing">2 行人横穿</button>
+                <button type="button" data-ped-scenario="narrow">3 窄道会车</button>
+                <button type="button" data-ped-scenario="peak">4 高峰拥堵</button>
+              </div>
+              <div class="ped-counters" id="pedCounters"></div>
+              <p class="assumption">行人与避障为规则驱动的仿真，不代表真实视觉识别或安全认证。密度与渲染质量可独立调节；所有碰撞事件均如实计数。</p>
             </div>
             <div class="control-panel">
               <p class="section-kicker">SIMULATION EVENTS</p>

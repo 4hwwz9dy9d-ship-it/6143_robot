@@ -18,7 +18,9 @@ Teaching window: until 2026-12-31 23:59:59 Beijing time. After that the schedule
 | Order Management | Instacart English catalog search, cart, simulated payment, order queue, fulfillment table, Apriori recommendations |
 | Inventory | Simulated stock, low/out-of-stock alerts, employee restock confirmation |
 | Retail Analytics | Real Instacart statistics, order-hour chart, Apriori support/confidence/lift, K-means clusters, simulated crowd samples |
-| 3D Supermarket | Irregular 18-zone store, modular gondolas/coolers/produce islands/carts/checkouts, Premium AMR, three camera modes, 2D/3D switch |
+| 3D Supermarket | Irregular 18-zone store, modular gondolas/coolers/produce islands/carts/checkouts, Premium AMR, articulated pedestrians, three camera modes, 2D/3D switch |
+| Pedestrian Control Center | Five pedestrian types, autonomous shopping behaviour, density/speed/mode controls, four preset scenarios, live safety telemetry |
+| Human-Aware Navigation | Behaviour state machine, time-to-collision prediction, velocity-aware safety distance, predictive yielding, local avoidance and A* replan requests |
 | Robot Control | AMR status, battery/load, navigation log, destination, fault drills |
 | Route Optimization | Held–Karp visit order, A* segment costs, original/current comparison, cost benchmark |
 | Simulation Center | Pedestrian, cart, aisle closure, overload, congestion and navigation-failure events |
@@ -30,6 +32,7 @@ Teaching window: until 2026-12-31 23:59:59 Beijing time. After that the schedule
 - Vanilla JavaScript ES modules, no build step for the front end.
 - Vendored Three.js + OrbitControls in `vendor/` (no paid third-party service).
 - Procedural geometry and canvas textures — no external GLTF/GLB or image assets.
+- `pedestrian.js` owns pedestrian behaviour; `robotBehavior.js` owns local human-aware decisions. A* in `app.js` remains the global planner.
 - Static JSON in `public/data/` produced by `scripts/build_data.py`.
 - GitHub Pages deployment through `.github/workflows/expire-pages.yml`.
 
@@ -38,7 +41,9 @@ Teaching window: until 2026-12-31 23:59:59 Beijing time. After that the schedule
 - **REAL DATA** — product names, departments and purchase links from the five supplied cleaned Instacart CSV files. The original CSVs live in `data/raw/` and are not published to Pages.
 - **CALCULATED** — Apriori rules (real support / confidence / lift), K-means clusters, in-browser Held–Karp visit ordering and A* segment costs.
 - **SIMULATED** — shelf coordinates, stock, crowd counts, obstacles, robot position, battery, travel time and all event triggers.
-- **ASSUMPTIONS** — 1 USD = ¥7 teaching rate, ¥30 minimum order, 12 kg capacity, 20 units per shelf, fixed speed and braking distance.
+- **ASSUMPTIONS** — 1 USD = ¥7 teaching rate, ¥30 minimum order, 12 kg capacity, 20 units per shelf, fixed speed and braking distance. Human-aware parameters are simulation design values: robot 0.62 × 0.82 m, 0.78 m/s nominal speed, 2.0 m warning zone, 0.80 m buffer, 0.55 m/s² braking, aisle widths 2.4–2.6 m / 1.9 m. They are not a real safety certification.
+
+The nine supplied images are **2D design references** (turnaround sheets / architectural renders), not rigged GLB/GLTF files, so they cannot be imported directly into Three.js. Robot and pedestrian models are procedural, following the referenced proportions, palette and structure with hierarchical joints. Replacing them with real GLB assets later does not require changes to the navigation or behaviour layer.
 
 Held–Karp is exact for ≤12 unique zones. Above 12 zones the interface explicitly switches to a nearest-cost heuristic and states that global optimality is not guaranteed. A* searches the aisle graph defined by `STORE.aisleXs`, `crossYs` and `verticalYs` in `storeData.js`; the 3D scene and the 2D map read the same file, so coordinates stay in sync. Shelves, walls and closures are non-traversable.
 

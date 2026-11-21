@@ -2,14 +2,17 @@
 // REAL DATA: public/data JSON (Instacart). CALCULATED: Held-Karp, A*, Apriori, K-means.
 // SIMULATED: shelves, stock, crowd, obstacles, robot motion, battery and timings.
 import { createStoreScene } from './scene3d.js';
-import { STORE, shelves, layoutFixtures, products, timeSlots, crowdSamples, shelfCrowd, peopleForScenario } from './storeData.js';
+import { STORE, PHYSICS, buildNavNodes, shelves, layoutFixtures, products, timeSlots, crowdSamples, shelfCrowd, peopleForScenario } from './storeData.js';
+import { PedestrianSystem, PEDESTRIAN_TYPES, PEDESTRIAN_STATES } from './pedestrian.js';
+import { RobotBehavior, ROBOT_STATES, ROBOT_STATE_CN } from './robotBehavior.js';
 import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel } from './instacart.js';
 import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js';
 
 const $ = id => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const CAPACITY = 12, MIN_ORDER = 30;
-const MOTION_CN = { idle: '待机', moving: '行驶中', turning: '转向避障', avoiding: '避障中', picking: '取货中', blocked: '安全停车', charging: '充电中', error: '故障', IDLE: '待机', MOVING: '行驶中', AVOIDING: '避障中', PICKING: '取货中', 'SAFE STOP': '安全停车', CHARGING: '充电中', FAULT: '故障' };
+const BASE_SPEED = PHYSICS.robot.maxSpeed / PHYSICS.metersPerUnit; // 0.78 m/s → 4.59 地图单位/秒
+const MOTION_CN = { idle: '待机', moving: '行驶中', turning: '减速礼让', avoiding: '避障中', picking: '取货中', blocked: '安全停车', charging: '充电中', error: '故障', IDLE: '待机', MOVING: '行驶中', AVOIDING: '避障中', PICKING: '取货中', 'SAFE STOP': '安全停车', CHARGING: '充电中', FAULT: '故障' };
 const stateCn = value => MOTION_CN[value] || value;
 const key = p => p.join(',');
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
@@ -39,7 +42,11 @@ const state = {
   bought: [], position: [...STORE.entrance], history: [[...STORE.entrance]], logs: [], detected: new Set(),
   plan: null, normalPlan: null, battery: 100, traveled: 0, events: new Set(), dynamicObstacles: [],
   closedEdges: new Set(), view: 'overview', mode: '3d', uiTick: 0,
+  displayPosition: [...STORE.entrance], lateralOffset: 0, inertialVelocity: [0, 0], lastLogic: [...STORE.entrance],
+  pedMode: 'shopping', pedDensity: 'low', pedSpeed: 1, pedRunning: false,
+  behavior: null, pedSystem: null, robotBrain: null, safetyEvents: [], lastCollisionAt: -1,
 };
+const behaviorLabels = ROBOT_STATE_CN;
 
 /* ------------------------------------------------------------------ helpers */
 function svg(tag, attrs = {}, parent) {
@@ -75,6 +82,18 @@ function pickupProfile(product) {
   return { cold, assist, label: assist ? `员工协助取货${cold ? ' · 冷链' : ''}` : '自动取货（仿真）' };
 }
 function robotState() {
+  const behaviourState = state.behavior?.state;
+  if (behaviourState === 'EMERGENCY_STOP') return 'error';
+  if (behaviourState === 'YIELD' || behaviourState === 'WAIT' || behaviourState === 'REPLANNING') return 'blocked';
+  if (behaviourState === 'SLOW_DOWN' || behaviourState === 'AVOIDANCE') return 'turning';
+  if (behaviourState === 'RESUME' || behaviourState === 'NORMAL_NAVIGATION') {
+    if (state.fault || state.events.has('failure')) return 'error';
+    if (state.blocked || state.events.has('aisle')) return 'blocked';
+    if (state.shortage || state.assistPending || state.awaitingPickup || state.pauseLeft > 0) return 'picking';
+    if (state.running) return 'moving';
+    if (state.finished) return 'charging';
+    return 'idle';
+  }
   if (state.fault || state.events.has('failure')) return 'error';
   if (state.blocked || state.events.has('aisle')) return 'blocked';
   if (state.shortage || state.assistPending || state.awaitingPickup || state.pauseLeft > 0) return 'picking';
@@ -172,19 +191,7 @@ function restock(id) {
 
 /* ------------------------------------------------- navigation graph / A* */
 function edgeKey(a, b) { const ka = key(a), kb = key(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; }
-function graph() {
-  const nodes = new Map();
-  function edge(a, b) {
-    for (const p of [a, b]) if (!nodes.has(key(p))) nodes.set(key(p), { point: p, neighbors: [] });
-    nodes.get(key(a)).neighbors.push(key(b)); nodes.get(key(b)).neighbors.push(key(a));
-  }
-  const bottom = [STORE.entrance[0], ...STORE.aisleXs, STORE.checkout[0], STORE.exit[0]];
-  for (let i = 1; i < bottom.length; i++) edge([bottom[i - 1], 8], [bottom[i], 8]);
-  for (const y of STORE.crossYs.slice(1)) for (let i = 1; i < STORE.aisleXs.length; i++) edge([STORE.aisleXs[i - 1], y], [STORE.aisleXs[i], y]);
-  for (const x of STORE.aisleXs) for (let i = 1; i < STORE.verticalYs.length; i++) edge([x, STORE.verticalYs[i - 1]], [x, STORE.verticalYs[i]]);
-  return nodes;
-}
-const nodes = graph();
+const nodes = buildNavNodes();
 function edgeCost(a, b, scenario, slot, mode = 'full') {
   const length = dist(a, b), center = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const nearby = shelves.filter(s => dist(s.point, center) < 20).map(s => shelfCrowd(slot, s.id));
@@ -366,11 +373,15 @@ function drawCrowd() {
     svg('rect', { x: s.xMin * 10, y: (90 - s.yMax) * 10, width: (s.xMax - s.xMin) * 10, height: (s.yMax - s.yMin) * 10,
       fill: counts[i] >= 5 ? '#e2734b' : counts[i] >= 3 ? '#e8a34a' : '#71b887', opacity: counts[i] >= 5 ? .32 : .17, rx: 5 }, $('crowd'));
   });
-  for (const p of [...peopleForScenario(state.scenario, state.slot), ...state.dynamicObstacles]) {
-    svg('circle', { cx: p.point[0] * 10, cy: (90 - p.point[1]) * 10, r: 12, class: 'crowd-halo' }, $('crowd'));
-    svg('circle', { cx: p.point[0] * 10, cy: (90 - p.point[1]) * 10, r: 6, class: 'crowd-person' }, $('crowd'));
+  const crowd = state.pedSystem ? state.pedSystem.snapshot() : [];
+  const shown = crowd.length ? crowd : [...peopleForScenario(state.scenario, state.slot), ...state.dynamicObstacles];
+  for (const p of shown) {
+    const point = p.point || [p.x, p.y];
+    svg('circle', { cx: point[0] * 10, cy: (90 - point[1]) * 10, r: 12, class: 'crowd-halo' }, $('crowd'));
+    svg('circle', { cx: point[0] * 10, cy: (90 - point[1]) * 10, r: 6, class: 'crowd-person' }, $('crowd'));
   }
   scene3d?.setScenario(state.scenario, state.slot);
+  scene3d?.setPedestrians(crowd);
 }
 function drawRoutes() {
   clear($('comparisonRoute')); clear($('plannedRoute'));
@@ -393,9 +404,11 @@ function drawHistory() {
 }
 function drawRobot() {
   clear($('robotLayer'));
-  const [x, y] = state.position;
-  svg('circle', { cx: x * 10, cy: (90 - y) * 10, r: 21, class: 'robot-body' }, $('robotLayer'));
-  scene3d?.setRobot(state.position, robotState());
+  const [x, y] = state.displayPosition;
+  svg('circle', { cx: x * 10, cy: (90 - y) * 10, r: (PHYSICS.robot.radius / PHYSICS.metersPerUnit) * 10, class: 'robot-body' }, $('robotLayer'));
+  scene3d?.setRobot(state.displayPosition, robotState(), state.traveled / PHYSICS.metersPerUnit);
+  const behaviour = state.behavior;
+  scene3d?.setSafety(behaviour || {});
 }
 
 /* --------------------------------------------------------- view rendering */
@@ -598,6 +611,32 @@ function renderSimulationView() {
   document.querySelectorAll('[data-sim-card]').forEach(card => card.classList.toggle('is-active',
     card.dataset.simCard === 'aisle' ? state.closedEdges.size > 0 : state.events.has(card.dataset.simCard)));
 }
+function renderPedestrianPanel() {
+  const brain = state.robotBrain, ped = state.pedSystem;
+  if (!brain || !ped) return;
+  const result = state.behavior || { state: 'NORMAL_NAVIGATION', speedFactor: 1, ttc: Infinity, distance: Infinity, safetyStatus: '安全', targetSpeed: 0 };
+  const badge = $('pedBehaviorState');
+  if (badge) {
+    badge.textContent = `${result.state} · ${behaviorLabels[result.state] || ''}`;
+    badge.classList.toggle('is-warn', ['SLOW_DOWN', 'YIELD', 'WAIT', 'AVOIDANCE', 'REPLANNING'].includes(result.state));
+    badge.classList.toggle('is-danger', result.state === 'EMERGENCY_STOP');
+  }
+  setText('pedSafetyStatus', result.safetyStatus || '安全');
+  setText('pedSpeed', `${(result.targetSpeed || 0).toFixed(2)} m/s`);
+  setText('pedDistance', Number.isFinite(result.distance) ? `${result.distance.toFixed(2)} m` : '—');
+  setText('pedTtc', Number.isFinite(result.ttc) ? `${result.ttc.toFixed(2)} s` : '—');
+  setText('pedDestination', nextName());
+  const m = brain.metrics, pm = ped.metrics;
+  const counters = $('pedCounters');
+  if (counters) counters.innerHTML = [
+    ['行人数量', ped.people.length], ['活动路线', new Set(ped.people.map(p => p.state)).size],
+    ['Yield 次数', m.yields], ['Replan 次数', m.replannings],
+    ['Near Miss', m.nearMisses], ['Collision', m.collisions + state.safetyEvents.filter(e => e.type === 'collision').length],
+    ['平均等待', `${m.waitSeconds.toFixed(1)} s`], ['人工介入', m.humanInterventions],
+  ].map(([label, value]) => `<span>${label}<b>${typeof value === 'number' ? value : escapeHtml(String(value))}</b></span>`).join('');
+  const stateNode = $('pedBehaviorState');
+  if (stateNode) stateNode.title = result.reason || '';
+}
 function renderPresentationHud() {
   setText('hudTask', state.running ? `前往${nextName()}` : state.order ? '已暂停 / 就绪' : '等待订单');
   setText('hudOrder', state.order ? `${state.order.id} · ${state.stage}/${state.plan?.stops.length ?? 0} 个货区` : '—');
@@ -607,7 +646,7 @@ function renderPresentationHud() {
 function renderAll() {
   renderLiveOps(); renderQueue(); renderOrderState(); renderInventory(); renderProgress();
   renderTimeline(); renderRobotCenter(); renderRouteView(); renderSimulationView(); renderPresentationHud();
-  renderOverviewPreview();
+  renderOverviewPreview(); renderPedestrianPanel();
   $('normalBtn')?.setAttribute('aria-pressed', String(state.scenario === 'normal'));
   $('peakBtn')?.setAttribute('aria-pressed', String(state.scenario === 'peak'));
   $('scenarioNormal').setAttribute('aria-pressed', String(state.scenario === 'normal'));
@@ -625,7 +664,10 @@ function resetPlayback(preserveSafety = false) {
   state.assistedShelves = new Set(); state.blocked = false; state.fault = preserveSafety ? fault : '';
   state.stage = 0; state.legDistance = 0; state.pauseLeft = 0; state.slowLeft = 0;
   state.elapsed = 0; state.lastFrame = 0; state.bought = []; state.position = [...STORE.entrance];
+  state.displayPosition = [...STORE.entrance]; state.lateralOffset = 0; state.inertialVelocity = [0, 0]; state.lastLogic = [...STORE.entrance];
   state.history = [[...STORE.entrance]]; state.detected = new Set(); state.traveled = 0;
+  state.behavior = null; state.lastCollisionAt = -1;
+  state.robotBrain?.reset();
   state.dynamicObstacles = preserveSafety ? dynamic : [];
   state.plan = state.order ? buildPlan(state.order.lines, state.scenario, state.slot) : null;
   state.normalPlan = state.order ? buildPlan(state.order.lines, 'normal', state.slot) : null;
@@ -805,8 +847,17 @@ function handleSimEvent(type) {
     state.dynamicObstacles = state.dynamicObstacles.filter(o => o.type !== (type === 'pedestrian' ? 'person' : 'cart'));
     state.dynamicObstacles.push({ id: `EVT-${type}`, type: type === 'pedestrian' ? 'person' : 'cart', zone: '仿真事件', point });
     state.events.add(type); state.slowLeft = type === 'cart' ? 2.4 : 1.8;
-    log(`${type === 'pedestrian' ? '行人横穿' : '购物车阻挡'}仿真：障碍物位于 (${point.map(n => n.toFixed(1)).join(', ')})；机器人减速并检查路径。`, 'warn');
-    status(type === 'pedestrian' ? '检测到行人' : '购物车阻挡通道', '规则安全层：减速，必要时重新规划。', 'AVOIDING');
+    const legNow = state.plan?.legs[state.stage];
+    const direction = legNow ? legDirection(legNow, state.legDistance) : [1, 0];
+    if (state.pedSystem) {
+      const spawned = type === 'pedestrian'
+        ? state.pedSystem.injectCrossing(state.displayPosition, direction, { type: 'regular' })
+        : state.pedSystem.injectCrossing(state.displayPosition, direction, { type: 'cart', ahead: 12 });
+      spawned.simulatedEvent = true;
+    }
+    log(`${type === 'pedestrian' ? '行人横穿' : '购物车阻挡'}仿真：自主行人 ${state.pedSystem?.people.at(-1)?.id || '—'} 已进入机器人前方，安全层正在预测碰撞时间。`, 'warn');
+    status(type === 'pedestrian' ? '检测到行人' : '购物车阻挡通道', '预测性避障层：减速、礼让或重新规划。', 'AVOIDING');
+    publishPedestrians();
     if (state.plan && state.running) replanCurrentLeg('障碍物事件');
     drawCrowd(); renderAll(); return;
   }
@@ -840,40 +891,110 @@ function handleSimEvent(type) {
 }
 
 /* -------------------------------------------------------------- animation */
-function animate(now) {
-  if (!state.running) return;
-  if (!state.lastFrame) state.lastFrame = now;
-  const delta = Math.min((now - state.lastFrame) / 1000, .08);
-  state.lastFrame = now; state.elapsed += delta;
+function legDirection(leg, at) {
+  let left = at;
+  for (let i = 0; i < leg.lengths.length; i++) {
+    if (left <= leg.lengths[i] || i === leg.lengths.length - 1) {
+      const a = leg.points[i], b = leg.points[i + 1];
+      const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.hypot(dx, dy) || 1;
+      return [dx / d, dy / d];
+    }
+    left -= leg.lengths[i];
+  }
+  return [1, 0];
+}
+function publishPedestrians() {
+  const list = state.pedSystem?.snapshot() || [];
+  scene3d?.setPedestrians(list);
+  return list;
+}
+function recordProximity(point, snapshot) {
+  const radius = PHYSICS.robot.radius;
+  for (const p of snapshot) {
+    const d = dist(point, [p.x, p.y]) * PHYSICS.metersPerUnit;
+    const overlap = radius + (p.radius ?? .26);
+    if (d < overlap && state.elapsed - state.lastCollisionAt > 1.2) {
+      state.lastCollisionAt = state.elapsed;
+      state.safetyEvents.push({ t: state.elapsed, type: 'collision', with: p.id, distance: d });
+      if (state.safetyEvents.length > 60) state.safetyEvents.shift();
+      log(`安全记录：与 ${p.id}（${p.cn || '行人'}）出现 ${d.toFixed(2)} m 距离侵入，已计入碰撞统计。`, 'danger');
+      return true;
+    }
+  }
+  return false;
+}
+/** 单个仿真步：行人自主运动 → 预测碰撞 → 行为状态 → 真实速度 → 路径推进。 */
+function stepSimulation(dt) {
+  if (!state.running) return false;
+  const step = Math.min(dt, .08);
+  state.elapsed += step;
   if (state.fault || state.events.has('failure')) {
-    state.running = false; status('故障安全停车', faultAdvice[state.fault || 'localization'], 'FAULT'); renderAll(); return;
+    state.running = false; status('故障安全停车', faultAdvice[state.fault || 'localization'], 'FAULT'); renderAll(); return false;
   }
-  if (state.blocked) { status('安全停车', '所有通道已封闭，机器人保持当前位置。', 'SAFE STOP'); requestAnimationFrame(animate); return; }
-  if (state.pauseLeft > 0) { state.pauseLeft = Math.max(0, state.pauseLeft - delta); requestAnimationFrame(animate); return; }
-  const leg = state.plan?.legs[state.stage]; if (!leg) return;
-  const sensed = getObstacleSnapshot(state.scenario, state.slot);
-  const person = sensed.find(p => p.type === 'person' && !state.detected.has(p.id) && dist(state.position, p.point) < 5.5);
-  if (person) {
-    state.detected.add(person.id); state.slowLeft = 1;
-    log(`规则层：${person.zone} 附近有行人，减速并保持安全距离。`);
-    status('行人 · 减速', '低速通过通道，当前路径仍可行。', 'AVOIDING');
+  if (state.blocked) { status('安全停车', '所有通道已封闭，机器人保持当前位置。', 'SAFE STOP'); return true; }
+  if (state.pauseLeft > 0) { state.pauseLeft = Math.max(0, state.pauseLeft - step); return true; }
+  const leg = state.plan?.legs[state.stage]; if (!leg) return false;
+
+  const previousLogic = [...state.position];
+  const direction = legDirection(leg, state.legDistance);
+  state.inertialVelocity = [(previousLogic[0] - state.lastLogic[0]) / step, (previousLogic[1] - state.lastLogic[1]) / step];
+  state.lastLogic = [...previousLogic];
+
+  // 1) 行人先运动；机器人按最新的行人速度/方向做预测。
+  state.pedSystem.update(step, { position: state.displayPosition, velocity: state.inertialVelocity });
+  const snapshot = publishPedestrians();
+  const obstacles = state.dynamicObstacles.map(o => ({ ...o, radius: o.type === 'cart' ? .38 : .3 }));
+
+  // 2) 行为状态机输出真实速度系数（A* 仍负责全局路径）。
+  const result = state.robotBrain.evaluate({
+    position: state.displayPosition, velocity: state.inertialVelocity,
+    direction, pedestrians: snapshot, obstacles, dt: step,
+  });
+  state.behavior = result;
+  if (result.needsReplan) {
+    state.robotBrain.acknowledgeReplan();
+    if (replanCurrentLeg('行人/障碍物导致通道受阻')) log('局部避障层已请求 A* 重新规划当前路段。', 'warn');
   }
-  const cart = sensed.find(o => o.type === 'cart' && !state.detected.has('cart') && dist(state.position, o.point) < 5.5);
-  if (cart) { state.detected.add('cart'); state.slowLeft = 1; log('规则层：检测到购物车，已减速并向一侧避让。'); }
-  const slow = state.slowLeft > 0; state.slowLeft = Math.max(0, state.slowLeft - delta);
-  const step = delta * (state.scenario === 'peak' ? 22 : 26) * (slow ? .45 : 1);
-  const previous = state.position;
-  state.legDistance = Math.min(leg.length, state.legDistance + step);
+  if (result.state === 'YIELD' || result.state === 'WAIT' || result.state === 'EMERGENCY_STOP') {
+    status(behaviorLabels[result.state], result.reason, result.state === 'EMERGENCY_STOP' ? 'FAULT' : 'SAFE STOP');
+  } else if (['SLOW_DOWN', 'AVOIDANCE', 'RESUME'].includes(result.state)) {
+    status(behaviorLabels[result.state], result.reason, 'AVOIDING');
+  }
+
+  // 3) 位移真正由行为状态决定；侧向避让仅在有净空时生效。
+  const stepLength = step * BASE_SPEED * result.speedFactor;
+  state.legDistance = Math.min(leg.length, state.legDistance + stepLength);
   state.position = positionOnLeg(leg, state.legDistance);
-  const travelled = dist(previous, state.position);
+  const targetShift = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state) ? 0 : result.lateralShift;
+  state.lateralOffset += (targetShift - state.lateralOffset) * Math.min(1, step * 3.2);
+  const perpendicular = [-direction[1], direction[0]];
+  state.displayPosition = [
+    state.position[0] + perpendicular[0] * state.lateralOffset,
+    state.position[1] + perpendicular[1] * state.lateralOffset,
+  ];
+
+  const travelled = dist(previousLogic, state.position);
   state.traveled += travelled; state.battery = Math.max(0, state.battery - travelled * .09);
   if (state.battery < 15 && !state.events.has('lowBattery')) {
     state.events.add('lowBattery'); log('仿真电量低于 15%，操作员应安排充电。', 'warn');
   }
-  if (dist(state.history.at(-1), state.position) > .15) state.history.push([...state.position]);
-  drawHistory(); drawRobot(); renderProgress();
-  if (state.legDistance >= leg.length - .001) { state.legDistance = 0; arrive(); }
-  if (++state.uiTick % 12 === 0) { renderLiveOps(); renderRobotCenter(); renderPresentationHud(); }
+  recordProximity(state.displayPosition, publishPedestrians());
+  if (dist(state.history.at(-1), state.displayPosition) > .15) state.history.push([...state.displayPosition]);
+  if (++state.uiTick % 6 === 0) drawHistory();
+  drawRobot(); renderProgress();
+  if (state.uiTick % 12 === 0) { renderLiveOps(); renderRobotCenter(); renderPresentationHud(); renderPedestrianPanel(); }
+  if (state.legDistance >= leg.length - .001) {
+    state.legDistance = 0; state.lateralOffset = 0; state.displayPosition = [...state.position];
+    arrive();
+  }
+  return true;
+}
+function animate(now) {
+  if (!state.running) return;
+  if (!state.lastFrame) state.lastFrame = now;
+  const delta = Math.min((now - state.lastFrame) / 1000, .08);
+  state.lastFrame = now;
+  stepSimulation(delta);
   if (state.running) requestAnimationFrame(animate);
 }
 function playPause() {
@@ -1025,6 +1146,13 @@ function bindEvents() {
     if (event.target.closest('[data-cancel-active]')) cancelActive();
   });
   document.querySelectorAll('[data-event]').forEach(button => button.addEventListener('click', () => handleSimEvent(button.dataset.event)));
+  $('pedStartBtn')?.addEventListener('click', () => { state.pedSystem.start(); state.pedRunning = true; log('行人仿真已启动。'); renderPedestrianPanel(); });
+  $('pedPauseBtn')?.addEventListener('click', () => { state.pedSystem.pause(); state.pedRunning = false; log('行人仿真已暂停，行人保持当前位置。'); renderPedestrianPanel(); });
+  $('pedResetBtn')?.addEventListener('click', () => applyPedPreset('normal'));
+  $('pedDensitySelect')?.addEventListener('change', event => { state.pedDensity = event.target.value; state.pedSystem.setDensity(state.pedDensity); renderPedestrianPanel(); });
+  $('pedWalkSpeedSelect')?.addEventListener('change', event => { state.pedSpeed = Number(event.target.value); state.pedSystem.setSpeedFactor(state.pedSpeed); renderPedestrianPanel(); });
+  $('pedModeSelect')?.addEventListener('change', event => { state.pedMode = event.target.value; state.pedSystem.setMode(state.pedMode); renderPedestrianPanel(); });
+  document.querySelectorAll('[data-ped-scenario]').forEach(button => button.addEventListener('click', () => applyPedPreset(button.dataset.pedScenario)));
   window.addEventListener('nexus:viewchange', event => {
     state.view = event.detail.name;
     scene3d.setActive(state.view === 'supermarket' && state.mode === '3d');
@@ -1039,14 +1167,86 @@ function bindEvents() {
   });
   window.addEventListener('nexus:presentation', event => scene3d.setPresentation(event.detail.active));
 }
+function applyPedPreset(name) {
+  if (!state.pedSystem) return;
+  const leg = state.plan?.legs[state.stage];
+  const direction = leg ? legDirection(leg, state.legDistance) : [1, 0];
+  state.pedSystem.applyPreset(name, state.displayPosition, direction);
+  state.pedRunning = true;
+  state.pedMode = state.pedSystem.mode;
+  state.pedDensity = state.pedSystem.density;
+  const selects = [['pedDensitySelect', state.pedDensity], ['pedModeSelect', state.pedMode]];
+  for (const [id, value] of selects) { const node = $(id); if (node) node.value = value; }
+  document.querySelectorAll('[data-ped-scenario]').forEach(b => b.classList.toggle('is-active', b.dataset.pedScenario === name));
+  publishPedestrians();
+  log(`行人预设场景已切换为${({ normal: '正常购物', crossing: '行人横穿', narrow: '窄道会车', peak: '高峰拥堵' })[name] || name}（规则驱动仿真）。`);
+  renderPedestrianPanel();
+}
 function setCamera(mode) {
   scene3d.setCameraMode(mode);
   ['cameraIso', 'cameraFollow', 'cameraClose'].forEach((id, i) =>
     $(id).setAttribute('aria-pressed', String(['iso', 'follow', 'close'][i] === mode)));
 }
 
+/* 自动化回归测试钩子：所有数值直接来自运行中的仿真状态，不另造指标。 */
+window.__NEXUS = Object.freeze({
+  state,
+  applyPedPreset,
+  setPedDensity: value => state.pedSystem?.setDensity(value),
+  setPedMode: value => state.pedSystem?.setMode(value),
+  injectCrossing: (direction, options) => state.pedSystem?.injectCrossing(state.displayPosition, direction || [1, 0], options),
+  injectHeadOn: (direction, options) => state.pedSystem?.injectHeadOn(state.displayPosition, direction || [1, 0], options),
+  step: dt => stepSimulation(dt),
+  advance(seconds, hz = 60) {
+    const steps = Math.min(6000, Math.ceil(seconds * hz));
+    for (let i = 0; i < steps && state.running; i++) stepSimulation(1 / hz);
+    return this.metrics();
+  },
+  forceAdvance(seconds, hz = 60) {
+    const wasRunning = state.running; state.running = true;
+    const result = this.advance(seconds, hz);
+    if (!wasRunning) state.running = false;
+    return result;
+  },
+  metrics() {
+    const brain = state.robotBrain, ped = state.pedSystem;
+    return {
+      stage: state.stage, elapsed: state.elapsed, order: state.order?.id || null,
+      position: [...state.position], displayPosition: [...state.displayPosition],
+      behavior: state.behavior?.state || null, speedFactor: state.behavior?.speedFactor ?? 1,
+      ttc: state.behavior?.ttc ?? Infinity, nearestDistance: state.behavior?.distance ?? Infinity,
+      pedestrianCount: ped?.people.length || 0,
+      pedestrianStates: ped?.people.map(p => p.state) || [],
+      collisions: (brain?.metrics.collisions || 0) + state.safetyEvents.filter(e => e.type === 'collision').length,
+      nearMisses: brain?.metrics.nearMisses || 0, yields: brain?.metrics.yields || 0,
+      replannings: brain?.metrics.replannings || 0, waitSeconds: brain?.metrics.waitSeconds || 0,
+      humanInterventions: brain?.metrics.humanInterventions || 0,
+      minDistance: brain?.metrics.minDistance ?? Infinity,
+      safetyEvents: [...state.safetyEvents],
+      transitions: brain?.transitions.slice(-30) || [],
+      fps: scene3d.getFps?.() || 0,
+    };
+  },
+  reset() { resetPlayback(); },
+});
+
 /* --------------------------------------------------------------------- init */
 scene3d = createStoreScene($('scene3d'), $('storeMap'));
+state.robotBrain = new RobotBehavior();
+state.pedSystem = new PedestrianSystem({ nodes });
+scene3d.setPickHandler(info => {
+  const node = $('sceneInspect'); if (!node) return;
+  if (info.kind === 'robot') node.innerHTML = `<b>AMR-01 · 自主移动机器人</b>状态：${state.behavior ? behaviorLabels[state.behavior.state] : '待机'}<br>速度：${(state.behavior?.targetSpeed || 0).toFixed(2)} m/s<br>车身：${PHYSICS.robot.width} × ${PHYSICS.robot.length} m（仿真）`;
+  else if (info.kind === 'pedestrian') {
+    const p = state.pedSystem?.snapshot().find(x => x.id === info.id);
+    node.innerHTML = `<b>${p ? p.typeName : 'Pedestrian'}</b>${info.id} · ${info.state || 'WALKING'}<br>类型：${p ? p.cn : '仿真行人'}<br>速度：${p ? p.speed.toFixed(2) : '0.00'} m/s`;
+  } else if (info.kind === 'shelf') node.innerHTML = `<b>货区 ${info.id} · ${zoneLabel(info.category)}</b>分类键：${info.category}<br>商品映射与导航坐标来自 storeData.js`;
+  node.hidden = false;
+  clearTimeout(scene3d._inspectTimer);
+  scene3d._inspectTimer = setTimeout(() => { node.hidden = true; }, 4200);
+});
+state.pedSystem.applyPreset('normal');
+publishPedestrians();
 scene3d.setScenario(state.scenario, state.slot);
 drawBaseMap(); drawFixtures(); populateFilters(); renderCatalogue(); renderCart();
 renderInventory(); renderRecommendations(); renderCrowd(); resetPlayback(); bindEvents();
