@@ -1,26 +1,29 @@
-// 未来传感器接入点。当前默认返回明确标注的教学模拟障碍物，不包含真实分类模型。
+// NEXUS RETAIL — sensor adapter.
+// Default: rule-driven SIMULATED obstacles. No trained classifier is connected.
+// External providers can be registered with window.INT6143_SENSOR.registerProvider(fn).
 import { peopleForScenario } from './storeData.js';
 
 let provider = null;
 export function registerSensorProvider(nextProvider) {
-  if (nextProvider !== null && typeof nextProvider !== 'function') throw new TypeError('传感器提供者必须是同步函数或 null');
+  if (nextProvider !== null && typeof nextProvider !== 'function') throw new TypeError('Sensor provider must be a synchronous function or null');
   provider = nextProvider;
 }
-
 export function getObstacleSnapshot(scenario, slot) {
-  const simulated = peopleForScenario(scenario, slot).map(person => ({...person, type:'person'}));
-  simulated.push({id:'cart', type:'cart', zone:'购物车', point:scenario==='peak'?[74,36.5]:[106,81]});
+  const simulated = peopleForScenario(scenario, slot).map(person => ({ ...person, type: 'person' }));
+  simulated.push({ id: 'cart', type: 'cart', zone: 'Cart park / aisle', point: scenario === 'peak' ? [69, 34] : [116, 81] });
   if (!provider) return simulated;
   try {
-    const values = provider({scenario, slot});
+    const values = provider({ scenario, slot });
     if (!Array.isArray(values)) return simulated;
-    return values.filter(item => item && ['person','cart'].includes(item.type)
-      && Array.isArray(item.point) && item.point.length===2
+    return values.filter(item => item && ['person', 'cart'].includes(item.type)
+      && Array.isArray(item.point) && item.point.length === 2
       && item.point.every(value => Number.isFinite(value)))
-      .map((item, i) => ({id:String(item.id ?? `external-${i}`), type:item.type,
-        zone:String(item.zone ?? '未标注区域'), point:[...item.point]}));
+      .map((item, i) => ({
+        id: String(item.id ?? `external-${i}`), type: item.type,
+        zone: String(item.zone ?? 'Unlabelled zone'), point: [...item.point],
+      }));
   } catch (error) {
-    console.warn('传感器接口不可用，回退教学模拟障碍物。', error);
+    console.warn('External sensor unavailable; falling back to simulated obstacles.', error);
     return simulated;
   }
 }

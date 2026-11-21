@@ -1,54 +1,150 @@
-// 货架、客流与库存压力测试商品为教学演示假设；真实商品目录来自 public/data。
-export const STORE = { width:140, height:90, entrance:[5,8], checkout:[130,8], exit:[138,8], aisleXs:[20,40,60,80,100,120], crossYs:[8,34,56,82], verticalYs:[8,22,34,45,56,67,82] };
-// 参考用户提供的布局图：三排中央岛架依次是食品杂货、饮品包装食品、日化用品。
-const shelfNames = [["个人护理", "日用品", "清洁用品", "母婴用品", "文具", "宠物用品"], ["饮料", "乳制品", "烘焙", "零食", "速食", "冷冻食品"], ["生鲜", "海鲜", "肉类", "粮油", "豆制品", "调味品"]];
-export const shelves = shelfNames.flatMap((row,r)=>row.map((category,c)=>({id:`${r+1}-${c+1}`,category,xMin:24+c*20,xMax:36+c*20,yMin:18+r*22,yMax:28+r*22,row:r,column:c,point:[20+c*20,[22,45,67][r]]})));
-// 外围展示架与促销区仅用于空间展示，不作为订单取货点，通道与岛架坐标保持一致。
-export const layoutFixtures = [
- {label:'冷冻展示',x:3,y:28,w:5,h:14,kind:'wall'}, {label:'零食展示',x:3,y:49,w:5,h:13,kind:'wall'},
- {label:'家居用品展示',x:3,y:70,w:5,h:13,kind:'wall'}, {label:'乳品饮料展示',x:22,y:86,w:32,h:5,kind:'wall'},
- {label:'包装食品展示',x:65,y:86,w:32,h:5,kind:'wall'}, {label:'调味展示',x:107,y:86,w:27,h:5,kind:'wall'},
- {label:'日化展示',x:136,y:36,w:5,h:16,kind:'wall'}, {label:'粮油展示',x:136,y:64,w:5,h:17,kind:'wall'},
- {label:'促销区',x:69,y:78,w:34,h:6,kind:'promo'}, {label:'冲动购买区',x:9,y:15,w:13,h:9,kind:'impulse'}
-];
-const productRows = [
-["苹果","生鲜","水果","1-1",8,1.4],["香蕉","生鲜","水果","1-1",7,1.0],["橙子","生鲜","水果","1-1",9,1.2],["番茄","生鲜","蔬菜","1-1",6,.7],["西兰花","生鲜","蔬菜","1-1",8,.6],["胡萝卜","生鲜","蔬菜","1-1",5,.8],
-["薯片","零食","膨化食品","1-2",10,.18],["饼干","零食","饼干","1-2",12,.3],["巧克力","零食","糖巧","1-2",16,.15],
-["冷冻水饺","冷冻食品","冷冻主食","1-3",24,.8],["冰淇淋","冷冻食品","冷冻甜品","1-3",12,.25],
-["酱油","调味品","酱料","1-4",13,.5],["食盐","调味品","基础调味","1-4",3,.5],
-["洗发水","个人护理","洗护","1-5",28,.5],["牙膏","个人护理","口腔护理","1-5",15,.2],
-["洗衣液","日用品","清洁日化","1-6",30,1.2],["浓缩洗衣液","日用品","清洁日化","1-6",34,1.0],["纸巾","日用品","纸品","1-6",18,.5],
-["矿泉水","饮料","饮用水","2-1",4,.55],["果汁","饮料","果汁","2-1",12,1.0],["饮料箱","饮料","整箱饮料","2-1",48,6],
-["纯牛奶","乳制品","常温乳品","2-2",14,1.6],["低脂牛奶","乳制品","常温乳品","2-2",16,1.5],["酸奶","乳制品","冷藏乳品","2-2",11,.5],["奶酪","乳制品","奶酪","2-2",19,.2],
-["吐司","烘焙","面包","2-3",14,.4],["蛋糕","烘焙","糕点","2-3",20,.5],
-["鸡胸肉","生鲜","肉类","2-4",22,.8],["猪肉","生鲜","肉类","2-4",28,1.0],
-["婴儿湿巾","母婴用品","护理","2-5",19,.35],["婴儿米粉","母婴用品","辅食","2-5",25,.3],
-["笔记本","文具","纸本","2-6",8,.25],["签字笔","文具","书写","2-6",5,.05],
-["鲜虾","生鲜","海鲜","3-1",36,.7],["三文鱼","生鲜","海鲜","3-1",45,.5],
-["方便面","速食","面食","3-2",6,.12],["即食饭","速食","米饭","3-2",13,.3],
-["豆腐","豆制品","鲜豆制品","3-3",5,.4],["豆浆","豆制品","饮品","3-3",7,.5],
-["大米","粮油","谷物","3-4",32,2.3],["糙米","粮油","谷物","3-4",35,2.0],["食用油","粮油","油脂","3-4",42,1.8],
-["猫粮","宠物用品","主粮","3-5",34,1.2],["狗零食","宠物用品","零食","3-5",18,.3],
-["清洁喷雾","清洁用品","家居清洁","3-6",20,.6],["垃圾袋","清洁用品","耗材","3-6",12,.2]
-];
-export const products=productRows.map(([name,category,subcategory,_oldShelfId,price,weight],i)=>{
- const zone=subcategory==='海鲜'||subcategory==='肉类'?subcategory:category;
- const shelf=shelves.find(s=>s.category===zone);
- return {id:`G${String(i+1).padStart(2,'0')}`,name,category,subcategory,shelfId:shelf.id,price,weight,capacity:20,stock:name==='食盐'?1:name==='冰淇淋'?0:20,point:[...shelf.point]};
-});
-export const timeSlots=[{id:'09',label:'工作日 09:00'},{id:'13',label:'工作日 13:00'},{id:'18',label:'工作日 18:00'},{id:'20',label:'工作日 20:00'}];
-// 每组 18 个数依次对应货架 1-1 至 3-6，表示该时段货架附近的演示人数。
-export const crowdSamples={
- '09':[2,1,1,1,1,1,2,2,1,1,1,1,1,1,1,2,1,1],
- '13':[3,2,1,2,1,1,3,3,2,2,1,1,2,2,1,3,1,1],
- '18':[4,3,2,2,2,2,4,6,5,4,2,1,3,4,3,6,2,2],
- '20':[2,2,1,1,1,1,2,3,2,2,1,1,2,2,1,3,1,1]
+// NEXUS RETAIL — store geometry, product simulation and crowd samples.
+// IMPORTANT: shelf pick points are graph nodes. The navigation graph in app.js
+// and the 3D scene in scene3d.js both read this file, so coordinates stay in sync.
+// Real product names/categories come from public/data (Instacart). Everything
+// declared here (shelf position, stock, crowd, robot capacity) is a SIMULATION
+// ASSUMPTION and is labelled as such in the interface.
+
+export const STORE = {
+  width: 140, height: 90,
+  entrance: [5, 8], checkout: [130, 8], exit: [138, 8],
+  aisleXs: [20, 40, 60, 80, 100, 120],
+  crossYs: [8, 34, 56, 82],
+  verticalYs: [8, 22, 34, 45, 56, 67, 82],
 };
-export function shelfCrowd(slot,shelfId){return crowdSamples[slot]?.[shelves.findIndex(s=>s.id===shelfId)]??0;}
-export function peopleForScenario(scenario,slot='09'){
- const result=shelves.map((s,i)=>({id:`P${i+1}`,zone:s.category,point:[s.point[0]+1.7+(slot==='20'?.7:slot==='13'?-.6:0),s.point[1]+(i%2?3:-3)+(slot==='18'?.7:0)]}));
- if(scenario==='peak') result.push({id:'H1',zone:'乳制品附近',point:[43,51]},{id:'H2',zone:'中部通道',point:[53,34]},{id:'H3',zone:'中部通道',point:[69,34]},{id:'H4',zone:'粮油附近',point:[82,72]});
- if(slot==='13') result.push({id:'T13',zone:'饮料附近',point:[22,30]});
- if(slot==='18') result.push({id:'T18',zone:'乳制品附近',point:[43,52]},{id:'T18b',zone:'粮油附近',point:[82,76]});
- return result;
+
+// 18 deliberately irregular zones. Width, height and placement vary per zone;
+// every zone stays inside its aisle cell so A* edges never cross a fixture.
+// kind drives the 3D module: gondola | cooler | produce | bulk | promo.
+const zoneDefs = [
+  // Row 1 — personal care / household (y corridor 8..34)
+  { category: 'Personal Care',      x: 24, y: 15, w: 12, h: 11, kind: 'gondola', height: 1.62 },
+  { category: 'Household Essentials',x: 44, y: 13, w: 9,  h: 14, kind: 'gondola', height: 1.86 },
+  { category: 'Cleaning Supplies',  x: 62, y: 18, w: 13, h: 9,  kind: 'gondola', height: 1.45 },
+  { category: 'Baby Care',          x: 84, y: 14, w: 10, h: 12, kind: 'gondola', height: 1.72 },
+  { category: 'Stationery',         x: 104,y: 16, w: 12, h: 10, kind: 'bulk',    height: 1.38 },
+  { category: 'Pet Supplies',       x: 126,y: 13, w: 8,  h: 14, kind: 'gondola', height: 1.70 },
+  // Row 2 — food & drink (y corridor 34..56)
+  { category: 'Beverages',          x: 24, y: 39, w: 11, h: 10, kind: 'cooler',  height: 2.05 },
+  { category: 'Dairy & Eggs',       x: 43, y: 41, w: 13, h: 9,  kind: 'cooler',  height: 2.05 },
+  { category: 'Bakery',             x: 64, y: 38, w: 9,  h: 13, kind: 'bulk',    height: 1.35 },
+  { category: 'Snacks',             x: 82, y: 39, w: 12, h: 11, kind: 'gondola', height: 1.55 },
+  { category: 'Ready Meals',        x: 103,y: 38, w: 10, h: 12, kind: 'gondola', height: 1.68 },
+  { category: 'Frozen Food',        x: 124,y: 42, w: 9,  h: 9,  kind: 'cooler',  height: 2.10 },
+  // Row 3 — fresh & staples (y corridor 56..82)
+  { category: 'Fresh Produce',      x: 23, y: 60, w: 13, h: 11, kind: 'produce', height: 1.12 },
+  { category: 'Seafood',            x: 45, y: 59, w: 10, h: 14, kind: 'cooler',  height: 1.95 },
+  { category: 'Meat',               x: 63, y: 62, w: 12, h: 10, kind: 'cooler',  height: 1.95 },
+  { category: 'Grains & Oils',      x: 84, y: 60, w: 9,  h: 12, kind: 'gondola', height: 1.78 },
+  { category: 'Soy Products',       x: 102,y: 61, w: 13, h: 11, kind: 'cooler',  height: 1.90 },
+  { category: 'Condiments',         x: 124,y: 60, w: 10, h: 13, kind: 'gondola', height: 1.64 },
+];
+
+export const shelves = zoneDefs.map((d, i) => {
+  const row = Math.floor(i / 6), column = i % 6;
+  return {
+    id: `${row + 1}-${column + 1}`, category: d.category, kind: d.kind,
+    xMin: d.x, xMax: d.x + d.w, yMin: d.y, yMax: d.y + d.h,
+    shelfHeight: d.height, row, column,
+    point: [STORE.aisleXs[column], [22, 45, 67][row]],
+  };
+});
+
+// Non-pickable architectural fixtures. They are drawn in 3D and in the 2D map.
+export const layoutFixtures = [
+  { label: 'Dairy Wall',      x: 3,   y: 26, w: 5,  h: 16, kind: 'wall' },
+  { label: 'Snack Wall',      x: 3,   y: 50, w: 5,  h: 14, kind: 'wall' },
+  { label: 'Home Wall',       x: 3,   y: 72, w: 5,  h: 14, kind: 'wall' },
+  { label: 'Back Cooler A',   x: 24,  y: 87, w: 28, h: 4,  kind: 'wall' },
+  { label: 'Back Cooler B',   x: 62,  y: 87, w: 28, h: 4,  kind: 'wall' },
+  { label: 'Back Cooler C',   x: 104, y: 87, w: 26, h: 4,  kind: 'wall' },
+  { label: 'Chilled Wall',    x: 137, y: 44, w: 4,  h: 12, kind: 'wall' },
+  { label: 'Grocery Wall',    x: 137, y: 70, w: 4,  h: 12, kind: 'wall' },
+  { label: 'Promo Island A',  x: 11,  y: 18, w: 8,  h: 8,  kind: 'promo' },
+  { label: 'Promo Island B',  x: 11,  y: 66, w: 8,  h: 8,  kind: 'promo' },
+  { label: 'Promo Island C',  x: 129, y: 35, w: 7,  h: 7,  kind: 'promo' },
+  { label: 'Checkout 01',     x: 123, y: 4,  w: 5,  h: 3,  kind: 'checkout' },
+  { label: 'Checkout 02',     x: 130, y: 4,  w: 5,  h: 3,  kind: 'checkout' },
+  { label: 'Checkout 03',     x: 137, y: 4,  w: 5,  h: 3,  kind: 'checkout' },
+  { label: 'Cart Park',       x: 14,  y: 3,  w: 10, h: 3,  kind: 'cart' },
+  { label: 'Entrance',        x: 5,   y: 8,  w: 7,  h: 4,  kind: 'entrance' },
+  { label: 'Exit',            x: 138, y: 8,  w: 7,  h: 4,  kind: 'exit' },
+];
+
+// Teaching catalog: English names, mapped to real zones. Price/weight/stock
+// are SIMULATED values; the Instacart catalog supplies the real product names.
+const productRows = [
+  ['Apple', 'Fresh Produce', 'Fruit', 8, 1.4], ['Banana', 'Fresh Produce', 'Fruit', 7, 1.0],
+  ['Orange', 'Fresh Produce', 'Fruit', 9, 1.2], ['Tomato', 'Fresh Produce', 'Vegetable', 6, .7],
+  ['Broccoli', 'Fresh Produce', 'Vegetable', 8, .6], ['Carrot', 'Fresh Produce', 'Vegetable', 5, .8],
+  ['Potato Chips', 'Snacks', 'Chips', 10, .18], ['Biscuits', 'Snacks', 'Bakery Snack', 12, .3],
+  ['Chocolate', 'Snacks', 'Confectionery', 16, .15],
+  ['Frozen Dumplings', 'Frozen Food', 'Frozen Meal', 24, .8], ['Ice Cream', 'Frozen Food', 'Frozen Dessert', 12, .25],
+  ['Soy Sauce', 'Condiments', 'Sauce', 13, .5], ['Salt', 'Condiments', 'Basic', 3, .5],
+  ['Shampoo', 'Personal Care', 'Hair Care', 28, .5], ['Toothpaste', 'Personal Care', 'Oral Care', 15, .2],
+  ['Laundry Detergent', 'Household Essentials', 'Laundry', 30, 1.2],
+  ['Concentrated Detergent', 'Household Essentials', 'Laundry', 34, 1.0],
+  ['Paper Towels', 'Household Essentials', 'Paper', 18, .5],
+  ['Mineral Water', 'Beverages', 'Water', 4, .55], ['Fruit Juice', 'Beverages', 'Juice', 12, 1.0],
+  ['Beverage Pack', 'Beverages', 'Case Pack', 48, 6],
+  ['Whole Milk', 'Dairy & Eggs', 'Milk', 14, 1.6], ['Low-fat Milk', 'Dairy & Eggs', 'Milk', 16, 1.5],
+  ['Yogurt', 'Dairy & Eggs', 'Chilled Dairy', 11, .5], ['Cheese', 'Dairy & Eggs', 'Cheese', 19, .2],
+  ['Toast', 'Bakery', 'Bread', 14, .4], ['Cake', 'Bakery', 'Pastry', 20, .5],
+  ['Chicken Breast', 'Meat', 'Poultry', 22, .8], ['Pork', 'Meat', 'Pork', 28, 1.0],
+  ['Baby Wipes', 'Baby Care', 'Care', 19, .35], ['Baby Cereal', 'Baby Care', 'Food', 25, .3],
+  ['Notebook', 'Stationery', 'Paper', 8, .25], ['Ballpoint Pen', 'Stationery', 'Writing', 5, .05],
+  ['Shrimp', 'Seafood', 'Seafood', 36, .7], ['Salmon', 'Seafood', 'Seafood', 45, .5],
+  ['Instant Noodles', 'Ready Meals', 'Noodles', 6, .12], ['Ready Rice', 'Ready Meals', 'Rice', 13, .3],
+  ['Tofu', 'Soy Products', 'Fresh Soy', 5, .4], ['Soy Milk', 'Soy Products', 'Drink', 7, .5],
+  ['Rice', 'Grains & Oils', 'Grain', 32, 2.3], ['Brown Rice', 'Grains & Oils', 'Grain', 35, 2.0],
+  ['Cooking Oil', 'Grains & Oils', 'Oil', 42, 1.8],
+  ['Cat Food', 'Pet Supplies', 'Pet Food', 34, 1.2], ['Dog Treats', 'Pet Supplies', 'Snack', 18, .3],
+  ['Cleaning Spray', 'Cleaning Supplies', 'Spray', 20, .6], ['Trash Bags', 'Cleaning Supplies', 'Consumable', 12, .2],
+];
+
+export const products = productRows.map(([name, category, subcategory, price, weight], i) => {
+  const shelf = shelves.find(s => s.category === category);
+  return {
+    id: `G${String(i + 1).padStart(2, '0')}`, name, category, subcategory,
+    shelfId: shelf.id, point: [...shelf.point], price, weight,
+    capacity: 20, stock: name === 'Salt' ? 1 : name === 'Ice Cream' ? 0 : 20,
+    source: 'Simulation catalog',
+  };
+});
+
+export const timeSlots = [
+  { id: '09', label: 'Weekday 09:00' }, { id: '13', label: 'Weekday 13:00' },
+  { id: '18', label: 'Weekday 18:00' }, { id: '20', label: 'Weekday 20:00' },
+];
+
+// Index order matches shelves[]. Simulated people counts near each zone.
+export const crowdSamples = {
+  '09': [2,1,1,1,1,1,2,2,1,1,1,1,1,1,1,2,1,1],
+  '13': [3,2,1,2,1,1,3,3,2,2,1,1,2,2,1,3,1,1],
+  '18': [4,3,2,2,2,2,4,6,5,4,2,1,3,4,3,6,2,2],
+  '20': [2,2,1,1,1,1,2,3,2,2,1,1,2,2,1,3,1,1],
+};
+
+export function shelfCrowd(slot, shelfId) {
+  return crowdSamples[slot]?.[shelves.findIndex(s => s.id === shelfId)] ?? 0;
+}
+
+export function peopleForScenario(scenario, slot = '09') {
+  const result = shelves.map((s, i) => ({
+    id: `P${i + 1}`, zone: s.category,
+    point: [s.point[0] + 1.7 + (slot === '20' ? .7 : slot === '13' ? -.6 : 0),
+            s.point[1] + (i % 2 ? 3 : -3) + (slot === '18' ? .7 : 0)],
+  }));
+  if (scenario === 'peak') result.push(
+    { id: 'H1', zone: 'Beverages aisle', point: [43, 51] },
+    { id: 'H2', zone: 'Central corridor', point: [53, 34] },
+    { id: 'H3', zone: 'Central corridor', point: [69, 34] },
+    { id: 'H4', zone: 'Grains & Oils aisle', point: [82, 72] },
+  );
+  if (slot === '13') result.push({ id: 'T13', zone: 'Beverages aisle', point: [22, 30] });
+  if (slot === '18') result.push(
+    { id: 'T18', zone: 'Dairy aisle', point: [43, 52] },
+    { id: 'T18b', zone: 'Grains & Oils aisle', point: [82, 76] },
+  );
+  return result;
 }
