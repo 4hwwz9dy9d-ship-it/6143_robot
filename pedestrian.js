@@ -1,18 +1,25 @@
-// NEXUS RETAIL — pedestrian simulation system.
-// SIMULATION: every person, route, speed and state here is rule-driven and is
-// labelled as such in the interface. No real vision / tracking data is used.
-// Coordinates are the shared map units from storeData.js (1 unit = 0.17 m).
-import { STORE, shelves, PHYSICS, buildNavNodes, nodeKey } from './storeData.js';
+// NEXUS RETAIL — 行人自主仿真系统 (SIMULATION，规则驱动，非真实视觉识别)。
+// 坐标来自 storeData.js 共享地图单位 (1 unit = 0.17 m)。
+// 本版修复：渐进分批入场 / 多生成点 / 安全间距 / 货架墙碰撞 /
+// 收银台独立队列位与容量上限 / 机器人通道与顾客排队区分离。
+import { STORE, PHYSICS, shelves, buildNavNodes, nodeKey } from './storeData.js';
 
 const M = PHYSICS.metersPerUnit;
 const TAU = Math.PI * 2;
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerpAngle = (a, b, t) => {
+  const d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI;
+  return a + d * t;
+};
 
+// 参考图 6 套真实服装角色（店员绿马甲 / 米色衬衫 / 绿毛衣 / 藏青风衣 / 酒红开衫 / 灰夹克）
 export const PEDESTRIAN_TYPES = Object.freeze({
-  regular:  { key: 'regular',  name: 'Regular Shopper',  cn: '普通顾客',   speed: .95, height: 1.70, radius: .24, browse: [2, 5],  cart: false },
-  slow:     { key: 'slow',     name: 'Slow Walker',      cn: '慢速顾客',   speed: .62, height: 1.62, radius: .25, browse: [4, 8],  cart: false },
-  cart:     { key: 'cart',     name: 'Cart Shopper',     cn: '推车顾客',   speed: .78, height: 1.68, radius: .38, browse: [2, 4],  cart: true  },
-  browsing: { key: 'browsing', name: 'Browsing Shopper', cn: '浏览顾客',   speed: .72, height: 1.74, radius: .24, browse: [6, 12], cart: false },
-  fast:     { key: 'fast',     name: 'Fast Walker',      cn: '快速顾客',   speed: 1.35, height: 1.78, radius: .23, browse: [.5, 1.5], cart: false },
+  regular:  { key: 'regular',  name: 'Regular Shopper',  cn: '普通顾客',   speed: .95, height: 1.72, radius: .24, browse: [2, 5],  cart: false, look: 1 },
+  slow:     { key: 'slow',     name: 'Slow Walker',      cn: '慢速顾客',   speed: .62, height: 1.64, radius: .25, browse: [4, 8],  cart: false, look: 4 },
+  cart:     { key: 'cart',     name: 'Cart Shopper',     cn: '推车顾客',   speed: .78, height: 1.70, radius: .38, browse: [2, 4],  cart: true,  look: 5 },
+  browsing: { key: 'browsing', name: 'Browsing Shopper', cn: '浏览顾客',   speed: .72, height: 1.68, radius: .24, browse: [6, 12], cart: false, look: 2 },
+  fast:     { key: 'fast',     name: 'Fast Walker',      cn: '快速顾客',   speed: 1.35, height: 1.80, radius: .23, browse: [.5, 1.5], cart: false, look: 3 },
 });
 
 export const PEDESTRIAN_STATES = Object.freeze([
@@ -20,24 +27,11 @@ export const PEDESTRIAN_STATES = Object.freeze([
   'TURNING', 'QUEUEING', 'GOING_TO_CHECKOUT', 'EXITING',
 ]);
 
-const keys = Object.keys(PEDESTRIAN_TYPES);
-// 行人排队/离店点位于主通道外侧，避免与机器人出口路段争用同一节点。
-const PED_CHECKOUT = [112, 14];
-const PED_EXIT = [118, 14];
-const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const lerpAngle = (a, b, t) => {
-  let d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI;
-  return a + d * t;
-};
-
-/** 固定种子的伪随机数：同一场景可重复执行，便于回归测试。 */
 function makeRandom(seed = 6143) {
   let s = seed >>> 0;
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
 }
 
-/** 在共享通道图上求最短路（Dijkstra，节点数很小）。 */
 function routeBetween(nodes, from, to) {
   const a = [...nodes.values()].reduce((best, n) => dist(n.point, from) < dist(best.point, from) ? n : best);
   const b = [...nodes.values()].reduce((best, n) => dist(n.point, to) < dist(best.point, to) ? n : best);
@@ -57,10 +51,8 @@ function routeBetween(nodes, from, to) {
   const chain = [nodes.get(finish).point];
   let cursor = finish;
   while (prev.has(cursor)) { cursor = prev.get(cursor); chain.unshift(nodes.get(cursor).point); }
-  // 用实际起终点替换最近的图节点，行人不会瞬移到节点上。
   if (dist(from, chain[0]) > .01) chain.unshift(from);
   if (dist(chain.at(-1), to) > .01) chain.push(to);
-  // 最近的图节点可能在行人背后（例如入口节点），去掉这个无意义的回头点。
   if (chain.length > 3 && dist(chain[1], to) > dist(chain[2], to)) chain.splice(1, 1);
   return chain;
 }
@@ -75,24 +67,27 @@ export class PedestrianSystem {
     this.mode = options.mode ?? 'shopping';
     this.speedFactor = options.speedFactor ?? 1;
     this.running = false;
-    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0 };
-    this.densityTarget = { low: 6, medium: 12, high: 20 }[this.density] ?? 6;
+    this.spawnCooldown = 0;
+    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0 };
+    this.densityTarget = { low: 7, medium: 14, high: 22 }[this.density] ?? 7;
+    this.lanes = STORE.checkoutLanes.map(l => ({ ...l, occupied: new Map(), served: 0 }));
   }
 
-  get targetCount() { return this.mode === 'crowded' ? Math.max(16, this.densityTarget) : this.densityTarget; }
+  get targetCount() { return this.mode === 'crowded' ? Math.max(18, this.densityTarget) : this.densityTarget; }
 
   configure({ density, mode, speedFactor, running } = {}) {
-    if (density) { this.density = density; this.densityTarget = { low: 6, medium: 12, high: 20 }[density] ?? 6; }
+    if (density) { this.density = density; this.densityTarget = { low: 7, medium: 14, high: 22 }[density] ?? 7; }
     if (mode) this.mode = mode;
     if (typeof speedFactor === 'number') this.speedFactor = clamp(speedFactor, .5, 1.6);
     if (typeof running === 'boolean') this.running = running;
-    if (this.running && this.people.length < this.targetCount) this.fill();
     return this;
   }
 
   reset() {
     this.people = []; this.nextId = 1; this.random = makeRandom(6143);
-    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0 };
+    this.spawnCooldown = 0;
+    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0 };
+    this.lanes = STORE.checkoutLanes.map(l => ({ ...l, occupied: new Map(), served: 0 }));
     if (this.running) this.fill();
   }
 
@@ -102,10 +97,9 @@ export class PedestrianSystem {
   start() { return this.configure({ running: true }); }
   pause() { return this.configure({ running: false }); }
 
-  /** 选择某种人物类型；购物车顾客在拥堵场景中更常见。 */
   pickType() {
     const r = this.random();
-    if (this.mode === 'crowded') return r < .3 ? 'cart' : r < .5 ? 'slow' : r < .75 ? 'regular' : 'fast';
+    if (this.mode === 'crowded') return r < .28 ? 'cart' : r < .5 ? 'slow' : r < .75 ? 'regular' : 'fast';
     if (this.mode === 'crossing') return r < .45 ? 'cart' : r < .8 ? 'regular' : 'fast';
     if (this.mode === 'natural') return r < .18 ? 'cart' : r < .38 ? 'fast' : r < .58 ? 'slow' : r < .78 ? 'browsing' : 'regular';
     return r < .16 ? 'cart' : r < .36 ? 'browsing' : r < .56 ? 'slow' : r < .74 ? 'fast' : 'regular';
@@ -114,28 +108,63 @@ export class PedestrianSystem {
   pickSection() {
     const s = shelves[Math.floor(this.random() * shelves.length)];
     const side = this.random() < .5 ? -1 : 1;
-    return [s.point[0] + side * (1.2 + this.random() * 1.1), s.point[1] + (this.random() - .5) * 2.4];
+    return {
+      point: [s.point[0] + side * (1.4 + this.random() * .8), s.point[1] + (this.random() - .5) * 2.4],
+      shelfId: s.id,
+    };
   }
 
-  makePerson(override = {}) {
-    const typeKey = override.type || this.pickType();
+  /** 在货架内或墙内则拒绝生成；与已有行人/机器人保持安全间距。 */
+  isFree(point, radiusM, robotPoint = null) {
+    if (point[0] < 4 || point[0] > STORE.width - 4 || point[1] < 4 || point[1] > STORE.height - 4) return false;
+    const r = radiusM / M;
+    for (const s of shelves) if (point[0] > s.xMin - r && point[0] < s.xMax + r && point[1] > s.yMin - r && point[1] < s.yMax + r) return false;
+    for (const p of this.people) if (dist(point, p.position) < (radiusM + p.radius) / M + .5) return false;
+    if (robotPoint && dist(point, robotPoint) < 3.2 / M) return false;
+    return true;
+  }
+
+  /** 多生成点 + 安全间距；找不到空位则本次跳过，等待下一帧。 */
+  spawnOne(robotPoint = null, forced = {}) {
+    const typeKey = forced.type || this.pickType();
     const type = PEDESTRIAN_TYPES[typeKey];
-    const jitter = () => (this.random() - .5) * 2;
-    const position = override.position ? [...override.position] : [12 + this.random() * 2.4, STORE.entrance[1] + jitter() * .35];
+    let position = null;
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const base = STORE.spawnPoints[Math.floor(this.random() * STORE.spawnPoints.length)];
+      const candidate = [base[0] + (this.random() - .5) * 2.4, base[1] + (this.random() - .5) * 3.2];
+      if (this.isFree(candidate, type.radius, robotPoint)) { position = candidate; break; }
+    }
+    if (!position) return null;
     const person = {
       id: `PED-${String(this.nextId++).padStart(2, '0')}`,
       type: typeKey, typeName: type.name, cn: type.cn,
-      position, velocity: [0, 0], heading: Math.PI / 2,
+      position, velocity: [0, 0],
+      heading: (this.random() - .5) * .5 + Math.PI / 2, // 不同朝向进入
       speed: type.speed * this.speedFactor,
       radius: type.radius, height: type.height, cart: type.cart,
-      style: Math.floor(this.random() * 5),
+      look: type.look, style: Math.floor(this.random() * 6),
       state: 'ENTER_STORE', timer: 0, phase: this.random() * TAU,
       route: [], routeIndex: 0, goal: null, sections: 0,
-      yieldToRobot: 0, blocked: 0, crossing: !!override.crossing,
-      color: [0xc47a58, 0xd7a16c, 0x936b61, 0x5e7f99, 0x9e8a6b][Math.floor(this.random() * 5)],
+      yieldToRobot: 0, blocked: 0, crossing: !!forced.crossing,
+      lane: null, queueSlot: -1,
+      color: [0x2f6b4f, 0xc2a878, 0x3f5a42, 0x243b52, 0x7d3341, 0x4a4f55][type.look % 6],
+      skin: [0xf0c9a8, 0xe0ae87, 0xc98d68, 0x8d5c42, 0xf5d7b8][Math.floor(this.random() * 5)],
     };
     this.metrics.spawned++;
     return person;
+  }
+
+  fill(robotPoint = null, immediate = false) {
+    // immediate 用于测试预设；正常运行时由 update() 渐进分批入场。
+    let guard = 0;
+    while (this.people.length < this.targetCount && guard++ < (immediate ? 40 : 1)) {
+      const person = this.spawnOne(robotPoint);
+      if (!person) break;
+      const section = this.pickSection();
+      person.section = section;
+      this.sendTo(person, section.point, 'ENTER_STORE');
+      this.people.push(person);
+    }
   }
 
   sendTo(person, goal, state = 'WALK_TO_SECTION') {
@@ -145,41 +174,31 @@ export class PedestrianSystem {
     person.state = state;
   }
 
-  /** 入口补人，维持目标密度；行人从入口进入而不是凭空出现。 */
-  fill() {
-    let guard = 0;
-    while (this.people.length < this.targetCount && guard++ < 40) {
-      const person = this.makePerson();
-      // 入口处错开，避免出生即重叠；机器人停在入口，行人从右侧进店。
-      person.position[0] += (this.people.length % 4) * 1.6;
-      this.sendTo(person, this.pickSection(), 'ENTER_STORE');
-      this.people.push(person);
-    }
-  }
-
-  /** 横穿演示：在机器人前方生成一个横向穿过其路径的行人。 */
   injectCrossing(robotPoint, robotDirection = [1, 0], options = {}) {
     const dir = normalize(robotDirection);
     const side = [-dir[1], dir[0]];
-    const ahead = options.ahead ?? 13;               // 地图单位，约 2.2 m
-    const lateral = options.lateral ?? 8;            // 约 1.36 m
+    const ahead = options.ahead ?? 13;
+    const lateral = options.lateral ?? 8;
     const center = [robotPoint[0] + dir[0] * ahead, robotPoint[1] + dir[1] * ahead];
-    const from = [clamp(center[0] - side[0] * lateral, 6, 134), clamp(center[1] - side[1] * lateral, 7, 84)];
-    const to = [clamp(center[0] + side[0] * lateral * 1.35, 6, 134), clamp(center[1] + side[1] * lateral * 1.35, 7, 84)];
-    const person = this.makePerson({ type: options.type || 'cart', position: from, crossing: true });
+    const from = [clamp(center[0] - side[0] * lateral, 6, STORE.width - 6), clamp(center[1] - side[1] * lateral, 6, STORE.height - 6)];
+    const to = [clamp(center[0] + side[0] * lateral * 1.35, 6, STORE.width - 6), clamp(center[1] + side[1] * lateral * 1.35, 6, STORE.height - 6)];
+    const person = this.spawnOne(robotPoint, { type: options.type || 'cart', crossing: true });
+    if (!person) return null;
+    person.position = [...from];
     person.route = [from, center, to]; person.routeIndex = 1;
     person.goal = [...to]; person.state = 'WALKING';
     this.people.push(person);
     return person;
   }
 
-  /** 窄道迎面演示：在机器人正前方生成一个朝机器人走来的行人。 */
   injectHeadOn(robotPoint, robotDirection = [1, 0], options = {}) {
     const dir = normalize(robotDirection);
     const ahead = options.ahead ?? 16;
-    const from = [clamp(robotPoint[0] + dir[0] * ahead, 6, 134), clamp(robotPoint[1] + dir[1] * ahead, 7, 84)];
-    const person = this.makePerson({ type: options.type || 'regular', position: from, crossing: true });
-    const to = [clamp(from[0] - dir[0] * 18, 6, 134), clamp(from[1] - dir[1] * 18, 7, 84)];
+    const from = [clamp(robotPoint[0] + dir[0] * ahead, 6, STORE.width - 6), clamp(robotPoint[1] + dir[1] * ahead, 6, STORE.height - 6)];
+    const person = this.spawnOne(robotPoint, { type: options.type || 'regular', crossing: true });
+    if (!person) return null;
+    person.position = [...from];
+    const to = [clamp(from[0] - dir[0] * 18, 6, STORE.width - 6), clamp(from[1] - dir[1] * 18, 6, STORE.height - 6)];
     person.route = [from, to]; person.routeIndex = 1; person.goal = [...to]; person.state = 'WALKING';
     this.people.push(person);
     return person;
@@ -190,39 +209,68 @@ export class PedestrianSystem {
     switch (name) {
       case 'crossing':
         this.configure({ density: 'low', mode: 'crossing', running: true });
-        this.fill(); this.injectCrossing(robotPoint, robotDirection); break;
+        this.fill(robotPoint, true); this.injectCrossing(robotPoint, robotDirection); break;
       case 'narrow':
         this.configure({ density: 'low', mode: 'shopping', running: true });
         this.injectHeadOn(robotPoint, robotDirection); break;
       case 'peak':
         this.configure({ density: 'high', mode: 'crowded', running: true });
-        this.fill();
+        this.fill(robotPoint, true);
         this.injectCrossing(robotPoint, robotDirection, { ahead: 18, type: 'cart' });
         this.injectHeadOn(robotPoint, robotDirection, { ahead: 24, type: 'regular' });
         break;
       case 'normal':
       default:
         this.configure({ density: 'low', mode: 'shopping', running: true });
-        this.fill(); break;
+        this.fill(robotPoint, true); break;
     }
     return this.snapshot();
   }
 
-  /** 每个仿真帧调用。robot = { position:[x,y], velocity:[vx,vy] }（地图单位）。 */
+  /** 收银台队列：按当前占用数选择最短队列，容量满则继续购物或等待。 */
+  assignCheckout(person) {
+    const available = this.lanes
+      .map(l => ({ lane: l, size: l.occupied.size }))
+      .filter(x => x.size < x.lane.capacity)
+      .sort((a, b) => a.size - b.size);
+    if (!available.length) {
+      // 队列全满：先浏览等待，不涌向收银台。
+      person.state = 'BROWSING';
+      person.timer = 2.5 + this.random() * 3;
+      this.metrics.queueWaits++;
+      return false;
+    }
+    const { lane } = available[0];
+    let slotIndex = 0;
+    while (slotIndex < lane.capacity && lane.occupied.has(slotIndex)) slotIndex++;
+    lane.occupied.set(slotIndex, person.id);
+    person.lane = lane.id; person.queueSlot = slotIndex;
+    person.sections = 99;
+    this.sendTo(person, lane.slots[slotIndex], 'GOING_TO_CHECKOUT');
+    this.metrics.maxQueue = Math.max(this.metrics.maxQueue, this.lanes.reduce((n, l) => n + l.occupied.size, 0));
+    return true;
+  }
+
+  releaseLane(person) {
+    if (!person.lane) return;
+    const lane = this.lanes.find(l => l.id === person.lane);
+    if (lane) { lane.occupied.delete(person.queueSlot); lane.served++; }
+    person.lane = null; person.queueSlot = -1;
+  }
+
   update(dt, robot = null) {
     if (!this.running || dt <= 0) return;
     const step = Math.min(dt, .08);
-    const target = this.targetCount;
-    while (this.people.length < target) {
-      const person = this.makePerson();
-      person.position[0] += (this.people.length % 4) * 1.6;
-      this.sendTo(person, this.pickSection(), 'ENTER_STORE');
-      this.people.push(person);
+    // 渐进入场：每 1.1 秒最多补 1 人，全部从生成点进入。
+    this.spawnCooldown = Math.max(0, this.spawnCooldown - step);
+    if (this.people.length < this.targetCount && this.spawnCooldown <= 0) {
+      if (this.fill(robot?.position)) this.spawnCooldown = .55 + this.random() * .8;
     }
     for (let i = this.people.length - 1; i >= 0; i--) {
       const person = this.people[i];
       this.advance(person, step, robot);
-      if (dist(person.position, person.goal || PED_EXIT) < 2.5 && person.state === 'EXITING') {
+      if (person.state === 'EXITING' && dist(person.position, person.goal || STORE.exitLane) < 2.6) {
+        this.releaseLane(person);
         this.people.splice(i, 1); this.metrics.exits++;
       }
     }
@@ -230,34 +278,45 @@ export class PedestrianSystem {
 
   advance(person, dt, robot) {
     const type = PEDESTRIAN_TYPES[person.type];
-    const maxSpeed = type.speed * this.speedFactor / M; // m/s → 地图单位/s
+    const maxSpeed = type.speed * this.speedFactor / M;
     let desired = [0, 0];
 
-    if (person.state === 'BROWSING' || person.state === 'QUEUEING' || person.state === 'STOPPING') {
+    if (['BROWSING', 'STOPPING'].includes(person.state)) {
       person.timer -= dt;
-      // 浏览时轻微侧身，脚部保持接地（动画层用 phase 控制）
       person.phase += dt * .6;
       if (person.timer <= 0) {
-        if (person.state === 'QUEUEING') { person.sections = 99; this.sendTo(person, PED_EXIT, 'GOING_TO_CHECKOUT'); }
-        else if (person.sections >= (this.mode === 'shopping' ? 3 : 2)) this.sendTo(person, PED_CHECKOUT, 'GOING_TO_CHECKOUT');
-        else { person.sections++; this.sendTo(person, this.pickSection(), 'WALK_TO_SECTION'); }
+        if (person.sections >= (this.mode === 'shopping' ? 3 : 2)) this.assignCheckout(person);
+        else { person.sections++; const s = this.pickSection(); person.section = s; this.sendTo(person, s.point, 'WALK_TO_SECTION'); }
       }
       person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
       this.move(person, dt);
       return;
     }
 
-    // 跟随图路径。到达当前节点后转向下一个节点。
+    if (person.state === 'QUEUEING') {
+      person.timer -= dt;
+      person.phase += dt * .5;
+      if (person.timer <= 0) {
+        const lane = this.lanes.find(l => l.id === person.lane) || STORE.checkoutLanes[0];
+        // 结账完成 → 独立离开通道（y=6 前场外侧），不返回机器人主通道。
+        this.releaseLane(person);
+        this.sendTo(person, [clamp(lane.x + 9, 6, STORE.width - 6), 4], 'EXITING');
+      }
+      person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
+      this.move(person, dt);
+      return;
+    }
+
     let target = person.route[person.routeIndex];
     while (target && dist(person.position, target) < 1.2) {
       person.routeIndex++;
       if (person.routeIndex >= person.route.length) {
         if (person.state === 'GOING_TO_CHECKOUT') {
-          person.state = 'QUEUEING'; person.timer = 1.5 + this.random() * 2.5;
+          person.state = 'QUEUEING'; person.timer = 2 + this.random() * 3;
         } else if (person.state === 'ENTER_STORE' || person.state === 'WALK_TO_SECTION') {
           person.state = 'BROWSING';
           person.timer = type.browse[0] + this.random() * (type.browse[1] - type.browse[0]);
-        } else { person.state = 'EXITING'; this.sendTo(person, PED_EXIT, 'EXITING'); }
+        } else { this.sendTo(person, STORE.exitLane, 'EXITING'); }
         target = null; break;
       }
       target = person.route[person.routeIndex];
@@ -267,7 +326,7 @@ export class PedestrianSystem {
       desired = [(target[0] - person.position[0]) / d * maxSpeed, (target[1] - person.position[1]) / d * maxSpeed];
     }
 
-    // 行人互斥：相互接近时施加横向分离力（对称减速，保证不穿透）。
+    // 行人互斥
     for (const other of this.people) {
       if (other === person) continue;
       const dx = person.position[0] - other.position[0], dy = person.position[1] - other.position[1];
@@ -276,18 +335,16 @@ export class PedestrianSystem {
       if (d < minD && d > .0001) {
         const push = (minD - d) / minD * maxSpeed * 1.35;
         desired[0] += dx / d * push; desired[1] += dy / d * push;
-        if (d < minD * .65) person.blocked += dt; else person.blocked = Math.max(0, person.blocked - dt);
       }
     }
 
-    // 对机器人反应：进入 1.6 m 内减速并向侧向让行；极近时完全停下。
+    // 对机器人反应：保留侧向让行分量，避免双向死锁。
     if (robot?.position) {
       const dx = person.position[0] - robot.position[0], dy = person.position[1] - robot.position[1];
       const d = Math.hypot(dx, dy), dM = d * M;
       if (dM < 2.8 && d > .0001) {
         const side = [-dy / d, dx / d];
         const gain = clamp((2.8 - dM) / 2.8, 0, 1);
-        // 朝机器人前进的分量优先移除；迎面接近时只保留侧向绕行。
         const toward = -(desired[0] * dx + desired[1] * dy) / d;
         if (toward > 0 && dM < 2.2) {
           const sideDot = desired[0] * side[0] + desired[1] * side[1];
@@ -302,7 +359,6 @@ export class PedestrianSystem {
         if (person.yieldToRobot <= 0) this.metrics.pedestrianYields++;
         person.yieldToRobot = .8;
         if (dM < 1.0) {
-          // 只保留侧向分量：绝不因机器人而完全静止，避免双向死锁。
           const sideDot = desired[0] * side[0] + desired[1] * side[1];
           desired[0] = side[0] * sideDot; desired[1] = side[1] * sideDot;
           this.metrics.blocks++;
@@ -311,7 +367,6 @@ export class PedestrianSystem {
     }
     person.yieldToRobot = Math.max(0, person.yieldToRobot - dt);
 
-    // 速度限制 + 转向平滑；phase 与真实位移绑定，避免"原地踏步"。
     const magnitude = Math.hypot(desired[0], desired[1]);
     const limited = magnitude > maxSpeed ? maxSpeed / magnitude : 1;
     const blend = Math.min(1, dt * 5.5);
@@ -324,9 +379,8 @@ export class PedestrianSystem {
   }
 
   move(person, dt) {
-    const nextX = clamp(person.position[0] + person.velocity[0] * dt, 3, STORE.width - 3);
-    const nextY = clamp(person.position[1] + person.velocity[1] * dt, 3, STORE.height - 3);
-    // 货架是静态障碍：不允许行人穿柜。采用轴分离 + 回退到通道中心。
+    const nextX = clamp(person.position[0] + person.velocity[0] * dt, 4, STORE.width - 4);
+    const nextY = clamp(person.position[1] + person.velocity[1] * dt, 4, STORE.height - 4);
     if (!this.blockedByFixture(nextX, person.position[1], person)) person.position[0] = nextX; else person.velocity[0] = 0;
     if (!this.blockedByFixture(person.position[0], nextY, person)) person.position[1] = nextY; else person.velocity[1] = 0;
   }
@@ -342,9 +396,15 @@ export class PedestrianSystem {
       id: p.id, type: p.type, typeName: p.typeName, cn: p.cn,
       x: p.position[0], y: p.position[1], vx: p.velocity[0], vy: p.velocity[1],
       heading: p.heading, phase: p.phase, speed: Math.hypot(p.velocity[0], p.velocity[1]) * M,
-      state: p.state, cart: p.cart, style: p.style, color: p.color,
+      state: p.state, cart: p.cart, look: p.look, style: p.style, color: p.color, skin: p.skin,
       radius: p.radius, height: p.height, crossing: p.crossing,
+      lane: p.lane, queueSlot: p.queueSlot,
     }));
+  }
+
+  /** 测试/面板用：队列长度与容量。 */
+  queueStatus() {
+    return this.lanes.map(l => ({ id: l.id, size: l.occupied.size, capacity: l.capacity, served: l.served }));
   }
 }
 

@@ -208,7 +208,7 @@
           <div><p class="section-kicker">NEXUS / STORE 01</p><h2>交互式门店环境</h2></div>
           <div class="control-head-actions">
             <div class="segmented" role="group" aria-label="客流场景"><button id="scenarioNormal" type="button" aria-pressed="true">平常客流</button><button id="scenarioPeak" type="button" aria-pressed="false">工作日高峰</button></div>
-            <div class="segmented" role="group" aria-label="相机视角"><button id="cameraIso" type="button" aria-pressed="true">等轴视角</button><button id="cameraFollow" type="button" aria-pressed="false">跟随机器人</button><button id="cameraClose" type="button" aria-pressed="false">近景特写</button></div>
+            <div class="segmented camera-segmented" role="group" aria-label="相机视角"><button id="cameraFull" type="button" aria-pressed="true">全场</button><button id="cameraIso" type="button" aria-pressed="false">等轴</button><button id="cameraTop" type="button" aria-pressed="false">俯视</button><button id="cameraFollow" type="button" aria-pressed="false">跟随</button><button id="cameraClose" type="button" aria-pressed="false">特写</button></div>
             <button id="viewModeBtn2" class="header-action" type="button" aria-pressed="false">2D 地图</button>
           </div>
         </div>
@@ -216,7 +216,7 @@
           <div class="control-main">
             <div class="map-frame" id="mapFrame">
               <div id="scene3d" class="scene-3d" role="img" aria-label="包含机器人、货架与规划路径的交互式 3D 超市"></div>
-              <svg id="storeMap" class="fallback-map" viewBox="-28 -22 1456 944" role="img" aria-label="含货架、障碍物与规划路径的 2D 导航地图" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
+              <svg id="storeMap" class="fallback-map" viewBox="-28 -22 1816 1464" role="img" aria-label="含货架、障碍物与规划路径的 2D 导航地图" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
                 <defs>
                   <pattern id="floorGrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e5ece8" stroke-width="1"/></pattern>
                 </defs>
@@ -298,6 +298,8 @@
                 <button type="button" data-ped-scenario="peak">4 高峰拥堵</button>
               </div>
               <div class="ped-counters" id="pedCounters"></div>
+              <p class="field-label" style="margin-top:10px">收银台队列 / CHECKOUT QUEUES</p>
+              <div class="ped-counters" id="pedQueues"></div>
               <p class="assumption">行人与避障为规则驱动的仿真，不代表真实视觉识别或安全认证。密度与渲染质量可独立调节；所有碰撞事件均如实计数。</p>
             </div>
             <div class="control-panel">

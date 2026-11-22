@@ -1,27 +1,61 @@
-// NEXUS RETAIL — store geometry, product simulation and crowd samples.
-// IMPORTANT: shelf pick points are graph nodes. The navigation graph in app.js
-// and the 3D scene in scene3d.js both read this file, so coordinates stay in sync.
-// Real product names/categories come from public/data (Instacart). Everything
-// declared here (shelf position, stock, crowd, robot capacity) is a SIMULATION
-// ASSUMPTION and is labelled as such in the interface.
+// NEXUS RETAIL — 单一坐标配置源 / store geometry / product simulation.
+// ALL world coordinates (floor, walls, shelves, fixtures, nav graph, robot,
+// pedestrians, checkout queues, camera bounds) are derived from STORE below.
+// 1 map unit = 0.17 m. Store = 176 x 141 units ≈ 29.9 m x 24.0 m.
+// Real product names/categories come from public/data (Instacart). Shelf
+// positions, stock, crowd samples and robot capacity are SIMULATION ASSUMPTIONS.
 
-// 物理比例（仿真初始设计值，非真实场所安全规范）
-// 1 地图单位 = 0.17 m；3D 场景的 X_SCALE 与此处一致。
 export const PHYSICS = Object.freeze({
   metersPerUnit: 0.17,
   robot: Object.freeze({ width: .62, length: .82, height: .92, radius: .36, maxSpeed: .78, accel: .42, brake: .62, turnRadius: .55 }),
   pedestrian: Object.freeze({ radius: .26, bodyWidth: .46 }),
   safety: Object.freeze({ buffer: .80, warnDistance: 2.0, yieldDistance: 1.35, emergencyGap: .06 }),
-  aisles: Object.freeze({ main: 2.6, secondary: 1.9, access: 1.3 }),
+  aisles: Object.freeze({ main: 2.7, secondary: 2.0, access: 1.3 }),
 });
 
+const M = PHYSICS.metersPerUnit;
+const UNIT_W = 176, UNIT_H = 141;
+
+// 货架单元：3 排 × 6 列。通道中心即导航节点，货架永远留在单元内部，
+// 因此 A* 边不会穿过任何货架；两侧净空 ≈ 2.0–2.7 m。
+const AISLE_XS = [18, 45, 72, 99, 126, 153];
+const CROSS_YS = [26, 62, 98, 134];
+const VERTICAL_YS = [26, 44, 62, 80, 98, 116, 134];
+const ROW_CENTERS = [44, 80, 116];
+const colCenter = c => (c < AISLE_XS.length - 1 ? (AISLE_XS[c] + AISLE_XS[c + 1]) / 2 : (AISLE_XS[c] + UNIT_W) / 2);
+
+// 收银台队列：顾客排队区在前场 y<26，与机器人 y=26 主通道分离。
+// 每个收银台有独立队列位与容量上限，避免所有人涌向同一坐标。
+const LANE_XS = [132, 144, 156, 168];
+const queueSlots = x => [22, 18, 14, 10].map(y => [x, y]);
+
 export const STORE = {
-  width: 140, height: 90,
-  entrance: [5, 8], checkout: [130, 8], exit: [138, 8],
-  aisleXs: [20, 40, 60, 80, 100, 120],
-  crossYs: [8, 34, 56, 82],
-  verticalYs: [8, 22, 34, 45, 56, 67, 82],
+  width: UNIT_W, height: UNIT_H,
+  meters: Object.freeze({ width: +(UNIT_W * M).toFixed(2), height: +(UNIT_H * M).toFixed(2) }),
+  entrance: [8, 26], checkout: [150, 26], exit: [170, 26],
+  aisleXs: AISLE_XS, crossYs: CROSS_YS, verticalYs: VERTICAL_YS,
+  hotCorridor: Object.freeze({ y: 62, xMin: 45, xMax: 99 }),
+  frontZone: Object.freeze({ yMin: 2, yMax: 26 }),
+  checkoutLanes: LANE_XS.map((x, i) => ({
+    id: `LANE-${i + 1}`, x,
+    counter: [x, 6], payPoint: [x, 10],
+    slots: queueSlots(x), capacity: 4,
+    robotWait: [x - 5, 26],
+  })),
+  // 行人入口生成点（沿入口通道错开，全部在可通行区域内）
+  spawnPoints: [[8, 26], [10, 34], [8, 44], [12, 26], [16, 44], [8, 62]],
+  // 机器人取货后等待区（不占顾客结账位）
+  robotWait: [150, 26],
+  exitLane: [170, 20],
 };
+
+export const CAMERA = Object.freeze({
+  full:   Object.freeze({ position: [0, 26, 32], target: [0, .4, 0] }),
+  iso:    Object.freeze({ position: [22, 27, 32], target: [0, .4, 0] }),
+  top:    Object.freeze({ position: [0, 42, .6], target: [0, 0, 0] }),
+  minDistance: 6, maxDistance: 80,
+  worldRadius: +(Math.hypot(UNIT_W * M, UNIT_H * M) / 2).toFixed(1),
+});
 
 export const nodeKey = p => p.join(',');
 
@@ -33,47 +67,51 @@ export function buildNavNodes() {
     nodes.get(nodeKey(a)).neighbors.push(nodeKey(b));
     nodes.get(nodeKey(b)).neighbors.push(nodeKey(a));
   };
-  const bottom = [STORE.entrance[0], ...STORE.aisleXs, STORE.checkout[0], STORE.exit[0]];
-  for (let i = 1; i < bottom.length; i++) edge([bottom[i - 1], 8], [bottom[i], 8]);
-  for (const y of STORE.crossYs.slice(1)) for (let i = 1; i < STORE.aisleXs.length; i++) edge([STORE.aisleXs[i - 1], y], [STORE.aisleXs[i], y]);
-  for (const x of STORE.aisleXs) for (let i = 1; i < STORE.verticalYs.length; i++) edge([x, STORE.verticalYs[i - 1]], [x, STORE.verticalYs[i]]);
+  const bottomXs = [...new Set([STORE.entrance[0], ...STORE.aisleXs, STORE.checkout[0], STORE.exit[0]])].sort((a, b) => a - b);
+  for (let i = 1; i < bottomXs.length; i++) edge([bottomXs[i - 1], CROSS_YS[0]], [bottomXs[i], CROSS_YS[0]]);
+  for (const y of CROSS_YS.slice(1)) for (let i = 1; i < AISLE_XS.length; i++) edge([AISLE_XS[i - 1], y], [AISLE_XS[i], y]);
+  for (const x of AISLE_XS) for (let i = 1; i < VERTICAL_YS.length; i++) edge([x, VERTICAL_YS[i - 1]], [x, VERTICAL_YS[i]]);
   return nodes;
 }
 
-// 18 个不规则货区。通道净宽按 PHYSICS.aisles 设计：
-// 横向主通道（y=34/56）净宽约 2.4–2.6 m；纵向次通道（x=20…120）净宽约 1.9 m。
-// 每个货区仍位于其通道单元内，A* 边不会穿过货架。
+// 18 个不规则货区。w/h 在各自单元内变化，通道净宽 2.0–2.7 m。
 const zoneDefs = [
-  // 第一排 — 日用 / 个人护理（y 通道 8..34，货架 15..26）
-  { category: 'Personal Care',      x: 25, y: 15, w: 9,  h: 10, kind: 'gondola', height: 1.62 },
-  { category: 'Household Essentials',x: 45, y: 15, w: 8,  h: 11, kind: 'gondola', height: 1.86 },
-  { category: 'Cleaning Supplies',  x: 64, y: 16, w: 9,  h: 8,  kind: 'gondola', height: 1.45 },
-  { category: 'Baby Care',          x: 84, y: 15, w: 8,  h: 10, kind: 'gondola', height: 1.72 },
-  { category: 'Stationery',         x: 104,y: 16, w: 9,  h: 9,  kind: 'bulk',    height: 1.38 },
-  { category: 'Pet Supplies',       x: 125,y: 15, w: 8,  h: 11, kind: 'gondola', height: 1.70 },
-  // 第二排 — 食品饮料（y 通道 34..56，货架 41..49）
-  { category: 'Beverages',          x: 25, y: 41, w: 8,  h: 8,  kind: 'cooler',  height: 2.05 },
-  { category: 'Dairy & Eggs',       x: 44, y: 41, w: 9,  h: 8,  kind: 'cooler',  height: 2.05 },
-  { category: 'Bakery',             x: 64, y: 41, w: 8,  h: 8,  kind: 'bulk',    height: 1.35 },
-  { category: 'Snacks',             x: 83, y: 41, w: 9,  h: 8,  kind: 'gondola', height: 1.55 },
-  { category: 'Ready Meals',        x: 103,y: 41, w: 9,  h: 8,  kind: 'gondola', height: 1.68 },
-  { category: 'Frozen Food',        x: 124,y: 41, w: 8,  h: 8,  kind: 'cooler',  height: 2.10 },
-  // 第三排 — 生鲜与粮油（y 通道 56..82，货架 63..75）
-  { category: 'Fresh Produce',      x: 24, y: 63, w: 10, h: 12, kind: 'produce', height: 1.12 },
-  { category: 'Seafood',            x: 44, y: 63, w: 9,  h: 11, kind: 'cooler',  height: 1.95 },
-  { category: 'Meat',               x: 64, y: 63, w: 10, h: 12, kind: 'cooler',  height: 1.95 },
-  { category: 'Grains & Oils',      x: 84, y: 63, w: 8,  h: 11, kind: 'gondola', height: 1.78 },
-  { category: 'Soy Products',       x: 103,y: 63, w: 10, h: 12, kind: 'cooler',  height: 1.90 },
-  { category: 'Condiments',         x: 124,y: 63, w: 9,  h: 12, kind: 'gondola', height: 1.64 },
+  // 第一排 — 日用 / 个人护理
+  { category: 'Personal Care',       col: 0, row: 0, w: 14, h: 18, kind: 'gondola', height: 1.62 },
+  { category: 'Household Essentials',col: 1, row: 0, w: 13, h: 20, kind: 'gondola', height: 1.86 },
+  { category: 'Cleaning Supplies',   col: 2, row: 0, w: 15, h: 16, kind: 'gondola', height: 1.45 },
+  { category: 'Baby Care',           col: 3, row: 0, w: 12, h: 19, kind: 'gondola', height: 1.72 },
+  { category: 'Stationery',          col: 4, row: 0, w: 14, h: 17, kind: 'bulk',    height: 1.38 },
+  { category: 'Pet Supplies',        col: 5, row: 0, w: 13, h: 18, kind: 'gondola', height: 1.70 },
+  // 第二排 — 食品饮料
+  { category: 'Beverages',           col: 0, row: 1, w: 14, h: 18, kind: 'cooler',  height: 2.05 },
+  { category: 'Dairy & Eggs',        col: 1, row: 1, w: 13, h: 19, kind: 'cooler',  height: 2.05 },
+  { category: 'Bakery',              col: 2, row: 1, w: 15, h: 17, kind: 'bulk',    height: 1.38 },
+  { category: 'Snacks',              col: 3, row: 1, w: 12, h: 20, kind: 'gondola', height: 1.55 },
+  { category: 'Ready Meals',         col: 4, row: 1, w: 14, h: 16, kind: 'gondola', height: 1.68 },
+  { category: 'Frozen Food',         col: 5, row: 1, w: 13, h: 18, kind: 'cooler',  height: 2.10 },
+  // 第三排 — 生鲜与粮油
+  { category: 'Fresh Produce',       col: 0, row: 2, w: 16, h: 18, kind: 'produce', height: 1.12 },
+  { category: 'Seafood',             col: 1, row: 2, w: 13, h: 17, kind: 'cooler',  height: 1.95 },
+  { category: 'Meat',                col: 2, row: 2, w: 15, h: 19, kind: 'cooler',  height: 1.95 },
+  { category: 'Grains & Oils',       col: 3, row: 2, w: 12, h: 18, kind: 'gondola', height: 1.78 },
+  { category: 'Soy Products',        col: 4, row: 2, w: 14, h: 20, kind: 'cooler',  height: 1.90 },
+  { category: 'Condiments',          col: 5, row: 2, w: 13, h: 16, kind: 'gondola', height: 1.64 },
 ];
 
 export const shelves = zoneDefs.map((d, i) => {
-  const row = Math.floor(i / 6), column = i % 6;
+  // 单元内确定性错位：同一列的货架不在一条直线上，形成更自然的卖场层次；
+  // 偏移量控制在单元净空内，不侵入任何 A* 通道节点/边。
+  const jitterX = ((i * 7) % 5 - 2) * .9;   // -1.8 ~ +1.8 单位
+  const jitterY = ((i * 11) % 5 - 2) * 1.1; // -2.2 ~ +2.2 单位
+  const cx = colCenter(d.col) + jitterX, cy = ROW_CENTERS[d.row] + jitterY;
   return {
-    id: `${row + 1}-${column + 1}`, category: d.category, kind: d.kind,
-    xMin: d.x, xMax: d.x + d.w, yMin: d.y, yMax: d.y + d.h,
-    shelfHeight: d.height, row, column,
-    point: [STORE.aisleXs[column], [22, 45, 67][row]],
+    id: `${d.row + 1}-${d.col + 1}`, category: d.category, kind: d.kind,
+    xMin: +(cx - d.w / 2).toFixed(2), xMax: +(cx + d.w / 2).toFixed(2),
+    yMin: +(cy - d.h / 2).toFixed(2), yMax: +(cy + d.h / 2).toFixed(2),
+    shelfHeight: d.height, row: d.row, column: d.col,
+    // 取货点位于左侧通道上的导航节点，距离货架边缘约 1.1 m。
+    point: [AISLE_XS[d.col], ROW_CENTERS[d.row]],
   };
 });
 
@@ -87,25 +125,25 @@ export const zoneCn = {
 };
 export const zoneName = value => zoneCn[value] || value;
 
-// Non-pickable architectural fixtures. They are drawn in 3D and in the 2D map.
+// 不可取货的建筑装置。3D 与 2D 地图都从此处绘制。
 export const layoutFixtures = [
-  { label: '乳制品墙', x: 3,   y: 26, w: 5,  h: 16, kind: 'wall' },
-  { label: '零食墙', x: 3,   y: 50, w: 5,  h: 14, kind: 'wall' },
-  { label: '日用品墙', x: 3,   y: 72, w: 5,  h: 14, kind: 'wall' },
-  { label: '后侧冷柜 A', x: 24, y: 87, w: 28, h: 4, kind: 'wall' },
-  { label: '后侧冷柜 B', x: 62, y: 87, w: 28, h: 4, kind: 'wall' },
-  { label: '后侧冷柜 C', x: 104, y: 87, w: 26, h: 4, kind: 'wall' },
-  { label: '冷藏墙', x: 137, y: 44, w: 4, h: 12, kind: 'wall' },
-  { label: '食品杂货墙', x: 137, y: 70, w: 4, h: 12, kind: 'wall' },
-  { label: '促销岛 A', x: 11, y: 18, w: 8, h: 8, kind: 'promo' },
-  { label: '促销岛 B', x: 11, y: 66, w: 8, h: 8, kind: 'promo' },
-  { label: '促销岛 C', x: 129, y: 35, w: 7, h: 7, kind: 'promo' },
-  { label: '收银台 01', x: 123, y: 4, w: 5, h: 3, kind: 'checkout' },
-  { label: '收银台 02', x: 130, y: 4, w: 5, h: 3, kind: 'checkout' },
-  { label: '收银台 03', x: 137, y: 4, w: 5, h: 3, kind: 'checkout' },
-  { label: '购物车停放区', x: 14, y: 3, w: 10, h: 3, kind: 'cart' },
-  { label: '入口', x: 5, y: 8, w: 7, h: 4, kind: 'entrance' },
-  { label: '出口', x: 138, y: 8, w: 7, h: 4, kind: 'exit' },
+  { label: '乳品冷藏墙', x: 4,   y: 44,  w: 5,  h: 18, kind: 'wall' },
+  { label: '零食墙',     x: 4,   y: 80,  w: 5,  h: 18, kind: 'wall' },
+  { label: '日用墙',     x: 4,   y: 116, w: 5,  h: 18, kind: 'wall' },
+  { label: '后侧冷柜 A', x: 40,  y: 137, w: 34, h: 5,  kind: 'wall' },
+  { label: '后侧冷柜 B', x: 90,  y: 137, w: 34, h: 5,  kind: 'wall' },
+  { label: '后侧冷柜 C', x: 140, y: 137, w: 32, h: 5,  kind: 'wall' },
+  { label: '冷藏侧柜',   x: 172, y: 80,  w: 5,  h: 20, kind: 'wall' },
+  { label: '杂货侧柜',   x: 172, y: 116, w: 5,  h: 18, kind: 'wall' },
+  { label: '促销岛 A',   x: 45,  y: 12,  w: 11, h: 9,  kind: 'promo' },
+  { label: '促销岛 B',   x: 72,  y: 12,  w: 11, h: 9,  kind: 'promo' },
+  { label: '促销岛 C',   x: 126, y: 12,  w: 10, h: 9,  kind: 'promo' },
+  ...STORE.checkoutLanes.map((lane, i) => ({ label: `收银台 ${String(i + 1).padStart(2, '0')}`, x: lane.x, y: 6, w: 7, h: 4, kind: 'checkout' })),
+  ...STORE.checkoutLanes.map((lane, i) => ({ label: `排队区 ${i + 1}`, x: lane.x, y: 16, w: 4, h: 15, kind: 'queue' })),
+  { label: '机器人等待区', x: 150, y: 26, w: 10, h: 5, kind: 'robotwait' },
+  { label: '购物车停放区', x: 24,  y: 8,  w: 14, h: 6,  kind: 'cart' },
+  { label: '入口', x: 8,   y: 20, w: 10, h: 6, kind: 'entrance' },
+  { label: '出口', x: 170, y: 20, w: 10, h: 6, kind: 'exit' },
 ];
 
 // Teaching catalog: English names, mapped to real zones. Price/weight/stock
@@ -150,8 +188,8 @@ export const products = productRows.map(([name, category, subcategory, price, we
 });
 
 export const timeSlots = [
-  { id: '09', label: 'Weekday 09:00' }, { id: '13', label: 'Weekday 13:00' },
-  { id: '18', label: 'Weekday 18:00' }, { id: '20', label: 'Weekday 20:00' },
+  { id: '09', label: '工作日 09:00' }, { id: '13', label: '工作日 13:00' },
+  { id: '18', label: '工作日 18:00' }, { id: '20', label: '工作日 20:00' },
 ];
 
 // Index order matches shelves[]. Simulated people counts near each zone.
@@ -166,22 +204,23 @@ export function shelfCrowd(slot, shelfId) {
   return crowdSamples[slot]?.[shelves.findIndex(s => s.id === shelfId)] ?? 0;
 }
 
+// 规则层静态行人（2D 地图/热力提示）。自主行人的生成由 pedestrian.js 负责。
 export function peopleForScenario(scenario, slot = '09') {
   const result = shelves.map((s, i) => ({
     id: `P${i + 1}`, zone: s.category,
-    point: [s.point[0] + 1.7 + (slot === '20' ? .7 : slot === '13' ? -.6 : 0),
-            s.point[1] + (i % 2 ? 3 : -3) + (slot === '18' ? .7 : 0)],
+    point: [s.point[0] + 2.6 + (slot === '20' ? 1 : slot === '13' ? -1 : 0),
+            s.point[1] + (i % 2 ? 5 : -5) + (slot === '18' ? 1 : 0)],
   }));
   if (scenario === 'peak') result.push(
-    { id: 'H1', zone: 'Beverages aisle', point: [43, 51] },
-    { id: 'H2', zone: 'Central corridor', point: [53, 34] },
-    { id: 'H3', zone: 'Central corridor', point: [69, 34] },
-    { id: 'H4', zone: 'Grains & Oils aisle', point: [82, 72] },
+    { id: 'H1', zone: '饮品通道', point: [47, 80] },
+    { id: 'H2', zone: '中央主通道', point: [70, 62] },
+    { id: 'H3', zone: '中央主通道', point: [99, 62] },
+    { id: 'H4', zone: '粮油通道', point: [102, 116] },
   );
-  if (slot === '13') result.push({ id: 'T13', zone: 'Beverages aisle', point: [22, 30] });
+  if (slot === '13') result.push({ id: 'T13', zone: '饮品通道', point: [18, 44] });
   if (slot === '18') result.push(
-    { id: 'T18', zone: 'Dairy aisle', point: [43, 52] },
-    { id: 'T18b', zone: 'Grains & Oils aisle', point: [82, 76] },
+    { id: 'T18', zone: '乳品通道', point: [45, 80] },
+    { id: 'T18b', zone: '粮油通道', point: [99, 116] },
   );
   return result;
 }

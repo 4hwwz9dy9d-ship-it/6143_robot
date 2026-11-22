@@ -196,7 +196,7 @@ function edgeCost(a, b, scenario, slot, mode = 'full') {
   const length = dist(a, b), center = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const nearby = shelves.filter(s => dist(s.point, center) < 20).map(s => shelfCrowd(slot, s.id));
   const crowd = nearby.length ? nearby.reduce((n, x) => n + x, 0) / nearby.length : 0;
-  const hot = scenario === 'peak' && a[1] === 34 && b[1] === 34 && Math.min(a[0], b[0]) >= 40 && Math.max(a[0], b[0]) <= 80;
+  const hot = scenario === 'peak' && a[1] === STORE.hotCorridor.y && b[1] === STORE.hotCorridor.y && Math.min(a[0], b[0]) >= STORE.hotCorridor.xMin && Math.max(a[0], b[0]) <= STORE.hotCorridor.xMax;
   const congestion = state.events.has('congestion') && crowd >= 4 ? 1.4 : 1;
   const predictedTime = length * (1 + .025 * crowd * congestion + (hot ? 2.6 : 0));
   const risk = length * (.025 * crowd * congestion + (hot ? 2.8 : 0));
@@ -338,14 +338,14 @@ function replanCurrentLeg(reason) {
 /* ------------------------------------------------------------- 2D map draw */
 function drawBaseMap() {
   clear($('aisles')); clear($('fixtures')); clear($('shelves'));
-  for (const x of STORE.aisleXs) svg('line', { x1: x * 10, y1: 820, x2: x * 10, y2: 80, class: 'aisle-line' }, $('aisles'));
-  for (const y of STORE.crossYs) svg('line', { x1: 50, y1: (90 - y) * 10, x2: 1380, y2: (90 - y) * 10, class: 'aisle-line' }, $('aisles'));
+  for (const x of STORE.aisleXs) svg('line', { x1: x * 10, y1: (STORE.height - 8) * 10, x2: x * 10, y2: 80, class: 'aisle-line' }, $('aisles'));
+  for (const y of STORE.crossYs) svg('line', { x1: 50, y1: (STORE.height - y) * 10, x2: (STORE.width - 2) * 10, y2: (STORE.height - y) * 10, class: 'aisle-line' }, $('aisles'));
   for (const f of layoutFixtures) {
     svg('rect', { x: (f.x - f.w / 2) * 10, y: (STORE.height - f.y - f.h / 2) * 10, width: f.w * 10, height: f.h * 10, rx: 6, class: `fixture-${f.kind}` }, $('fixtures'));
     svg('text', { x: f.x * 10, y: (STORE.height - f.y) * 10 + 4, class: 'fixture-label' }, $('fixtures')).textContent = f.label;
   }
   for (const s of shelves) {
-    const left = s.xMin * 10, top = (90 - s.yMax) * 10, width = (s.xMax - s.xMin) * 10, height = (s.yMax - s.yMin) * 10;
+    const left = s.xMin * 10, top = (STORE.height - s.yMax) * 10, width = (s.xMax - s.xMin) * 10, height = (s.yMax - s.yMin) * 10;
     svg('rect', { x: left, y: top, width, height, rx: 5, class: `shelf-rect ${s.kind}` }, $('shelves'));
     svg('text', { x: left + width / 2, y: top + height / 2 - 5, class: 'shelf-caption' }, $('shelves')).textContent = zoneLabel(s.category);
     svg('text', { x: left + width / 2, y: top + height / 2 + 13, class: 'shelf-code' }, $('shelves')).textContent = `货区 ${s.id}`;
@@ -353,15 +353,15 @@ function drawBaseMap() {
 }
 function drawFixtures() { /* included in drawBaseMap */ }
 function drawGate(point, label) {
-  svg('rect', { x: point[0] * 10 - 27, y: (90 - point[1]) * 10 - 13, width: 54, height: 26, rx: 7, class: 'gate' }, $('destinations'));
-  svg('text', { x: point[0] * 10, y: (90 - point[1]) * 10 + 4, class: 'gate-label' }, $('destinations')).textContent = label;
+  svg('rect', { x: point[0] * 10 - 27, y: (STORE.height - point[1]) * 10 - 13, width: 54, height: 26, rx: 7, class: 'gate' }, $('destinations'));
+  svg('text', { x: point[0] * 10, y: (STORE.height - point[1]) * 10 + 4, class: 'gate-label' }, $('destinations')).textContent = label;
 }
 function drawDestinations() {
   clear($('destinations'));
   const stops = state.plan?.stops || [];
   stops.forEach((stop, i) => {
-    svg('circle', { cx: stop.point[0] * 10, cy: (90 - stop.point[1]) * 10, r: 14, class: `destination-circle ${i < state.stage ? 'destination-done' : ''}` }, $('destinations'));
-    svg('text', { x: stop.point[0] * 10, y: (90 - stop.point[1]) * 10 + 4, class: 'destination-label' }, $('destinations')).textContent = i < state.stage ? '✓' : String(i + 1);
+    svg('circle', { cx: stop.point[0] * 10, cy: (STORE.height - stop.point[1]) * 10, r: 14, class: `destination-circle ${i < state.stage ? 'destination-done' : ''}` }, $('destinations'));
+    svg('text', { x: stop.point[0] * 10, y: (STORE.height - stop.point[1]) * 10 + 4, class: 'destination-label' }, $('destinations')).textContent = i < state.stage ? '✓' : String(i + 1);
   });
   drawGate(STORE.entrance, '入口'); drawGate(STORE.checkout, '结账'); drawGate(STORE.exit, '出口');
   scene3d?.setPickups(stops.map(s => s.point), Math.min(state.stage, stops.length));
@@ -370,15 +370,15 @@ function drawCrowd() {
   clear($('crowd'));
   const counts = crowdSamples[state.slot];
   shelves.forEach((s, i) => {
-    svg('rect', { x: s.xMin * 10, y: (90 - s.yMax) * 10, width: (s.xMax - s.xMin) * 10, height: (s.yMax - s.yMin) * 10,
+    svg('rect', { x: s.xMin * 10, y: (STORE.height - s.yMax) * 10, width: (s.xMax - s.xMin) * 10, height: (s.yMax - s.yMin) * 10,
       fill: counts[i] >= 5 ? '#e2734b' : counts[i] >= 3 ? '#e8a34a' : '#71b887', opacity: counts[i] >= 5 ? .32 : .17, rx: 5 }, $('crowd'));
   });
   const crowd = state.pedSystem ? state.pedSystem.snapshot() : [];
   const shown = crowd.length ? crowd : [...peopleForScenario(state.scenario, state.slot), ...state.dynamicObstacles];
   for (const p of shown) {
     const point = p.point || [p.x, p.y];
-    svg('circle', { cx: point[0] * 10, cy: (90 - point[1]) * 10, r: 12, class: 'crowd-halo' }, $('crowd'));
-    svg('circle', { cx: point[0] * 10, cy: (90 - point[1]) * 10, r: 6, class: 'crowd-person' }, $('crowd'));
+    svg('circle', { cx: point[0] * 10, cy: (STORE.height - point[1]) * 10, r: 12, class: 'crowd-halo' }, $('crowd'));
+    svg('circle', { cx: point[0] * 10, cy: (STORE.height - point[1]) * 10, r: 6, class: 'crowd-person' }, $('crowd'));
   }
   scene3d?.setScenario(state.scenario, state.slot);
   scene3d?.setPedestrians(crowd);
@@ -391,7 +391,7 @@ function drawRoutes() {
   }
   for (const stored of state.closedEdges) {
     const [a, b] = stored.split('|').map(s => s.split(',').map(Number));
-    svg('line', { x1: a[0] * 10, y1: (90 - a[1]) * 10, x2: b[0] * 10, y2: (90 - b[1]) * 10, class: 'restricted-path' }, $('comparisonRoute'));
+    svg('line', { x1: a[0] * 10, y1: (STORE.height - a[1]) * 10, x2: b[0] * 10, y2: (STORE.height - b[1]) * 10, class: 'restricted-path' }, $('comparisonRoute'));
   }
   scene3d?.setRoutes(state.plan?.points || [], state.scenario === 'peak' ? state.normalPlan?.points : null);
   scene3d?.setRestricted([...state.closedEdges].map(stored => stored.split('|').map(s => s.split(',').map(Number))));
@@ -405,7 +405,7 @@ function drawHistory() {
 function drawRobot() {
   clear($('robotLayer'));
   const [x, y] = state.displayPosition;
-  svg('circle', { cx: x * 10, cy: (90 - y) * 10, r: (PHYSICS.robot.radius / PHYSICS.metersPerUnit) * 10, class: 'robot-body' }, $('robotLayer'));
+  svg('circle', { cx: x * 10, cy: (STORE.height - y) * 10, r: (PHYSICS.robot.radius / PHYSICS.metersPerUnit) * 10, class: 'robot-body' }, $('robotLayer'));
   scene3d?.setRobot(state.displayPosition, robotState(), state.traveled / PHYSICS.metersPerUnit);
   const behaviour = state.behavior;
   scene3d?.setSafety(behaviour || {});
@@ -446,11 +446,11 @@ function renderLiveOps() {
 }
 function renderOverviewPreview() {
   $('previewZones').innerHTML = shelves.map(s => {
-    const x = s.xMin * 4.6 + 8, y = s.yMin * 4.1 + 8;
+    const x = s.xMin * (644 / STORE.width) + 8, y = s.yMin * (364 / STORE.height) + 8;
     const color = s.kind === 'cooler' ? '#3D7BD6' : s.kind === 'produce' ? '#20A995' : s.kind === 'promo' ? '#E8A34A' : '#84919B';
     return `<rect x="${x}" y="${y}" width="${(s.xMax - s.xMin) * 4.6}" height="${(s.yMax - s.yMin) * 4.1}" rx="3" fill="${color}" opacity=".28" stroke="${color}" stroke-width="1"/>`;
   }).join('');
-  $('previewRoute').innerHTML = state.plan ? `<path d="${state.plan.points.map((p, i) => `${i ? 'L' : 'M'}${p[0] * 4.6 + 8},${p[1] * 4.1 + 8}`).join(' ')}" fill="none" stroke="#20A995" stroke-width="2.4" stroke-dasharray="6 4"/>` : '';
+  $('previewRoute').innerHTML = state.plan ? `<path d="${state.plan.points.map((p, i) => `${i ? 'L' : 'M'}${p[0] * (644 / STORE.width) + 8},${p[1] * (364 / STORE.height) + 8}`).join(' ')}" fill="none" stroke="#20A995" stroke-width="2.4" stroke-dasharray="6 4"/>` : '';
 }
 function renderQueue() {
   const entries = [
@@ -634,6 +634,9 @@ function renderPedestrianPanel() {
     ['Near Miss', m.nearMisses], ['Collision', m.collisions + state.safetyEvents.filter(e => e.type === 'collision').length],
     ['平均等待', `${m.waitSeconds.toFixed(1)} s`], ['人工介入', m.humanInterventions],
   ].map(([label, value]) => `<span>${label}<b>${typeof value === 'number' ? value : escapeHtml(String(value))}</b></span>`).join('');
+  const queues = $('pedQueues');
+  if (queues) queues.innerHTML = ped.queueStatus().map(q =>
+    `<span>${q.id} · 已服务 ${q.served}<b>${q.size}/${q.capacity}</b></span>`).join('');
   const stateNode = $('pedBehaviorState');
   if (stateNode) stateNode.title = result.reason || '';
 }
@@ -843,7 +846,7 @@ function handleSimEvent(type) {
   if (type === 'pedestrian' || type === 'cart') {
     const nextPoint = state.plan?.legs[state.stage]?.points.at(-1) || [70, 45];
     const point = [Math.max(8, Math.min(132, state.position[0] + (nextPoint[0] - state.position[0]) * .55)),
-      Math.max(8, Math.min(82, state.position[1] + (nextPoint[1] - state.position[1]) * .55))];
+      Math.max(8, Math.min(STORE.height - 8, state.position[1] + (nextPoint[1] - state.position[1]) * .55))];
     state.dynamicObstacles = state.dynamicObstacles.filter(o => o.type !== (type === 'pedestrian' ? 'person' : 'cart'));
     state.dynamicObstacles.push({ id: `EVT-${type}`, type: type === 'pedestrian' ? 'person' : 'cart', zone: '仿真事件', point });
     state.events.add(type); state.slowLeft = type === 'cart' ? 2.4 : 1.8;
@@ -862,7 +865,7 @@ function handleSimEvent(type) {
     drawCrowd(); renderAll(); return;
   }
   if (type === 'aisle') {
-    const edge = [[60, 34], [80, 34]], id = edgeKey(...edge);
+    const edge = [[STORE.hotCorridor.xMin + 15, STORE.hotCorridor.y], [STORE.hotCorridor.xMin + 35, STORE.hotCorridor.y]], id = edgeKey(...edge);
     if (state.closedEdges.has(id)) {
       state.closedEdges.delete(id); state.events.delete('aisle');
       log('中央通道已重新开放，A* 可再次使用直达通道。');
@@ -940,7 +943,7 @@ function stepSimulation(dt) {
   state.inertialVelocity = [(previousLogic[0] - state.lastLogic[0]) / step, (previousLogic[1] - state.lastLogic[1]) / step];
   state.lastLogic = [...previousLogic];
 
-  // 1) 行人先运动；机器人按最新的行人速度/方向做预测。
+  // 1) 机器人播放时由此推进行人（未播放时由 pedestrianLoop 推进），两者互斥。
   state.pedSystem.update(step, { position: state.displayPosition, velocity: state.inertialVelocity });
   const snapshot = publishPedestrians();
   const obstacles = state.dynamicObstacles.map(o => ({ ...o, radius: o.type === 'cart' ? .38 : .3 }));
@@ -997,6 +1000,22 @@ function animate(now) {
   stepSimulation(delta);
   if (state.running) requestAnimationFrame(animate);
 }
+
+/* 行人自主循环：与机器人订单播放解耦。机器人未播放时由本循环独立推进行人；
+   机器人播放（含 advance 快进测试）时由 stepSimulation 推进，避免重复更新。 */
+let pedLastFrame = 0, pedLoopTick = 0;
+function pedestrianLoop(now) {
+  requestAnimationFrame(pedestrianLoop);
+  const ped = state.pedSystem;
+  if (!ped || !ped.running || document.hidden || state.running) { pedLastFrame = 0; return; }
+  if (!pedLastFrame) { pedLastFrame = now; return; }
+  const dt = Math.min((now - pedLastFrame) / 1000, .05);
+  pedLastFrame = now;
+  ped.update(dt, { position: state.displayPosition, velocity: [0, 0] });
+  publishPedestrians();
+  if (++pedLoopTick % 45 === 0) renderPedestrianPanel();
+}
+function startPedestrianLoop() { requestAnimationFrame(pedestrianLoop); }
 function playPause() {
   if (state.shortage) { status('请先处理缺货', '请在任务面板选择接受替代品或跳过。', 'PICKING'); return; }
   if (state.assistPending) { status('请确认协助取货', '员工核对商品后机器人才能移动。', 'PICKING'); return; }
@@ -1129,10 +1148,12 @@ function bindEvents() {
   $('playBtn').addEventListener('click', playPause);
   $('resetBtn').addEventListener('click', () => { resetPlayback(); log('当前订单已重新开始，机器人已返回入口。'); });
   $('safetyTestBtn')?.addEventListener('click', toggleBlock);
-  $('cameraResetBtn').addEventListener('click', () => scene3d.resetCamera());
-  $('cameraIso').addEventListener('click', () => setCamera('iso'));
-  $('cameraFollow').addEventListener('click', () => setCamera('follow'));
-  $('cameraClose').addEventListener('click', () => setCamera('close'));
+  $('cameraResetBtn').addEventListener('click', () => setCamera('full'));
+  $('cameraFull')?.addEventListener('click', () => setCamera('full'));
+  $('cameraIso')?.addEventListener('click', () => setCamera('iso'));
+  $('cameraTop')?.addEventListener('click', () => setCamera('top'));
+  $('cameraFollow')?.addEventListener('click', () => setCamera('follow'));
+  $('cameraClose')?.addEventListener('click', () => setCamera('close'));
   $('stockoutSelect').addEventListener('change', () => {
     state.stockoutId = $('stockoutSelect').value;
     log(state.stockoutId ? `已为 ${productById.get(state.stockoutId).name} 选择缺货演练。` : '已关闭缺货演练。');
@@ -1184,8 +1205,8 @@ function applyPedPreset(name) {
 }
 function setCamera(mode) {
   scene3d.setCameraMode(mode);
-  ['cameraIso', 'cameraFollow', 'cameraClose'].forEach((id, i) =>
-    $(id).setAttribute('aria-pressed', String(['iso', 'follow', 'close'][i] === mode)));
+  const views = ['full', 'iso', 'top', 'follow', 'close'];
+  views.forEach(v => $(`camera${v[0].toUpperCase()}${v.slice(1)}`)?.setAttribute('aria-pressed', String(v === mode)));
 }
 
 /* 自动化回归测试钩子：所有数值直接来自运行中的仿真状态，不另造指标。 */
@@ -1247,6 +1268,7 @@ scene3d.setPickHandler(info => {
 });
 state.pedSystem.applyPreset('normal');
 publishPedestrians();
+startPedestrianLoop();
 scene3d.setScenario(state.scenario, state.slot);
 drawBaseMap(); drawFixtures(); populateFilters(); renderCatalogue(); renderCart();
 renderInventory(); renderRecommendations(); renderCrowd(); resetPlayback(); bindEvents();

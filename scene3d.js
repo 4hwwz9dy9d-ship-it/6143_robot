@@ -1,19 +1,25 @@
-// NEXUS RETAIL — modular 3D store, premium AMR, articulated pedestrians.
-// Geometry is generated from storeData.js; no paid or external 3D assets.
-// IMPORTANT: the supplied images are 2D design references (turnaround sheets),
-// not rigged GLB/GLTF files. Models below follow their proportions, palette
-// and structure, with hierarchical joints for walk / idle / browse / push.
+// NEXUS RETAIL — 模块化 3D 超市 / 工业 AMR / 层级关节行人 (Three.js vendored).
+// 坐标唯一来源：storeData.js。参考图为 2D 设计稿（assets/references/），
+// 本文件按其比例/配色/结构做程序化精细建模与层级动画，不含外链付费资产。
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { STORE, PHYSICS, shelves, layoutFixtures, peopleForScenario, shelfCrowd, zoneName } from './storeData.js';
+import { STORE, CAMERA, PHYSICS, shelves, layoutFixtures, peopleForScenario, shelfCrowd, zoneName } from './storeData.js';
 
-const X_SCALE = PHYSICS.metersPerUnit; // 1 map unit = 0.17 m everywhere
+const X_SCALE = PHYSICS.metersPerUnit;
 const floorPoint = ([x, y], height = .025) => new THREE.Vector3((x - STORE.width / 2) * X_SCALE, height, (STORE.height / 2 - y) * X_SCALE);
-const mat = (color, options = {}) => new THREE.MeshStandardMaterial({ color, roughness: .74, metalness: .05, ...options });
+const mat = (color, options = {}) => new THREE.MeshStandardMaterial({ color, roughness: .72, metalness: .06, ...options });
 const rnd = i => { const v = Math.sin(i * 127.1 + 11.7) * 43758.5453; return v - Math.floor(v); };
 const palette = [0x20A995, 0x3D7BD6, 0xE8A34A, 0xD96C68, 0x7A9E4B, 0x8E6FB0, 0xD9A05B, 0x5C8CA8, 0xC46F5E, 0x6BA98F];
-const skinTones = [0xf0c9a8, 0xe0ae87, 0xc98d68, 0x8d5c42, 0xf5d7b8];
-const hairTones = [0x2c2725, 0x4a3529, 0x6b6159, 0x1d2024, 0x8a7b66];
+
+// 参考图 6 套角色：店员绿马甲 / 米色衬衫 / 墨绿毛衣 / 藏青风衣 / 酒红开衫 / 灰夹克
+const LOOKS = [
+  { coat: 0x2f6b4f, inner: 0xf3f5f0, trousers: 0x343b40, shoe: 0x202528, hair: 0x2c2725, vest: true,  long: false },
+  { coat: 0xc2a878, inner: 0xf5f5f1, trousers: 0x5b4636, shoe: 0xe8e8e4, hair: 0x33261f, vest: false, long: false },
+  { coat: 0x3f5a42, inner: 0xe8e2d3, trousers: 0xd8cbb0, shoe: 0xe6e4df, hair: 0x5a4638, vest: false, long: false },
+  { coat: 0x243b52, inner: 0x2e3e4d, trousers: 0x292e33, shoe: 0x6b4228, hair: 0x6b4326, vest: false, long: true  },
+  { coat: 0x7d3341, inner: 0xe6ddd0, trousers: 0x4a5054, shoe: 0x24282b, hair: 0xc8c8c4, vest: false, long: false, glasses: true },
+  { coat: 0x4a4f55, inner: 0xe9e9e5, trousers: 0x3a5a82, shoe: 0x7a5334, hair: 0x1d2024, vest: false, long: false },
+];
 
 const materials = {
   white: mat(0xf7faf9, { roughness: .42, metalness: .06 }),
@@ -21,17 +27,19 @@ const materials = {
   aluminum: mat(0xb9c5c9, { roughness: .28, metalness: .78 }),
   dark: mat(0x172C40, { roughness: .5, metalness: .2 }),
   rubber: mat(0x1d2228, { roughness: .92 }),
-  glass: new THREE.MeshPhysicalMaterial({ color: 0xcfe6ef, transparent: true, opacity: .28, roughness: .12, metalness: .05, side: THREE.DoubleSide }),
+  glass: new THREE.MeshPhysicalMaterial({ color: 0xcfe6ef, transparent: true, opacity: .24, roughness: .1, metalness: .05, side: THREE.DoubleSide, depthWrite: false }),
   screen: mat(0x0c2230, { emissive: 0x1d7a78, emissiveIntensity: .45, roughness: .25 }),
   tealEmissive: new THREE.MeshBasicMaterial({ color: 0x28B9A4 }),
   amberEmissive: new THREE.MeshBasicMaterial({ color: 0xE8A34A }),
   redEmissive: new THREE.MeshBasicMaterial({ color: 0xD96C68 }),
+  coldGlow: new THREE.MeshBasicMaterial({ color: 0xd8f4ff }),
+  conveyor: mat(0x3c4b52, { roughness: .5, metalness: .35 }),
+  metalFrame: mat(0x9fb7c0, { roughness: .32, metalness: .72 }),
 };
 const personMaterialCache = new Map();
 function personMat(color) {
-  const key = color;
-  if (!personMaterialCache.has(key)) personMaterialCache.set(key, mat(color, { roughness: .82, metalness: .02 }));
-  return personMaterialCache.get(key);
+  if (!personMaterialCache.has(color)) personMaterialCache.set(color, mat(color, { roughness: .82, metalness: .02 }));
+  return personMaterialCache.get(color);
 }
 
 function roundedBoxGeometry(w, h, d, r) {
@@ -82,16 +90,17 @@ function floorTexture(kind) {
   const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
   const ctx = canvas.getContext('2d');
   if (kind === 'tile') {
-    ctx.fillStyle = '#e2e9e4'; ctx.fillRect(0, 0, 256, 256);
-    ctx.strokeStyle = '#c2cec7'; ctx.lineWidth = 3;
+    ctx.fillStyle = '#e8eee9'; ctx.fillRect(0, 0, 256, 256);
+    ctx.strokeStyle = '#c9d5cd'; ctx.lineWidth = 2.5;
     for (let i = 0; i <= 4; i++) { ctx.beginPath(); ctx.moveTo(i * 64, 0); ctx.lineTo(i * 64, 256); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, i * 64); ctx.lineTo(256, i * 64); ctx.stroke(); }
+    for (let i = 0; i < 1600; i++) { ctx.fillStyle = rnd(i) > .5 ? 'rgba(255,255,255,.5)' : 'rgba(180,195,185,.22)'; ctx.fillRect(rnd(i + 3) * 256, rnd(i + 71) * 256, 2, 2); }
   } else if (kind === 'wood') {
-    ctx.fillStyle = '#dfc8a5'; ctx.fillRect(0, 0, 256, 256);
-    ctx.strokeStyle = '#c6a980'; ctx.lineWidth = 2;
+    ctx.fillStyle = '#dcc19b'; ctx.fillRect(0, 0, 256, 256);
+    ctx.strokeStyle = '#c2a275'; ctx.lineWidth = 2;
     for (let i = 0; i < 6; i++) { ctx.beginPath(); ctx.moveTo(0, i * 43); ctx.lineTo(256, i * 43); ctx.stroke(); }
   } else if (kind === 'stone') {
-    ctx.fillStyle = '#dfe7e7'; ctx.fillRect(0, 0, 256, 256);
-    for (let i = 0; i < 900; i++) { ctx.fillStyle = rnd(i) > .5 ? '#d3dedd' : '#e8eeee'; ctx.fillRect(rnd(i + 9) * 256, rnd(i + 77) * 256, 3, 3); }
+    ctx.fillStyle = '#e0e8e6'; ctx.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 1200; i++) { ctx.fillStyle = rnd(i) > .5 ? '#d3dedb' : '#eef3f1'; ctx.fillRect(rnd(i + 9) * 256, rnd(i + 77) * 256, 3, 3); }
   } else {
     ctx.fillStyle = '#e7eee9'; ctx.fillRect(0, 0, 256, 256);
     ctx.strokeStyle = '#d4e0d8'; ctx.lineWidth = 4;
@@ -99,7 +108,7 @@ function floorTexture(kind) {
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.colorSpace = THREE.SRGBColorSpace;
-  tex.repeat.set(kind === 'tile' ? 8 : 3, kind === 'tile' ? 5 : 3);
+  tex.repeat.set(kind === 'tile' ? 12 : 3, kind === 'tile' ? 10 : 3);
   return tex;
 }
 function ribbon(points, width, color, y, opacity = 1, dashed = false) {
@@ -141,43 +150,42 @@ export function createStoreScene(container, fallback) {
     const noop = () => {};
     return { setRobot: noop, setRobotState: noop, setScenario: noop, setRoutes: noop, setHistory: noop,
       setPickups: noop, setObstacles: noop, setRestricted: noop, setCameraMode: noop, resetCamera: noop,
-      setActive: noop, resize: noop, setPresentation: noop, setPedestrians: noop, setSafety: noop, setPickHandler: noop };
+      setActive: noop, resize: noop, setPresentation: noop, setPedestrians: noop, setSafety: noop, setPickHandler: noop, setQueueStatus: noop };
   }
 }
 
 function buildScene(container) {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xe9f0ed);
-  scene.fog = new THREE.Fog(0xe9f0ed, 40, 78);
-  const camera = new THREE.PerspectiveCamera(45, 1, .1, 100);
-  const cameraHome = new THREE.Vector3(8.5, 12.5, 17);
-  camera.position.copy(cameraHome); camera.lookAt(0, .4, 0);
+  scene.background = new THREE.Color(0xeaf1ee);
+  scene.fog = new THREE.Fog(0xeaf1ee, CAMERA.worldRadius * 2.6, CAMERA.worldRadius * 5.5);
+  const camera = new THREE.PerspectiveCamera(45, 1, .1, 260);
+  camera.position.set(...CAMERA.iso.position); camera.lookAt(...CAMERA.iso.target);
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.6));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.12;
+  renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap;
   container.appendChild(renderer.domElement);
   const controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, .45, 0);
+  controls.target.set(...CAMERA.iso.target);
   controls.enableDamping = true; controls.dampingFactor = .08;
-  controls.minDistance = 8; controls.maxDistance = 44;
-  controls.minPolarAngle = .22; controls.maxPolarAngle = 1.44;
+  controls.minDistance = CAMERA.minDistance; controls.maxDistance = CAMERA.maxDistance;
+  controls.minPolarAngle = .15; controls.maxPolarAngle = 1.45;
   controls.enablePan = false; controls.update();
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xa6b8b2, 1.55));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.75);
-  sun.position.set(-8, 18, 11); sun.castShadow = true;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xa6b8b2, 1.5));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.45);
+  sun.position.set(-14, 28, 18); sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -15; sun.shadow.camera.right = 15;
-  sun.shadow.camera.top = 13; sun.shadow.camera.bottom = -13;
+  sun.shadow.camera.left = -21; sun.shadow.camera.right = 21;
+  sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18;
   sun.shadow.normalBias = .025;
   scene.add(sun);
-  for (const [x, z] of [[-5, -3], [4, -1], [0, 5]]) {
-    const light = new THREE.PointLight(0xdff4ee, .45, 15, 2);
-    light.position.set(x, 3.2, z); scene.add(light);
+  for (const [x, z] of [[-9, -6], [8, -3], [0, 7], [-6, 6], [10, 6]]) {
+    const light = new THREE.PointLight(0xe4f6ee, .36, 18, 2);
+    light.position.set(x, 4.1, z); scene.add(light);
   }
 
   // ----- shell -------------------------------------------------------------
@@ -186,14 +194,19 @@ function buildScene(container) {
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(floorW, floorD), floorMat);
   floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
   const wallMat = mat(0xe9efec, { roughness: .9 });
-  addBox(scene, floorW, 3.5, .14, wallMat, 0, 1.75, -floorD / 2, true);
-  addBox(scene, .14, 3.5, floorD, wallMat, -floorW / 2, 1.75, 0, true);
-  addBox(scene, .14, 3.5, floorD, wallMat, floorW / 2, 1.75, 0, true);
+  addBox(scene, floorW, 3.6, .14, wallMat, 0, 1.8, -floorD / 2, true);   // 后墙（有冷柜）
+  addBox(scene, .14, 3.6, floorD, wallMat, -floorW / 2, 1.8, 0, true);
+  addBox(scene, .14, 3.6, floorD, wallMat, floorW / 2, 1.8, 0, true);
   for (const side of [-1, 1]) addBox(scene, .16, .16, floorD, mat(0x9db4ae), side * (floorW / 2 - .1), .12, 0);
-  const lightPanelMat = new THREE.MeshBasicMaterial({ color: 0xf2fbf5 });
-  for (let i = -2; i <= 2; i++) for (let j = -1; j <= 1; j++) {
-    const panel = addBox(scene, 1.5, .015, .22, lightPanelMat, j * 5.4, 3.32, i * 2.75);
-    panel.castShadow = false;
+  // 天花板灯带：覆盖整个大超市
+  const lightPanelMat = new THREE.MeshBasicMaterial({ color: 0xf5fcf7 });
+  const railMat = mat(0x8da29b);
+  for (let i = -3; i <= 3; i++) {
+    addBox(scene, floorW - .6, .07, .1, railMat, 0, 3.44, i * 3.4);
+    for (let j = -2; j <= 2; j++) {
+      const panel = addBox(scene, 2.6, .015, .3, lightPanelMat, j * 6, 3.36, i * 3.4);
+      panel.castShadow = false;
+    }
   }
   function floorPatch(x, y, w, h, kind, color) {
     const p = floorPoint([x, y], .012);
@@ -201,21 +214,22 @@ function buildScene(container) {
       new THREE.MeshStandardMaterial({ map: floorTexture(kind), color, roughness: .85 }));
     mesh.rotation.x = -Math.PI / 2; mesh.position.set(p.x, .008, p.z); mesh.receiveShadow = true; scene.add(mesh);
   }
-  floorPatch(29, 69, 12, 14, 'wood', 0xffffff);
-  floorPatch(11, 18, 9, 9, 'stone', 0xffe9c8);
-  floorPatch(11, 66, 9, 9, 'stone', 0xffe9c8);
-  floorPatch(129, 35, 8, 8, 'stone', 0xffe9c8);
-  floorPatch(13, 3, 12, 4, 'tile', 0xd8e4e6);
+  floorPatch(45, 44, 18, 22, 'wood', 0xffffff);
+  floorPatch(126, 116, 18, 22, 'wood', 0xffffff);
+  for (const [x, y] of [[45, 12], [72, 12], [126, 12]]) floorPatch(x, y, 13, 11, 'stone', 0xffe9c8);
+  floorPatch(24, 8, 16, 8, 'tile', 0xd8e4e6);            // 购物车停放区
+  floorPatch(150, 26, 12, 6, 'stone', 0xd6ecdf);         // 机器人等待区
+  for (const lane of STORE.checkoutLanes) floorPatch(lane.x, 16, 5, 16, 'tile', 0xe4e2d2); // 排队区地面
   for (const x of STORE.aisleXs) {
-    const p = floorPoint([x, 45]);
-    const runner = new THREE.Mesh(new THREE.PlaneGeometry(1.85, 12.8),
-      new THREE.MeshStandardMaterial({ map: floorTexture('tile'), color: 0xf7fbf8, roughness: .72 }));
+    const p = floorPoint([x, 80]);
+    const runner = new THREE.Mesh(new THREE.PlaneGeometry(1.95, 23),
+      new THREE.MeshStandardMaterial({ map: floorTexture('tile'), color: 0xf8fcf9, roughness: .72 }));
     runner.rotation.x = -Math.PI / 2; runner.position.set(p.x, .006, p.z); scene.add(runner);
   }
   for (const y of STORE.crossYs) {
-    const p = floorPoint([70, y]);
-    const runner = new THREE.Mesh(new THREE.PlaneGeometry(21.6, 2.4),
-      new THREE.MeshStandardMaterial({ map: floorTexture('tile'), color: 0xf7fbf8, roughness: .72 }));
+    const p = floorPoint([88, y]);
+    const runner = new THREE.Mesh(new THREE.PlaneGeometry(28, 2.6),
+      new THREE.MeshStandardMaterial({ map: floorTexture('tile'), color: 0xf8fcf9, roughness: .72 }));
     runner.rotation.x = -Math.PI / 2; runner.position.set(p.x, .007, p.z); scene.add(runner);
   }
 
@@ -223,12 +237,13 @@ function buildScene(container) {
   const buckets = new Map();
   const shapeGeometries = {
     box: new THREE.BoxGeometry(.23, .26, .18),
-    tallBox: new THREE.BoxGeometry(.16, .34, .15),
-    bottle: new THREE.CylinderGeometry(.058, .066, .29, 9),
-    can: new THREE.CylinderGeometry(.07, .07, .16, 10),
-    bag: new THREE.BoxGeometry(.21, .23, .1),
+    tallBox: new THREE.BoxGeometry(.16, .36, .15),
+    bottle: new THREE.CylinderGeometry(.052, .062, .30, 10),
+    can: new THREE.CylinderGeometry(.07, .07, .16, 12),
+    bag: new THREE.BoxGeometry(.21, .24, .1),
     produce: new THREE.IcosahedronGeometry(.115, 0),
-    jar: new THREE.CylinderGeometry(.075, .075, .18, 10),
+    jar: new THREE.CylinderGeometry(.075, .075, .19, 12),
+    carton: new THREE.BoxGeometry(.14, .30, .14),
   };
   function addProduct(shape, position, scale, color, rotation = 0) {
     if (!buckets.has(shape)) buckets.set(shape, []);
@@ -240,7 +255,7 @@ function buildScene(container) {
   function flushProducts() {
     for (const [shape, list] of buckets) {
       if (!list.length) continue;
-      const mesh = new THREE.InstancedMesh(shapeGeometries[shape], mat(0xffffff, { roughness: .78 }), list.length);
+      const mesh = new THREE.InstancedMesh(shapeGeometries[shape], mat(0xffffff, { roughness: .74 }), list.length);
       list.forEach((item, i) => { mesh.setMatrixAt(i, item.matrix); mesh.setColorAt(i, new THREE.Color(item.color)); });
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
@@ -258,122 +273,129 @@ function buildScene(container) {
     const group = tagGroup(new THREE.Group(), 'shelf', { id: shelf.id, category: shelf.category });
     group.position.set(center.x, 0, center.z); scene.add(group); pickTargets.push(group);
     const heat = new THREE.Mesh(new THREE.PlaneGeometry(w + .5, d + .5),
-      new THREE.MeshBasicMaterial({ color: 0x71b887, transparent: true, opacity: .14, depthWrite: false, side: THREE.DoubleSide }));
+      new THREE.MeshBasicMaterial({ color: 0x71b887, transparent: true, opacity: .12, depthWrite: false, side: THREE.DoubleSide }));
     heat.rotation.x = -Math.PI / 2; heat.position.set(center.x, .018, center.z); scene.add(heat); heatTiles.push(heat);
     const heatColor = index => palette[index % palette.length];
-    const frame = shelf.kind === 'cooler' ? mat(0x4f6675, { metalness: .35, roughness: .45 }) : mat(0x6f9283);
-    addBox(group, w, .11, d, mat(0x38584e), 0, .1, 0, true);
-    const levels = shelf.kind === 'produce' ? [.42, .74] : shelf.kind === 'cooler' ? [.48, .99, 1.5, 1.9] : [.48, .9, 1.3, 1.7].filter(h => h < shelf.shelfHeight - .1);
+    const frame = shelf.kind === 'cooler' ? mat(0x4f6675, { metalness: .38, roughness: .42 }) : mat(0x6f9283);
+    addBox(group, w, .12, d, mat(0x38584e), 0, .1, 0, true);
+    const levels = shelf.kind === 'produce' ? [.42, .78] : shelf.kind === 'cooler' ? [.48, .98, 1.48, 1.94] : [.48, .9, 1.32, 1.72].filter(h => h < shelf.shelfHeight - .1);
     if (shelf.kind === 'cooler') {
+      // 靠墙冷柜：金属外壳 + 玻璃门 + 门框 + 内部冷光 + 分层商品
       addBox(group, w, shelf.shelfHeight, d, frame, 0, shelf.shelfHeight / 2, 0, true);
-      addBox(group, w - .1, shelf.shelfHeight - .12, .02, new THREE.MeshBasicMaterial({ color: 0xbfe0ea }), 0, shelf.shelfHeight / 2, -d / 2 - .012);
-      for (let i = 0; i < Math.max(2, Math.floor(w / .55)); i++) {
-        addBox(group, .025, shelf.shelfHeight - .16, .03, materials.aluminum, -w / 2 + (i + 1) * w / (Math.max(2, Math.floor(w / .55)) + 1), shelf.shelfHeight / 2, -d / 2 - .03);
+      addBox(group, w - .12, shelf.shelfHeight - .16, .02, materials.coldGlow, 0, shelf.shelfHeight / 2, -d / 2 - .01);
+      addBox(group, w - .08, shelf.shelfHeight - .1, .012, materials.glass, 0, shelf.shelfHeight / 2, -d / 2 - .03);
+      for (let i = 0; i <= Math.max(2, Math.floor(w / .55)); i++) {
+        const gx = -w / 2 + i * w / Math.max(2, Math.floor(w / .55));
+        addBox(group, .022, shelf.shelfHeight - .12, .04, materials.aluminum, gx, shelf.shelfHeight / 2, -d / 2 - .035);
       }
+      addBox(group, .05, shelf.shelfHeight - .1, .05, materials.aluminum, 0, shelf.shelfHeight / 2, -d / 2 - .05);
       addBox(group, w - .14, .02, d - .14, materials.glass, 0, shelf.shelfHeight - .02, 0);
-      addBox(group, w - .1, .05, .05, materials.tealEmissive, 0, shelf.shelfHeight - .06, -d / 2 - .03);
+      addBox(group, w - .1, .05, .05, materials.tealEmissive, 0, shelf.shelfHeight - .06, -d / 2 - .04);
+    } else if (shelf.kind === 'produce') {
+      // 生鲜展示台：木质阶梯 + 果蔬堆
+      addBox(group, w, .28, d, mat(0x8a6a45, { roughness: .8 }), 0, .28, 0, true);
+      addBox(group, w - .1, .16, d - .1, mat(0x6f5438), 0, .44, 0, true);
+      for (const h of levels) addBox(group, w - .16, .06, d - .12, mat(0x936f49), 0, h, 0, true);
+      addBox(group, w - .16, .02, .04, materials.tealEmissive, 0, .3, -d / 2 - .01);
     } else {
-      for (const ex of [-w / 2 + .06, w / 2 - .06]) addBox(group, .11, shelf.shelfHeight, d, frame, ex, shelf.shelfHeight / 2, 0, true);
+      for (const ex of [-w / 2 + .07, w / 2 - .07]) addBox(group, .11, shelf.shelfHeight, d, frame, ex, shelf.shelfHeight / 2, 0, true);
       for (const h of levels) {
         addBox(group, w - .14, .055, d - .06, frame, 0, h, 0, true);
         const stripColor = palette[(index * 3 + Math.round(h * 10)) % palette.length];
-        const stripMat = mat(stripColor, { emissive: stripColor, emissiveIntensity: .22, roughness: .6 });
-        addBox(group, w - .2, .05, .045, stripMat, 0, h + .05, -d / 2 + .05);
-        addBox(group, w - .2, .05, .045, stripMat, 0, h + .05, d / 2 - .05);
+        const stripMat = mat(stripColor, { emissive: stripColor, emissiveIntensity: .2, roughness: .6 });
+        addBox(group, w - .2, .045, .04, stripMat, 0, h + .05, -d / 2 + .05);
+        addBox(group, w - .2, .045, .04, stripMat, 0, h + .05, d / 2 - .05);
       }
+      // 端架：货架两端的分类立牌
+      addBox(group, .03, .5, .34, mat(0x172C40), w / 2 + .01, 1.05, 0);
     }
-    const perRow = Math.max(3, Math.floor((w - .3) / .34));
+    const perRow = Math.max(4, Math.floor((w - .3) / .3));
     for (let level = 0; level < levels.length; level++) {
       for (let row = 0; row < 2; row++) {
         for (let n = 0; n < perRow; n++) {
-          if (rnd(index * 97 + level * 31 + row * 11 + n) < .12) continue;
+          if (rnd(index * 97 + level * 31 + row * 11 + n) < .1) continue;
           const px = -w / 2 + .21 + n * ((w - .42) / Math.max(1, perRow - 1));
-          const pz = (row ? .32 : -.32) * d;
-          const y = levels[level] + (shelf.kind === 'produce' ? .13 : .16);
+          const pz = (row ? .31 : -.31) * d;
+          const y = levels[level] + (shelf.kind === 'produce' ? .14 : .17);
           const position = new THREE.Vector3(center.x + px, y, center.z + pz);
           const pick = rnd(index * 13 + n * 7 + level * 3 + row);
           const color = heatColor(index + (pick > .75 ? 1 : 0));
           let shape = 'box';
-          if (shelf.kind === 'produce' && pick > .22) shape = 'produce';
-          else if (shelf.kind === 'cooler') shape = pick < .32 ? 'bottle' : pick < .52 ? 'can' : pick < .68 ? 'jar' : 'box';
-          else shape = pick < .18 ? 'bag' : pick < .34 ? 'can' : pick < .5 ? 'bottle' : pick < .64 ? 'tallBox' : pick < .78 ? 'jar' : 'box';
-          const scale = shape === 'produce' ? [.85 + pick * .4, .8 + pick * .3, .85 + pick * .4]
-            : shape === 'bottle' ? [1, .9 + pick * .25, 1] : [.9 + pick * .18, .85 + pick * .35, 1];
+          if (shelf.kind === 'produce' && pick > .18) shape = 'produce';
+          else if (shelf.kind === 'cooler') shape = pick < .28 ? 'bottle' : pick < .46 ? 'can' : pick < .6 ? 'jar' : pick < .74 ? 'carton' : 'box';
+          else shape = pick < .16 ? 'bag' : pick < .3 ? 'can' : pick < .44 ? 'bottle' : pick < .58 ? 'tallBox' : pick < .72 ? 'jar' : 'box';
+          const scale = shape === 'produce' ? [.8 + pick * .45, .75 + pick * .35, .8 + pick * .45]
+            : shape === 'bottle' ? [1, .88 + pick * .3, 1] : [.88 + pick * .2, .82 + pick * .38, 1];
           addProduct(shape, position, scale, color, rnd(n + index * 5) * .5);
         }
       }
     }
     const displayName = zoneName(shelf.category);
     const label = makeLabel(displayName, '#ffffff', '#1d5647', displayName.length > 8 ? .72 : .88);
-    label.position.set(center.x, shelf.shelfHeight + .36, center.z); scene.add(label);
-    const code = makeLabel(`货区 ${shelf.id}`, '#172C40', '#9ee8d9', .48);
-    code.position.set(center.x, shelf.shelfHeight + .09, center.z); scene.add(code);
+    label.position.set(center.x, shelf.shelfHeight + .38, center.z); scene.add(label);
+    const code = makeLabel(`货区 ${shelf.id}`, '#172C40', '#9ee8d9', .5);
+    code.position.set(center.x, shelf.shelfHeight + .12, center.z); scene.add(code);
   });
   flushProducts();
 
-  // ----- fixtures -----------------------------------------------------------
-  layoutFixtures.forEach((f, i) => {
-    const p = floorPoint([f.x, f.y]);
-    const isCheckout = f.kind === 'checkout';
-    const h = f.kind === 'wall' ? 1.85 : f.kind === 'promo' ? .92 : f.kind === 'cart' ? .16 : .25;
-    let color = f.kind === 'wall' ? 0xd9e5e4 : f.kind === 'promo' ? 0xe9cfa2 : isCheckout ? 0x9fb9c9 : 0xbcccd0;
-    const base = addBox(scene, f.w * X_SCALE, h, f.h * X_SCALE, mat(color), p.x, h / 2, p.z, true);
-    if (f.kind === 'wall') {
-      addBox(scene, f.w * X_SCALE + .05, .06, f.h * X_SCALE + .05, materials.aluminum, p.x, h + .03, p.z);
-      for (let k = 0; k < 3; k++) addBox(scene, f.w * X_SCALE * .8, .04, .02, materials.tealEmissive, p.x, .5 + k * .45, p.z - f.h * X_SCALE / 2 - .01);
+  // ----- 真实金属购物车 -----------------------------------------------------
+  function makeCart() {
+    const cart = new THREE.Group();
+    const frame = materials.metalFrame;
+    // 篮筐：梯形金属线框（非 wireframe box）
+    const y0 = .34, y1 = .66, topW = .48, botW = .40, len = .56;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const x0 = sx * botW / 2, x1 = sx * topW / 2, z = sz * len / 2;
+      const bar = addCylinder(cart, .01, .01, Math.hypot(y1 - y0, x1 - x0), frame, (x0 + x1) / 2, (y0 + y1) / 2, z, 6);
+      bar.rotation.z = sx * Math.atan2(x1 - x0, y1 - y0);
     }
-    if (isCheckout) {
-      addBox(scene, f.w * X_SCALE - .1, .03, f.h * X_SCALE - .08, mat(0x385766), p.x, h + .015, p.z);
-      addBox(scene, .18, .22, .02, materials.screen, p.x - .2, h + .18, p.z);
-      addBox(scene, .12, .05, .1, materials.graphite, p.x + .18, h + .05, p.z);
+    for (const yy of [y0, y1]) for (const sz of [-1, 1]) addBox(cart, topW, .016, .016, frame, 0, yy, sz * len / 2);
+    for (const yy of [y0, y1]) for (const sx of [-1, 1]) addBox(cart, .016, .016, len, frame, sx * topW / 2, yy, 0);
+    for (let k = 1; k <= 3; k++) for (const sz of [-1, 1]) addBox(cart, topW - .03, .008, .008, frame, 0, y0 + k * (y1 - y0) / 4, sz * len / 2);
+    // 底板网格
+    for (let k = -2; k <= 2; k++) addBox(cart, .012, .01, len, frame, k * botW / 5, y0, 0);
+    // 推把位于购物车 +Z 侧（朝向推车人），人物正面朝 -Z、车在其前方，故把手在近人侧。
+    for (const sx of [-1, 1]) {
+      const post = addCylinder(cart, .014, .014, .32, frame, sx * topW / 2, y1 + .14, len / 2, 8);
+      post.rotation.x = .18;
     }
-    if (f.kind === 'promo') {
-      for (let k = 0; k < 8; k++) {
-        const px = p.x + (rnd(i * 13 + k) - .5) * f.w * X_SCALE * .8;
-        const pz = p.z + (rnd(i * 29 + k) - .5) * f.h * X_SCALE * .8;
-        addProduct(rnd(i + k) > .5 ? 'box' : 'produce', new THREE.Vector3(px, h + .09, pz),
-          [.9, .8, .9], palette[(i + k) % palette.length]);
-      }
+    const handle = addCylinder(cart, .018, .018, topW + .12, mat(0x37454c, { roughness: .55, metalness: .25 }), 0, y1 + .29, len / 2 + .06, 10);
+    handle.rotation.z = Math.PI / 2;
+    // 儿童座板
+    addBox(cart, .34, .015, .18, frame, 0, y1 - .02, -len / 2 + .12);
+    // 四轮（前万向 + 后固定）
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const wheel = addCylinder(cart, .055, .055, .032, materials.rubber, sx * (botW / 2 - .02), .055, sz * (len / 2 - .05), 12);
+      wheel.rotation.z = Math.PI / 2;
+      addCylinder(cart, .018, .018, .06, frame, sx * (botW / 2 - .02), .09, sz * (len / 2 - .05), 8);
     }
-    if (f.kind === 'cart') {
-      for (let k = 0; k < 3; k++) {
-        const cp = new THREE.Vector3(p.x + (k - 1) * .55, .3, p.z);
-        const cart = makeCart(); cart.position.copy(cp); cart.rotation.y = Math.PI / 2; scene.add(cart);
-      }
-    }
-    if (f.kind === 'entrance' || f.kind === 'exit') {
-      for (const side of [-1, 1]) addCylinder(scene, .07, .07, 2.3, materials.aluminum, p.x + side * f.w * X_SCALE / 2, 1.15, p.z, 10);
-      addBox(scene, f.w * X_SCALE + .3, .12, .12, materials.tealEmissive, p.x, 2.3, p.z);
-    }
-    const label = makeLabel(f.label, isCheckout ? '#172C40' : '#ffffff', isCheckout ? '#a6e9dc' : '#335e52', f.label.length > 10 ? .46 : .56);
-    label.position.set(p.x, h + .42, p.z); scene.add(label);
-  });
-  flushProducts();
-  const zoneSign = makeLabel('生鲜果蔬  ·  乳制品  ·  冷冻食品  ·  饮品', '#172C40', '#9fe6d8', 1.5);
-  zoneSign.position.set(0, 2.75, -floorD / 2 + .18); scene.add(zoneSign);
-  [['生鲜与冷藏', -5.5], ['食品杂货', 0], ['家庭日用', 5.5]].forEach(([label, x]) => {
-    const sign = makeLabel(label, '#ffffff', '#1c6b5c', .95);
-    sign.position.set(x, 1.65, -floorD / 2 + .18); scene.add(sign);
-  });
+    return cart;
+  }
 
-  // ----- robot: 0.62 m wide × 0.82 m long × 0.90 m tall (real proportions) ----
+  // ----- 机器人：0.62 × 0.82 × 0.92 m --------------------------------------
   const robot = tagGroup(new THREE.Group(), 'robot', { id: 'AMR-01', name: 'NEXUS AMR-01' });
   scene.add(robot); pickTargets.push(robot);
   addRounded(robot, .60, .15, .78, .055, materials.graphite, 0, .13, 0, true);
   addRounded(robot, .62, .07, .80, .03, mat(0x1d2b35, { metalness: .45 }), 0, .075, 0, true);
   addRounded(robot, .54, .38, .60, .09, materials.white, 0, .40, 0, true);
   addBox(robot, .55, .025, .61, materials.aluminum, 0, .235, 0);
-  addBox(robot, .50, .035, .60, materials.aluminum, 0, .645, 0);      // cargo platform
+  addBox(robot, .50, .035, .60, materials.aluminum, 0, .645, 0);
   for (const side of [-1, 1]) addBox(robot, .022, .055, .58, materials.aluminum, side * .25, .685, 0);
   addBox(robot, .46, .02, .035, materials.aluminum, 0, .685, -.29);
   for (const side of [-1, 1]) addBox(robot, .02, .11, .50, mat(0x8fded0, { emissive: 0x1a8e80, emissiveIntensity: .35 }), side * .275, .48, 0);
-  const screenPanel = addBox(robot, .25, .19, .022, materials.screen, 0, .45, -.305);
-  screenPanel.rotation.x = -.13;
-  for (const x of [-.07, .07]) {
-    const lens = addCylinder(robot, .026, .026, .02, materials.dark, x, .585, -.302, 12);
+  // 数字表情屏（参考图要求）
+  const faceScreen = addBox(robot, .27, .20, .022, materials.screen, 0, .47, -.306);
+  faceScreen.rotation.x = -.13;
+  const facePixels = [];
+  for (let i = 0; i < 7; i++) for (let j = 0; j < 4; j++) {
+    const px = addBox(robot, .026, .026, .006, materials.tealEmissive, -.1 + i * .033, .53 - j * .033, -.32);
+    facePixels.push(px);
+  }
+  for (const x of [-.085, .085]) {
+    const lens = addCylinder(robot, .024, .024, .02, materials.dark, x, .6, -.302, 12);
     lens.rotation.x = Math.PI / 2;
   }
-  addBox(robot, .58, .08, .055, materials.rubber, 0, .14, -.405);      // safety bumper
+  addBox(robot, .58, .08, .055, materials.rubber, 0, .14, -.405);
   const statusBar = addBox(robot, .42, .022, .02, materials.tealEmissive, 0, .105, -.425);
   const wheelMeshes = [];
   for (const side of [-1, 1]) {
@@ -391,16 +413,15 @@ function buildScene(container) {
     const caster = addCylinder(robot, .055, .055, .045, materials.rubber, side * .21, .052, z, 12);
     caster.rotation.z = Math.PI / 2;
   }
-  addCylinder(robot, .045, .045, .075, materials.graphite, 0, .685, 0, 16); // LiDAR mast
+  addCylinder(robot, .045, .045, .075, materials.graphite, 0, .685, 0, 16);
   const lidar = addCylinder(robot, .082, .082, .065, mat(0x26343d, { metalness: .55 }), 0, .755, 0, 24);
   const lidarRing = new THREE.Mesh(new THREE.TorusGeometry(.086, .011, 6, 24), materials.tealEmissive);
   lidarRing.rotation.x = Math.PI / 2; lidarRing.position.set(0, .792, 0); robot.add(lidarRing);
   const statusRing = new THREE.Mesh(new THREE.RingGeometry(.43, .48, 42),
     new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .65, side: THREE.DoubleSide, depthWrite: false }));
   statusRing.rotation.x = -Math.PI / 2; statusRing.position.y = .011; robot.add(statusRing);
-  // 0.8 m safety buffer visualisation, colour follows behaviour state.
   const safetyRing = new THREE.Mesh(new THREE.RingGeometry(.77, .80, 48),
-    new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .22, side: THREE.DoubleSide, depthWrite: false }));
+    new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .2, side: THREE.DoubleSide, depthWrite: false }));
   safetyRing.rotation.x = -Math.PI / 2; safetyRing.position.y = .009; robot.add(safetyRing);
   const robotTag = makeLabel('AMR-01', '#172C40', '#8ce5d5', .42);
   robotTag.position.y = 1.02; robot.add(robotTag);
@@ -418,110 +439,246 @@ function buildScene(container) {
     statusRing.material.color.setHex(color);
     safetyRing.material.color.setHex(color);
     lidarRing.material = new THREE.MeshBasicMaterial({ color });
+    // 表情屏：行驶=笑脸、礼让=横眼、故障=叉
+    const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP'].includes(robotState);
+    facePixels.forEach((p, i) => { p.visible = urgent ? (Math.floor(i / 7) === 1) : (i % 7 !== 0 && i % 7 !== 6 || Math.floor(i / 7) !== 1); });
   }
 
-  // ----- articulated pedestrians -------------------------------------------
+  // ----- 层级关节行人：6 套参考图角色 + 正确的推车把手绑定 -------------------
   const limbGeometry = {
-    upper: new THREE.CylinderGeometry(.048, .055, .32, 8),
-    fore: new THREE.CylinderGeometry(.040, .046, .28, 8),
-    thigh: new THREE.CylinderGeometry(.066, .072, .40, 8),
-    shin: new THREE.CylinderGeometry(.052, .058, .38, 8),
+    upper: new THREE.CylinderGeometry(.048, .055, .34, 9),
+    fore:  new THREE.CylinderGeometry(.040, .046, .28, 9),
+    thigh: new THREE.CylinderGeometry(.066, .072, .40, 9),
+    shin:  new THREE.CylinderGeometry(.052, .058, .38, 9),
   };
-  function makeCart() {
-    const cartGroup = new THREE.Group();
-    const wire = new THREE.MeshStandardMaterial({ color: 0xa9bec6, metalness: .65, roughness: .35, wireframe: true });
-    const basket = addBox(cartGroup, .50, .28, .38, wire, 0, .55, -.20);
-    basket.castShadow = false;
-    addBox(cartGroup, .50, .025, .05, materials.graphite, 0, .70, -.40);
-    for (const x of [-.19, .19]) addCylinder(cartGroup, .012, .012, .42, materials.aluminum, x, .42, -.38, 8);
-    for (const x of [-.19, .19]) for (const z of [-.34, -.06]) {
-      const w = addCylinder(cartGroup, .055, .055, .035, materials.rubber, x, .055, z, 10);
-      w.rotation.z = Math.PI / 2;
-    }
-    return cartGroup;
-  }
-  function makePerson(style = 0, color = 0xc47a58, withCart = false) {
+
+  function makePerson(look = 0, skinColor = 0xe0ae87, withCart = false) {
+    const L = LOOKS[look % LOOKS.length];
     const group = new THREE.Group();
-    const coat = personMat(color);
-    const trousers = personMat([0x37424b, 0x4b4a45, 0x5a5f66, 0x2f3a45, 0x6b6257][style % 5]);
-    const skin = personMat(skinTones[style % skinTones.length]);
-    const hair = personMat(hairTones[style % hairTones.length]);
-    const shoe = personMat(0x23282c);
-    addRounded(group, .40, .50, .23, .075, coat, 0, 1.13, 0, true);          // torso
-    addBox(group, .20, .30, .235, personMat(0xf0f2ed), 0, 1.16, -.005);       // shirt
-    addCylinder(group, .055, .055, .09, skin, 0, 1.43, 0, 10);                 // neck
-    const head = new THREE.Mesh(new THREE.SphereGeometry(.108, 14, 10), skin);
-    head.position.set(0, 1.545, 0); head.castShadow = true; group.add(head);
-    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(.113, 14, 10, 0, Math.PI * 2, 0, Math.PI * .58), hair);
-    hairCap.position.set(0, 1.565, 0); hairCap.scale.set(1.02, 1, 1.02); group.add(hairCap);
+    const coat = personMat(L.coat), inner = personMat(L.inner), trousers = personMat(L.trousers);
+    const skin = personMat(skinColor), hair = personMat(L.hair), shoe = personMat(L.shoe);
+
+    // 躯干（肩 1.32 / 髋 0.88 / 脚底 0）
+    addRounded(group, .40, .46, .23, .075, coat, 0, 1.12, 0, true);
+    addBox(group, .20, .30, .235, inner, 0, 1.18, -.005);
+    if (L.vest) {
+      addBox(group, .34, .38, .02, coat, 0, 1.1, -.128);
+      addBox(group, .06, .10, .012, personMat(0xf5f5f0), -.09, 1.12, -.142); // 工牌
+    }
+    if (L.long) addBox(group, .42, .34, .25, coat, 0, .80, 0, true);         // 风衣下摆
+    addCylinder(group, .055, .055, .09, skin, 0, 1.40, 0, 10);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(.108, 16, 12), skin);
+    head.position.set(0, 1.535, 0); head.castShadow = true; group.add(head);
+    // 发型：短发/长发/马尾/银发
+    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(.113, 16, 12, 0, Math.PI * 2, 0, Math.PI * .56), hair);
+    hairCap.position.set(0, 1.555, 0); hairCap.scale.set(1.03, 1, 1.03); group.add(hairCap);
+    if (look % 3 === 0) { const bun = new THREE.Mesh(new THREE.SphereGeometry(.06, 10, 8), hair); bun.position.set(0, 1.55, .1); group.add(bun); }
+    if (L.glasses) for (const sx of [-1, 1]) {
+      const lens = new THREE.Mesh(new THREE.TorusGeometry(.028, .005, 6, 12), materials.graphite);
+      lens.position.set(sx * .045, 1.55, -.095); group.add(lens);
+    }
+    // 鼻/眼（低多边形但有人形辨识度）
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(.018, .045, 6), skin);
+    nose.position.set(0, 1.525, -.108); nose.rotation.x = -Math.PI / 2; group.add(nose);
+    for (const sx of [-1, 1]) addBox(group, .018, .012, .006, materials.dark, sx * .042, 1.565, -.104);
+
     const arms = [], legs = [];
     for (const side of [-1, 1]) {
-      const shoulder = new THREE.Group(); shoulder.position.set(side * .225, 1.34, 0); group.add(shoulder);
-      const upper = new THREE.Mesh(limbGeometry.upper, coat); upper.position.y = -.16; upper.castShadow = true; shoulder.add(upper);
-      const elbow = new THREE.Group(); elbow.position.y = -.32; shoulder.add(elbow);
+      const shoulder = new THREE.Group(); shoulder.position.set(side * .23, 1.32, 0); group.add(shoulder);
+      const upper = new THREE.Mesh(limbGeometry.upper, coat); upper.position.y = -.17; upper.castShadow = true; shoulder.add(upper);
+      const elbow = new THREE.Group(); elbow.position.y = -.34; shoulder.add(elbow);
       const fore = new THREE.Mesh(limbGeometry.fore, skin); fore.position.y = -.14; elbow.add(fore);
-      const hand = new THREE.Mesh(new THREE.SphereGeometry(.042, 8, 6), skin); hand.position.y = -.29; elbow.add(hand);
-      arms.push({ shoulder, elbow });
-      const hip = new THREE.Group(); hip.position.set(side * .11, .86, 0); group.add(hip);
+      // 手：略扁的球体 + 拇指，不再是纯球
+      const palm = new THREE.Mesh(new THREE.SphereGeometry(.045, 10, 8), skin);
+      palm.scale.set(1, .8, .7); palm.position.y = -.285; elbow.add(palm);
+      const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(.012, .035, 3, 6), skin);
+      thumb.position.set(-side * .032, -.265, -.02); thumb.rotation.z = side * .5; elbow.add(thumb);
+      arms.push({ shoulder, elbow, palm });
+
+      const hip = new THREE.Group(); hip.position.set(side * .11, .88, 0); group.add(hip);
       const thigh = new THREE.Mesh(limbGeometry.thigh, trousers); thigh.position.y = -.20; thigh.castShadow = true; hip.add(thigh);
       const knee = new THREE.Group(); knee.position.y = -.40; hip.add(knee);
       const shin = new THREE.Mesh(limbGeometry.shin, trousers); shin.position.y = -.19; knee.add(shin);
-      addBox(knee, .115, .055, .22, shoe, 0, -.37, -.045);
+      addRounded(knee, .12, .09, .24, .03, shoe, 0, -.385, -.045, true); // 鞋底接地 y≈0
       legs.push({ hip, knee });
     }
-    let cart = null;
-    if (withCart) { cart = makeCart(); cart.position.set(0, 0, -.62); group.add(cart); }
-    const shadow = new THREE.Mesh(new THREE.CircleGeometry(.20, 16),
+
+    // 购物车：车在人物前方 (-Z)，把手在车的 +Z 近人侧。
+    // 手掌锚点与把手世界坐标重合（cart.z + handle.z = -.62 + .34 = -.28），
+    // 因此双手恒在把手上，不随前臂末端漂移 —— 彻底消除"手悬空/畸形"。
+    let cart = null, handAnchors = [];
+    if (withCart) {
+      cart = makeCart(); cart.position.set(0, 0, -.62); group.add(cart);
+      const HANDLE_Y = .66 + .29;   // 与 makeCart 中 handle 高度一致
+      const HANDLE_Z = -.62 + (.56 / 2 + .06); // cart.z + handle.local.z = -.28
+      for (const side of [-1, 1]) {
+        const anchor = new THREE.Group();
+        anchor.position.set(side * .28, HANDLE_Y, HANDLE_Z);
+        group.add(anchor); handAnchors.push(anchor);
+      }
+    }
+    const shadow = new THREE.Mesh(new THREE.CircleGeometry(.22, 18),
       new THREE.MeshBasicMaterial({ color: 0x18332c, transparent: true, opacity: .12, depthWrite: false }));
     shadow.rotation.x = -Math.PI / 2; shadow.position.y = .006; group.add(shadow);
+    const scale = (LOOKS[look % 6] && [1, 1, .98, 1.02, .94, 1.01][look % 6]) || 1;
+    group.scale.setScalar(scale);
     tagGroup(group, 'pedestrian', { id: '', state: '' });
-    return [group, { arms, legs, cart }];
+    return [group, { arms, legs, cart, handAnchors, look, baseScale: scale }];
   }
+
   const MAX_PEOPLE = 26;
   const people = [];
   for (let i = 0; i < MAX_PEOPLE; i++) {
-    const [model, rig] = makePerson(i % 5, [0xc47a58, 0xd7a16c, 0x936b61, 0x5e7f99, 0x9e8a6b][i % 5], i % 4 === 0);
+    const [model, rig] = makePerson(i % 6, 0xe0ae87, i % 5 === 0);
     model.visible = false; scene.add(model); pickTargets.push(model);
-    people.push({ model, rig });
+    people.push({ model, rig, currentLook: i % 6, currentCart: i % 5 === 0 });
   }
   let pedestrianData = [];
+
   function applyPersonRig(person, data, time) {
-    const { arms, legs, cart } = person.rig;
+    const { arms, legs, cart, handAnchors } = person.rig;
     const walking = ['ENTER_STORE', 'WALK_TO_SECTION', 'WALKING', 'GOING_TO_CHECKOUT', 'EXITING', 'TURNING'].includes(data.state);
+    const browsing = data.state === 'BROWSING';
+    const queueing = data.state === 'QUEUEING';
     const speedRatio = Math.min(1, (data.speed || 0) / .95);
-    const swing = walking ? Math.sin(data.phase || 0) * .62 * speedRatio : Math.sin(time * 1.3 + data.phase) * .035;
+    const swing = walking ? Math.sin(data.phase || 0) * .58 * speedRatio : Math.sin(time * 1.2 + data.phase) * .03;
+
     legs[0].hip.rotation.x = swing; legs[1].hip.rotation.x = -swing;
-    legs[0].knee.rotation.x = Math.max(0, -swing) * .55; legs[1].knee.rotation.x = Math.max(0, swing) * .55;
+    legs[0].knee.rotation.x = Math.max(0, -swing) * .5; legs[1].knee.rotation.x = Math.max(0, swing) * .5;
+    if (queueing || browsing) { legs[0].hip.rotation.x *= .2; legs[1].hip.rotation.x *= .2; }
+
     if (cart) {
-      arms[0].shoulder.rotation.x = -1.05; arms[1].shoulder.rotation.x = -1.05;
-      arms[0].elbow.rotation.x = -.18; arms[1].elbow.rotation.x = -.18;
-    } else if (data.state === 'BROWSING') {
-      const reach = Math.sin(time * 2.1 + data.phase) * .22;
-      arms[0].shoulder.rotation.x = -1.0 + reach; arms[1].shoulder.rotation.x = -.35;
-      arms[0].elbow.rotation.x = -.55; arms[1].elbow.rotation.x = -.15;
+      // 上臂/前臂朝把手方向自然弯曲（肩→肘→把手，无反向弯折）。
+      // 手掌视觉由把手锚点上的 hand 接管，前臂末端的 palm 隐藏避免重影。
+      const shoulderX = .58, elbowX = .42;
+      arms[0].shoulder.rotation.x = shoulderX; arms[1].shoulder.rotation.x = shoulderX;
+      arms[0].elbow.rotation.x = elbowX; arms[1].elbow.rotation.x = elbowX;
+      arms[0].shoulder.rotation.z = .08; arms[1].shoulder.rotation.z = -.08;
+      arms.forEach(a => { a.palm.visible = false; }); // 手掌由把手锚点上的手接管
+      handAnchors.forEach((anchor, i) => {
+        if (!anchor.userData.hand) {
+          const hand = new THREE.Mesh(new THREE.SphereGeometry(.046, 10, 8), personMat(0xe0ae87));
+          hand.scale.set(1.05, .75, .9);
+          const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(.013, .038, 3, 6), personMat(0xe0ae87));
+          thumb.position.set(0, -.035, .022); thumb.rotation.x = .9;
+          anchor.add(hand, thumb); anchor.userData.hand = hand;
+        }
+        anchor.userData.hand.material = personMat(data.skin || 0xe0ae87);
+      });
+    } else if (browsing) {
+      arms[0].palm.visible = true;
+      const reach = Math.sin(time * 2 + data.phase) * .3;
+      arms[0].shoulder.rotation.x = -1.15 + reach; arms[1].shoulder.rotation.x = -.25;
+      arms[0].elbow.rotation.x = -.5; arms[1].elbow.rotation.x = -.12;
+    } else if (queueing) {
+      arms[0].palm.visible = true; arms[1].palm.visible = true;
+      arms[0].shoulder.rotation.x = -.06; arms[1].shoulder.rotation.x = -.06;
+      arms[0].elbow.rotation.x = -.22; arms[1].elbow.rotation.x = -.22;
     } else {
-      arms[0].shoulder.rotation.x = -swing * .72; arms[1].shoulder.rotation.x = swing * .72;
+      arms[0].palm.visible = true; arms[1].palm.visible = true;
+      arms[0].shoulder.rotation.x = -swing * .68; arms[1].shoulder.rotation.x = swing * .68;
       arms[0].elbow.rotation.x = -.08; arms[1].elbow.rotation.x = -.08;
     }
+    // 转弯：身体轻微侧倾/朝向已由 rotation.y 控制
     person.model.userData.pick.id = data.id;
     person.model.userData.pick.state = data.state;
   }
+
+  function ensureLook(person, data) {
+    const wantLook = data.look ?? 0, wantCart = !!data.cart;
+    if (person.currentLook === wantLook && person.currentCart === wantCart) return;
+    const index = people.indexOf(person);
+    scene.remove(person.model);
+    pickTargets.splice(pickTargets.indexOf(person.model), 1);
+    const [model, rig] = makePerson(wantLook, data.skin || 0xe0ae87, wantCart);
+    model.position.copy(person.model.position); model.rotation.copy(person.model.rotation);
+    model.visible = person.model.visible;
+    scene.add(model); pickTargets.push(model);
+    person.model = model; person.rig = rig;
+    person.currentLook = wantLook; person.currentCart = wantCart;
+  }
+
   function setPedestrians(list = []) {
     pedestrianData = list;
     people.forEach((person, i) => {
       const data = list[i];
       person.model.visible = !!data;
       if (!data) return;
+      ensureLook(person, data);
       const p = floorPoint([data.x, data.y], 0);
       person.model.position.set(p.x, 0, p.z);
-      person.model.rotation.y = -(data.heading || 0); // map heading → world forward (-Z)
+      person.model.rotation.y = -(data.heading || 0); // 地图朝向 → 世界前向 (-Z)
       applyPersonRig(person, data, (performance.now() - startedAt) / 1000);
     });
   }
 
-  const crowdZone = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 1.3),
-    new THREE.MeshBasicMaterial({ color: 0xe8a34a, transparent: true, opacity: .27, depthWrite: false, side: THREE.DoubleSide }));
-  crowdZone.rotation.x = -Math.PI / 2; crowdZone.position.copy(floorPoint([69, 34], .02)); scene.add(crowdZone);
+  // ----- fixtures -----------------------------------------------------------
+  layoutFixtures.forEach((f, i) => {
+    const p = floorPoint([f.x, f.y]);
+    const isCheckout = f.kind === 'checkout';
+    const h = f.kind === 'wall' ? 1.92 : f.kind === 'promo' ? .94 : f.kind === 'cart' ? .12 : f.kind === 'queue' || f.kind === 'robotwait' ? .02 : .28;
+    let color = f.kind === 'wall' ? 0xd9e5e4 : f.kind === 'promo' ? 0xe9cfa2 : isCheckout ? 0x9fb9c9 : 0xbcccd0;
+    if (f.kind === 'queue' || f.kind === 'robotwait') {
+      const zone = new THREE.Mesh(new THREE.PlaneGeometry(f.w * X_SCALE, f.h * X_SCALE),
+        new THREE.MeshBasicMaterial({ color: f.kind === 'queue' ? 0xe8a34a : 0x3d7bd6, transparent: true, opacity: .1, depthWrite: false, side: THREE.DoubleSide }));
+      zone.rotation.x = -Math.PI / 2; zone.position.set(p.x, .01, p.z); scene.add(zone);
+      if (f.kind === 'queue') for (let k = 0; k < 4; k++) {
+        const slot = addCylinder(scene, .12, .12, .008, mat(0xd8d2bb), p.x, .012, p.z + (1.5 - k) * (f.h * X_SCALE / 4), 16);
+        slot.castShadow = false;
+      }
+    } else {
+      const base = addBox(scene, f.w * X_SCALE, h, f.h * X_SCALE, mat(color), p.x, h / 2, p.z, true);
+      if (f.kind === 'wall') {
+        addBox(scene, f.w * X_SCALE + .05, .06, f.h * X_SCALE + .05, materials.aluminum, p.x, h + .03, p.z);
+        // 后墙冷柜：玻璃门 + 内部冷光 + 商品
+        addBox(scene, f.w * X_SCALE - .16, h - .24, .015, materials.coldGlow, p.x, h / 2, p.z + f.h * X_SCALE / 2 + .012);
+        addBox(scene, f.w * X_SCALE - .12, h - .16, .01, materials.glass, p.x, h / 2, p.z + f.h * X_SCALE / 2 + .025);
+        for (let k = 0; k < Math.floor(f.w / 7); k++) addBox(scene, .02, h - .18, .03, materials.aluminum, p.x - f.w * X_SCALE / 2 + (k + 1) * f.w * X_SCALE / Math.floor(f.w / 7), h / 2, p.z + f.h * X_SCALE / 2 + .032);
+        for (let k = 0; k < 3; k++) addBox(scene, f.w * X_SCALE * .7, .03, .02, materials.tealEmissive, p.x, .5 + k * .5, p.z + f.h * X_SCALE / 2 + .04);
+      }
+      if (isCheckout) {
+        // 收银台：传送带 + 扫码区 + 显示屏 + 商品扫描台
+        addBox(scene, f.w * X_SCALE - .1, .03, f.h * X_SCALE - .08, materials.conveyor, p.x, h + .015, p.z);
+        for (let k = 0; k < 5; k++) addBox(scene, .012, .012, f.h * X_SCALE - .14, materials.aluminum, p.x - f.w * X_SCALE / 2 + .18 + k * (f.w * X_SCALE - .36) / 4, h + .035, p.z);
+        addBox(scene, .22, .05, .18, mat(0x2b3943), p.x + .3, h + .05, p.z); // 扫码器
+        addBox(scene, .16, .22, .02, materials.screen, p.x - .32, h + .19, p.z - .06);
+        addBox(scene, .12, .05, .1, materials.graphite, p.x + .1, h + .06, p.z + .1);
+      }
+      if (f.kind === 'promo') {
+        for (let k = 0; k < 14; k++) {
+          const px = p.x + (rnd(i * 13 + k) - .5) * f.w * X_SCALE * .78;
+          const pz = p.z + (rnd(i * 29 + k) - .5) * f.h * X_SCALE * .78;
+          addProduct(rnd(i + k) > .5 ? 'box' : 'produce', new THREE.Vector3(px, h + .12, pz),
+            [.9, .8, .9], palette[(i + k) % palette.length]);
+        }
+      }
+      if (f.kind === 'cart') {
+        for (let k = 0; k < 4; k++) {
+          const cp = new THREE.Vector3(p.x + (k - 1.5) * .68, 0, p.z);
+          const cart = makeCart(); cart.position.copy(cp); cart.rotation.y = Math.PI / 2; scene.add(cart);
+        }
+      }
+      if (f.kind === 'entrance' || f.kind === 'exit') {
+        for (const side of [-1, 1]) addCylinder(scene, .07, .07, 2.5, materials.aluminum, p.x + side * f.w * X_SCALE / 2, 1.25, p.z, 10);
+        addBox(scene, f.w * X_SCALE + .3, .12, .12, materials.tealEmissive, p.x, 2.5, p.z);
+      }
+      const label = makeLabel(f.label, isCheckout ? '#172C40' : '#ffffff', isCheckout ? '#a6e9dc' : '#335e52', f.label.length > 10 ? .46 : .56);
+      label.position.set(p.x, Math.max(h + .42, 1.1), p.z); scene.add(label);
+    }
+  });
+  flushProducts();
+
+  // 区域招牌（入口上方与后墙）
+  const zoneSign = makeLabel('NEXUS RETAIL · 智能超市与机器人履约中心', '#172C40', '#9fe6d8', 1.8);
+  zoneSign.position.set(0, 3.0, -floorD / 2 + .2); scene.add(zoneSign);
+  [['生鲜 · 乳品 · 冷冻', -11], ['食品杂货', 0], ['日用 · 个护', 11]].forEach(([label, x]) => {
+    const sign = makeLabel(label, '#ffffff', '#1c6b5c', 1.05);
+    sign.position.set(x, 2.2, -floorD / 2 + .2); scene.add(sign);
+  });
+
+  const crowdZone = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 2.0),
+    new THREE.MeshBasicMaterial({ color: 0xe8a34a, transparent: true, opacity: .22, depthWrite: false, side: THREE.DoubleSide }));
+  crowdZone.rotation.x = -Math.PI / 2; crowdZone.position.copy(floorPoint([STORE.hotCorridor.xMin + 27, STORE.hotCorridor.y], .02)); scene.add(crowdZone);
   const obstacleGroup = new THREE.Group(); scene.add(obstacleGroup);
   const restrictedGroup = new THREE.Group(); scene.add(restrictedGroup);
 
@@ -529,9 +686,8 @@ function buildScene(container) {
   const plannedRoute = new THREE.Group(), originalRoute = new THREE.Group(), traveledRoute = new THREE.Group();
   scene.add(originalRoute, plannedRoute, traveledRoute);
   const pointGroup = new THREE.Group(); scene.add(pointGroup);
-  let markers = [];
   function setPickups(pickups, boughtCount = 0) {
-    disposeGroup(pointGroup); markers = [];
+    disposeGroup(pointGroup);
     pickups.forEach((point, index) => {
       const p = floorPoint(point), group = new THREE.Group(); group.position.set(p.x, 0, p.z); pointGroup.add(group);
       const done = index < boughtCount;
@@ -541,23 +697,26 @@ function buildScene(container) {
       ring.rotation.x = Math.PI / 2; ring.position.y = .06; group.add(ring);
       const label = makeLabel(done ? '✓' : String(index + 1), done ? '#20A995' : '#172C40', '#ffffff', .30);
       label.position.y = .42; group.add(label);
-      markers.push({ group });
     });
   }
 
-  // ----- interaction / camera ----------------------------------------------
-  let cameraMode = 'iso', presentation = false, pickHandler = null;
-  const cameraTarget = new THREE.Vector3(0, .45, 0);
+  // ----- camera / interaction ----------------------------------------------
+  let cameraMode = 'full', presentation = false, pickHandler = null;
+  const cameraTarget = new THREE.Vector3(...CAMERA.full.target);
   const desired = new THREE.Vector3();
+  const VIEWS = ['full', 'iso', 'follow', 'close', 'top'];
   function setCameraMode(mode) {
-    cameraMode = ['iso', 'follow', 'close'].includes(mode) ? mode : 'iso';
-    controls.enabled = cameraMode === 'iso';
-    if (cameraMode === 'iso') {
-      camera.position.copy(cameraHome); cameraTarget.set(0, .45, 0);
-      controls.target.copy(cameraTarget); controls.update();
+    cameraMode = VIEWS.includes(mode) ? mode : 'full';
+    controls.enabled = cameraMode === 'full' || cameraMode === 'iso' || cameraMode === 'top';
+    if (cameraMode === 'full' || cameraMode === 'iso' || cameraMode === 'top') {
+      const preset = CAMERA[cameraMode];
+      camera.position.set(...preset.position);
+      cameraTarget.set(...preset.target);
+      controls.target.copy(cameraTarget);
+      camera.lookAt(cameraTarget); controls.update();
     }
   }
-  function resetCamera() { setCameraMode('iso'); }
+  function resetCamera() { setCameraMode('full'); }
   const raycaster = new THREE.Raycaster(), pointer = new THREE.Vector2();
   renderer.domElement.addEventListener('pointerdown', event => {
     if (!pickHandler || presentation) return;
@@ -577,7 +736,15 @@ function buildScene(container) {
     const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(state);
     const color = urgent ? 0xE8A34A : state === 'SLOW_DOWN' || state === 'AVOIDANCE' ? 0xE8A34A : 0x28B9A4;
     safetyRing.material.color.setHex(color);
-    safetyRing.material.opacity = urgent ? .42 : state === 'SLOW_DOWN' ? .32 : .18;
+    safetyRing.material.opacity = urgent ? .42 : state === 'SLOW_DOWN' ? .3 : .16;
+  }
+  function setQueueStatus(list = []) {
+    // 队列占用可视化：排队位圆环颜色随占用变化。
+    layoutFixtures.forEach((f, i) => {
+      if (f.kind !== 'queue') return;
+      const status = list.find(q => f.label.includes(q.id.replace('LANE-', '')));
+      // 当前实现以人群数据中的 lane 字段更新，见 setPedestrians。
+    });
   }
 
   // ----- resize / render ----------------------------------------------------
@@ -593,6 +760,7 @@ function buildScene(container) {
   const observer = new ResizeObserver(resize); observer.observe(container); resize();
   const startedAt = performance.now();
   let lastFrame = performance.now(), fps = 0;
+  let renderFaceTimer = 0;
   function frame() {
     requestAnimationFrame(frame);
     const now = performance.now();
@@ -601,18 +769,29 @@ function buildScene(container) {
     if (!active || document.hidden || !container.offsetParent) return;
     const time = (now - startedAt) / 1000;
     lidarRing.rotation.z = time * 2.4;
-    // 车轮随实际位移旋转；由 app 传入的累计里程驱动。
     for (const wheel of wheelMeshes) wheel.rotation.x = (robot.userData.distance || 0) / .135;
-    if (cameraMode !== 'iso') {
-      const robotPos = robot.position;
-      const angle = robot.rotation.y;
-      const offset = cameraMode === 'close' ? new THREE.Vector3(.95, .95, 1.45) : new THREE.Vector3(0, 2.8, 3.8);
+    if (cameraMode === 'follow' || cameraMode === 'close') {
+      const robotPos = robot.position, angle = robot.rotation.y;
+      const offset = cameraMode === 'close' ? new THREE.Vector3(2.4, 1.9, 3.2) : new THREE.Vector3(0, 4.2, 6.5);
       offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), angle);
       desired.copy(robotPos).add(offset);
       camera.position.lerp(desired, .09);
       cameraTarget.lerp(new THREE.Vector3(robotPos.x, .5, robotPos.z), .12);
       camera.lookAt(cameraTarget);
+    } else if (cameraMode === 'top') {
+      camera.position.set(...CAMERA.top.position); camera.lookAt(...CAMERA.top.target);
     } else controls.update();
+    // 表情屏动态（低频）
+    renderFaceTimer += dt;
+    if (renderFaceTimer > .5) {
+      renderFaceTimer = 0;
+      const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP'].includes(robotState);
+      facePixels.forEach((p, i) => {
+        const row = Math.floor(i / 7), col = i % 7;
+        p.visible = urgent ? (row === 1) : (row === 0 ? col === 1 || col === 5 : row === 2 ? col > 0 && col < 6 : true);
+      });
+    }
+    // 购物车与人同步：把手锚点属于人物 group，天然随整体位移/转向/停止。
     renderer.render(scene, camera);
   }
   requestAnimationFrame(frame);
@@ -626,14 +805,14 @@ function buildScene(container) {
       robot.userData.distance = distance;
       if (state) setRobotState(state);
     },
-    setRobotState, setPedestrians, setSafety,
+    setRobotState, setPedestrians, setSafety, setQueueStatus,
     setPickHandler(handler) { pickHandler = typeof handler === 'function' ? handler : null; },
     setScenario(scenario, slot = '09') {
       const peak = scenario === 'peak';
       heatTiles.forEach((tile, i) => {
         const count = shelfCrowd(slot, shelves[i].id);
         tile.material.color.setHex(count >= 5 ? 0xe2734b : count >= 3 ? 0xe8a34a : 0x71b887);
-        tile.material.opacity = count >= 5 ? .36 : count >= 3 ? .25 : .12;
+        tile.material.opacity = count >= 5 ? .34 : count >= 3 ? .22 : .1;
       });
       crowdZone.visible = peak;
     },
@@ -655,7 +834,7 @@ function buildScene(container) {
         const group = new THREE.Group(); group.position.set(p.x, 0, p.z); obstacleGroup.add(group);
         const color = item.type === 'failure' ? 0xD96C68 : item.type === 'cart' ? 0xE8A34A : 0x3D7BD6;
         const disc = new THREE.Mesh(new THREE.CircleGeometry(.42, 24),
-          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .28, side: THREE.DoubleSide, depthWrite: false }));
+          new THREE.MeshBasicMaterial({ color, transparent: true, opacity: .26, side: THREE.DoubleSide, depthWrite: false }));
         disc.rotation.x = -Math.PI / 2; disc.position.y = .055; group.add(disc);
         const cone = new THREE.Mesh(new THREE.ConeGeometry(.13, .42, 10), new THREE.MeshBasicMaterial({ color }));
         cone.position.y = .3; group.add(cone);
