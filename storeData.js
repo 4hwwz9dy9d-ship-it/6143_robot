@@ -7,21 +7,24 @@
 
 export const PHYSICS = Object.freeze({
   metersPerUnit: 0.17,
-  robot: Object.freeze({ width: .62, length: .82, height: .92, radius: .36, maxSpeed: .78, accel: .42, brake: .62, turnRadius: .55 }),
+  // V3.3：机身缩小一号（radius .36→.30 / 宽 .62→.55 / 长 .82→.72）——配合通道净空钳制，
+  // 保证机器人（0.6m 直径）与推车行人（0.76m 对径）在任意通道都能会车（需 ≈1.7m，通道 ≥2.0m）。
+  robot: Object.freeze({ width: .55, length: .72, height: .92, radius: .30, maxSpeed: .78, accel: .42, brake: .62, turnRadius: .55 }),
   pedestrian: Object.freeze({ radius: .26, bodyWidth: .46 }),
   safety: Object.freeze({ buffer: .80, warnDistance: 2.0, yieldDistance: 1.35, emergencyGap: .06 }),
   aisles: Object.freeze({ main: 2.7, secondary: 2.0, access: 1.3 }),
 });
 
 const M = PHYSICS.metersPerUnit;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const UNIT_W = 176, UNIT_H = 141;
 
 // 货架单元：3 排 × 6 列。通道中心即导航节点，货架永远留在单元内部，
 // 因此 A* 边不会穿过任何货架；两侧净空 ≈ 2.0–2.7 m。
 const AISLE_XS = [18, 45, 72, 99, 126, 153];
 const CROSS_YS = [26, 62, 98, 134];
-const VERTICAL_YS = [26, 44, 62, 80, 98, 116, 134];
-const ROW_CENTERS = [44, 80, 116];
+const VERTICAL_YS = [26, 44, 62, 80, 98, 114, 134];
+const ROW_CENTERS = [44, 80, 114];
 const colCenter = c => (c < AISLE_XS.length - 1 ? (AISLE_XS[c] + AISLE_XS[c + 1]) / 2 : (AISLE_XS[c] + UNIT_W) / 2);
 
 // 收银台队列：顾客排队区在前场 y<26，与机器人 y=26 主通道分离。
@@ -32,6 +35,8 @@ const queueSlots = x => [22, 18, 14, 10].map(y => [x, y]);
 
 // V2.8：机器人自助收银台（机身中心 / 机器人买单停靠位）。单独抽成常量，
 // 因为 STORE.handoff 也要指向它（历史代码里 handoff 表示「订单终点」）。
+// V3.3 复核：x=120 保持不变——「充电桩↔自助收银台」之间的 1.31 m 缝隙北侧是开阔区
+//（真通道在 y>12，不穿这条缝），右移反而会挤到收银台 01（净空只剩 0.46 m）。
 const ROBOT_PAY_POS = Object.freeze([120, 10]);
 const ROBOT_PAY_STOP = Object.freeze([120, 15.4]);
 
@@ -200,13 +205,21 @@ export const shelves = zoneDefs.map((d, i) => {
   // 只剩 0.5–0.9 m，靠墙冷柜再塞进来就四台柜子叠在角落里。这里把这一列收窄到
   // 9 单位并居中放在 x≈163.5：左侧主通道 2.4 m（机器人），右侧靠墙通道 1.3 m（行人）。
   const lastCol = d.col === 5;
-  const w = lastCol ? 9 : d.w;
-  const cx = (lastCol ? 163.5 + jitterX * .35 : colCenter(d.col) + jitterX);
-  const cy = ROW_CENTERS[d.row] + jitterY;
+  // V3.3 单元净空钳制：货架边缘与左右通道中心线至少留 6 单位（≈1.02 m），即任何
+  // 「货架↔货架」通道最窄 12 单位 ≈2.04 m——机器人与推车行人可以会车，高峰不卡死；
+  // 同时保留错位与宽度差（2.0–2.6 m），卖场看起来依然是有宽有窄的自然布局，不是棋盘。
+  const lo = AISLE_XS[d.col] + 6;
+  const hi = (d.col < AISLE_XS.length - 1 ? AISLE_XS[d.col + 1] : UNIT_W - 4) - 6;
+  const w = Math.min(lastCol ? 9 : d.w, hi - lo);
+  const cx = clamp(colCenter(d.col) + jitterX * (lastCol ? .35 : 1), lo + w / 2, hi - w / 2);
+  // 纵向同理：行间通道 ≥12.6 单位 ≈2.14 m；第三排再压一档（h≤16），给后墙冷柜
+  // 让出 ≥12.3 单位 ≈2.1 m 的「最后一排通道」——那是高峰期人最少的备选路线。
+  const h = Math.min(d.h, d.row === 2 ? 16 : 18);
+  const cy = clamp(ROW_CENTERS[d.row] + jitterY, 30 + h / 2, (d.row === 2 ? 134 : 138) - h / 2 - (d.row === 2 ? 9.8 : 0));
   return {
     id: `${d.row + 1}-${d.col + 1}`, category: d.category, kind: d.kind,
     xMin: +(cx - w / 2).toFixed(2), xMax: +(cx + w / 2).toFixed(2),
-    yMin: +(cy - d.h / 2).toFixed(2), yMax: +(cy + d.h / 2).toFixed(2),
+    yMin: +(cy - h / 2).toFixed(2), yMax: +(cy + h / 2).toFixed(2),
     shelfHeight: d.height, row: d.row, column: d.col,
     // 取货点位于左侧通道上的导航节点，距离货架边缘约 1.1 m。
     point: [AISLE_XS[d.col], ROW_CENTERS[d.row]],
@@ -228,20 +241,22 @@ export const layoutFixtures = [
   { label: '乳品冷藏墙', x: 4,   y: 44,  w: 5,  h: 18, kind: 'wall' },
   { label: '零食墙',     x: 4,   y: 80,  w: 5,  h: 18, kind: 'wall' },
   { label: '日用墙',     x: 4,   y: 116, w: 5,  h: 18, kind: 'wall' },
-  { label: '后侧冷柜 A', x: 40,  y: 137, w: 34, h: 5,  kind: 'wall' },
+  { label: '后侧冷柜 A', x: 40,  y: 139, w: 34, h: 5,  kind: 'wall' },
   // V3.0：原「冷藏侧柜 / 杂货侧柜」贴在右墙 x=172，与最右一列货架在 x 方向上重叠
   // 1.5–3.3 单位（≈0.25–0.56 m），四台柜子在右后角落视觉上粘成一坨。
   // 现在两台都移到后墙：一台补在 A/B 之间，一台占据后墙右角，与 C 只留 1 单位的柜缝；
   // 右墙整面让出来，形成 1.3 m 宽的行人靠墙通道，机器人走左侧 2.4 m 主通道。
-  { label: '杂货侧柜',   x: 65,  y: 137, w: 14, h: 5,  kind: 'wall' },
-  { label: '后侧冷柜 B', x: 90,  y: 137, w: 34, h: 5,  kind: 'wall' },
-  { label: '后侧冷柜 C', x: 140, y: 137, w: 32, h: 5,  kind: 'wall' },
-  { label: '冷藏侧柜',   x: 166, y: 137, w: 18, h: 5,  kind: 'wall' },
+  { label: '杂货侧柜',   x: 65,  y: 139, w: 14, h: 5,  kind: 'wall' },
+  { label: '后侧冷柜 B', x: 90,  y: 139, w: 34, h: 5,  kind: 'wall' },
+  { label: '后侧冷柜 C', x: 140, y: 139, w: 32, h: 5,  kind: 'wall' },
+  { label: '冷藏侧柜',   x: 166, y: 139, w: 18, h: 5,  kind: 'wall' },
   { label: '促销岛 A',   x: 45,  y: 12,  w: 11, h: 9,  kind: 'promo' },
-  { label: '促销岛 B',   x: 72,  y: 12,  w: 11, h: 9,  kind: 'promo' },
+  { label: '促销岛 B',   x: 70,  y: 12,  w: 11, h: 9,  kind: 'promo' },   // V3.3：x 72→70，与促销岛 C 间隙 2.04 m
   // V2.2：促销岛 C 从 x=126 移到前场空地；V2.8 再左移到 x=94，
   // 给「充电桩(x=108) + 机器人自助收银台(x=120)」这一排让出 ≥1 m 的通行间隙。
-  { label: '促销岛 C',   x: 94,  y: 12,  w: 10, h: 9,  kind: 'promo' },
+  // V3.3：促销岛 C 缩小左移（x 94→90.5 / w 10→8）——旧位置与充电桩之间只有 1.1m，
+  // 机器人去充电/买单必经这条路，高峰时会被行人挤死。现在间隙 1.87m。
+  { label: '促销岛 C',   x: 90.5, y: 13,  w: 8,  h: 7,  kind: 'promo' },
   // 两台自助结账机：位于前场空位，不占机器人主通道 y=26，也不与收银台/排队区重叠。
   { label: '自助结账 1', x: 56,  y: 6,   w: 7,  h: 4,  kind: 'kiosk' },
   { label: '自助结账 2', x: 84,  y: 6,   w: 7,  h: 4,  kind: 'kiosk' },

@@ -138,6 +138,18 @@ export function patchOrder(id, patch) {
 }
 
 export function getOrderRecord(id) { return data.orders.find(item => item.id === id) || null; }
+
+/** V3.3：删除一条已终结的订单记录（用户要求：已取消的订单可在详情内删除）。
+ *  只允许删除已完成/已取消的记录，进行中的订单必须先取消再删。 */
+export function removeOrder(id) {
+  const index = data.orders.findIndex(item => item.id === id);
+  if (index < 0) return false;
+  const status = data.orders[index].status;
+  if (!['已完成', '已取消', 'Completed', 'Cancelled'].includes(status)) return false;
+  data.orders.splice(index, 1);
+  persist();
+  return true;
+}
 export function listOrders() { return clone(data.orders); }
 /** 轻量统计：只数状态，不做深拷贝——总览 KPI 每次渲染都会调用。 */
 export function orderCounts() {

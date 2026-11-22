@@ -7,7 +7,7 @@ import { PedestrianSystem, PEDESTRIAN_TYPES, PEDESTRIAN_STATES } from './pedestr
 import { RobotBehavior, ROBOT_STATES, ROBOT_STATE_CN } from './robotBehavior.js';
 import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel, zoneOfDepartment } from './instacart.js';
 import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js';
-import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, orderCounts, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
+import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, removeOrder, orderCounts, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
 import { BRAND_ASSETS, applyBrandAssets, updateBrandRobotImage } from './branding.js';
 
 const $ = id => document.getElementById(id);
@@ -435,13 +435,29 @@ function edgeCost(a, b, scenario, slot, mode = 'full') {
   const hot = scenario === 'peak' && a[1] === STORE.hotCorridor.y && b[1] === STORE.hotCorridor.y && Math.min(a[0], b[0]) >= STORE.hotCorridor.xMin && Math.max(a[0], b[0]) <= STORE.hotCorridor.xMax;
   const congestion = state.events.has('congestion') && crowd >= 4 ? 1.4 : 1;
   const predictedTime = length * (1 + .025 * crowd * congestion + (hot ? 2.6 : 0));
-  const risk = length * (.025 * crowd * congestion + (hot ? 2.8 : 0));
+  // V3.3：风险改用「最近货区人流 × 距离衰减」。旧版对 20 单位内所有货区取平均，
+  // 每条通道的风险都≈全场均值，风险值分不出冷热通道，「绕开人群」无从体现；
+  // 现在紧邻繁忙货区的通道风险显著更高，后排/冷区通道显著更低——与直觉一致。
+  let nearestCrowd = 0, nearestWeight = 0;
+  for (const s of shelves) {
+    const d = dist(s.point, center);
+    if (d < 22) {
+      const w = 1 - d / 22;
+      if (w > nearestWeight) { nearestWeight = w; nearestCrowd = shelfCrowd(slot, s.id); }
+    }
+  }
+  const crowdRisk = nearestCrowd * (.4 + .6 * nearestWeight);
+  const risk = length * (.025 * crowdRisk * congestion + (hot ? 2.8 : 0));
   // 实时人群：边中点附近有多少人，就按人头上浮代价（动态改道专用）
   const live = liveCrowdOn ? crowdAround(center) : 0;
   // V3.0 实验驱动：真实购买频次高的通道加价、冷区减价。只在 mining 模式生效，
   // 保证「常规几何代价」和「实验驱动」两条方案仍然可比。
   const heat = mode === 'mining' ? heatAt(center) : 0;
-  const cost = (mode === 'distance' ? length : mode === 'time' ? length + .45 * predictedTime : length + .45 * predictedTime + 1.3 * risk)
+  // V3.3：实验驱动的首要研究目的是「避开人群、降低风险值」，所以 mining 模式把
+  // 风险权重从 1.3 提到 2.2——冷区绕行若让风险升高，会在代价上被直接罚回去，
+  // 对比面板里当前方案的风险值必须低于（至少不高于）原方案，否则绕行没有意义。
+  const riskWeight = mode === 'mining' ? 2.2 : 1.3;
+  const cost = (mode === 'distance' ? length : mode === 'time' ? length + .45 * predictedTime : length + .45 * predictedTime + riskWeight * risk)
     + live * REROUTE.perPerson + (mode === 'mining' ? length * (heat - .45) * HEAT.edge : 0);
   return { length, predictedTime, risk, cost, live, heat };
 }
@@ -572,7 +588,11 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
   const adjustedCost = (i, j, base) => {
     if (!mining || !base) return base?.cost ?? Infinity;
     const w = associationWeight(stops[i].shelfId, stops[j].shelfId, lines);
-    return Math.max(base.cost * .25, base.cost - w * base.cost * .45); // 最多降 45% 代价
+    // V3.3：关联折扣只作用于「长度+时间」分量，风险分量（2.2×）不打折——
+    // 否则访问顺序优化会为了共购奖励专挑高风险走法，研究目的（降风险）就反了。
+    const riskPart = 2.2 * base.risk;
+    const discountable = Math.max(0, base.cost - riskPart);
+    return Math.max(base.cost * .25, base.cost - w * discountable * .45);
   };
   const order = []; let bestCost = Infinity;
   let method = mining ? 'Held–Karp 精确 · 实验关联加权' : 'Held–Karp 精确访问顺序';
@@ -614,13 +634,40 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
   }
   const legs = [start[order[0]], ...order.slice(1).map((j, i) => between[order[i]][j]), pay[order.at(-1)]];
   if (legs.some(l => !l)) return null;
-  const plan = { stops: order.map(i => stops[i]), legs, cost: bestCost, method, startPoint: [...startPoint] };
-  if (mining) { plan.mining = true; plan.matchedRules = matches; plan.associationSavings =
+  // V3.3 风险守门：实验驱动的目的是「避开人群、降低风险值」，但真实购买频次（热度）
+  // 与场景人流分布并不总是一致——冷门货区旁也可能有人群样本。逐段检查：实验数据选出的
+  // 走法若让该段风险值高于常规走法，这一段就退回常规路线。保证当前方案的风险值
+  // 永远 ≤ 原方案（研究结论成立的前提），同时保留通过了守门的热度收益。
+  let governorSaved = 0;
+  if (mining) {
+    let cursor = [...startPoint];
+    for (let i = 0; i < legs.length; i++) {
+      const target = legs[i].points.at(-1);
+      const plain = planLeg(cursor, target, scenario, slot, 'full');
+      if (plain && legs[i].risk > plain.risk + .05) {
+        governorSaved += legs[i].risk - plain.risk;
+        legs[i] = plain;
+      }
+      cursor = target;
+    }
+  }
+  const plan = { stops: order.map(i => stops[i]), legs, cost: legs.reduce((sum, leg) => sum + leg.cost, 0), method, startPoint: [...startPoint] };
+  if (mining) plan.riskGovernor = +governorSaved.toFixed(2);
+  if (mining) { plan.mining = true; if (governorSaved > 0) plan.method += ` · 风险守门修正 ${governorSaved.toFixed(1)}`; plan.matchedRules = matches; plan.associationSavings =
     (between.length ? order.slice(1).reduce((s, j, i) => s + (between[order[i]][j]?.cost ?? 0) - adjustedCost(order[i], j, between[order[i]][j]), 0) : 0); }
   plan.points = legs.flatMap((leg, i) => i ? leg.points.slice(1) : leg.points);
   plan.length = legs.reduce((sum, leg) => sum + leg.length, 0);
   plan.time = legs.reduce((sum, leg) => sum + leg.time, 0) + n * 3 + 5;
   plan.risk = legs.reduce((sum, leg) => sum + leg.risk, 0);
+  // V3.3 方案级风险守门：若实验关联重排后的整体风险值仍高于常规方案，
+  // 整体回退常规走法并在 method 里明说——「风险值更低」是研究结论成立的前提。
+  if (mining) {
+    const plain = buildPlan(lines, scenario, slot, 'full', startPoint);
+    if (plain && plan.risk > plain.risk + .05) {
+      plain.method += ` · 风险守门：实验顺序会推高风险（${plain.risk.toFixed(1)}→${plan.risk.toFixed(1)}），已回退常规走法`;
+      return plain;
+    }
+  }
   return plan;
 }
 function nearestNode(point) {
@@ -1213,12 +1260,55 @@ function showOrderDetail(id) {
     ['已记录路径点', path.length],
   ];
   // V3.0：未完成订单的主操作是「去配送」，完成的订单才是只读回放。
+  // V3.3：已取消订单额外提供「再来一单」（同商品生成新订单）与「删除记录」。
   const final = orderFinal(record);
+  const cancelled = record.status === '已取消' || record.status === 'Cancelled';
   $('orderDetail').innerHTML = `<div class="grid grid-2"><ul>${lines || '<li>无商品明细</li>'}</ul><table class="data-table"><tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td class="right mono">${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table></div>
-    <div class="btn-row" style="margin-top:12px"><button id="detailDemoBtn" class="btn btn-teal btn-sm" type="button">${final ? '3D 回放' : '▶ 去配送（3D）'}</button>${final ? '' : '<button id="detailCancelBtn" class="btn btn-secondary btn-sm" type="button">取消该订单</button>'}</div>`;
+    <div class="btn-row" style="margin-top:12px"><button id="detailDemoBtn" class="btn btn-teal btn-sm" type="button">${final ? '3D 回放' : '▶ 去配送（3D）'}</button>${final ? '' : '<button id="detailCancelBtn" class="btn btn-secondary btn-sm" type="button">取消该订单</button>'}${cancelled ? '<button id="detailReorderBtn" class="btn btn-secondary btn-sm" type="button">↻ 再来一单</button><button id="detailDeleteBtn" class="btn btn-danger btn-sm" type="button">删除记录</button>' : ''}</div>`;
   $('detailDemoBtn').onclick = () => viewOrderDemo(id);
   const cancel = $('detailCancelBtn'); if (cancel) cancel.onclick = () => cancelOrderById(id, '用户在订单历史中取消');
+  const reorder = $('detailReorderBtn'); if (reorder) reorder.onclick = () => reorderFromRecord(record);
+  const del = $('detailDeleteBtn');
+  if (del) del.onclick = () => {
+    if (!removeOrder(id)) { setText('orderMessage', `${id} 删除失败：只有已终结的订单可以删除。`); return; }
+    state.completed = state.completed.filter(entry => entry.id !== id);
+    log(`${id} 的订单记录已删除（含历史 KPI 同步扣减）。`, 'warn');
+    setText('orderMessage', `${id} 记录已删除。`);
+    showOrderDetailClose();
+    renderAll();
+  };
 }
+/** V3.3「再来一单」：按原订单商品生成一笔新订单，走正常下单流程（分配机器人/排队/落库）。 */
+function reorderFromRecord(record) {
+  const lines = (record.lines || []).map(l => ({ product: l.product || productById.get(l.productId), qty: l.qty }))
+    .filter(l => l.product);
+  if (!lines.length) { setText('orderMessage', `${record.id} 没有可复用的商品明细，无法再来一单。`); return; }
+  const id = nextOrderId(); state.orderCounter = Number(id.slice(3));
+  const now = new Date().toISOString();
+  const robot = assignRobot(lines);
+  const order = {
+    id, lines: lines.map(x => ({ product: x.product, qty: x.qty })), paid: lines.reduce((sum, x) => sum + (x.product.price || 0) * x.qty, 0),
+    status: robot ? '待分配' : '待处理', createdAt: now, assignedAt: robot ? now : null,
+    robotId: robot?.id || null, robotName: robot?.id || '待分配',
+    start: [...(robot?.waitSlot || STORE.entrance)], end: [...STORE.handoff],
+    path: [], startedAt: null, completedAt: null, cancelledAt: null,
+    progress: 0, deliverSeconds: null, cancelProgress: null,
+    scenario: state.scenario, slot: state.slot, reorderedFrom: record.id,
+  };
+  state.queue.push(order);
+  if (!state.order && robot) activateNext(); else renderAll();
+  saveOrder(order);
+  if (state.order && state.order.id !== order.id) saveOrder(state.order);
+  log(`已按 ${record.id} 再次下单：${id}（${money(order.paid)}），${robot ? `分配给 ${robot.id}` : '排队等待'}。`);
+  setText('orderMessage', `<b>${id} 创建成功</b>（再来一单 ← ${record.id}）· ${money(order.paid)}<br><button type="button" class="btn btn-teal btn-sm" data-view-demo="${id}">▶ 查看配送演示</button>`);
+}
+
+/** 关闭订单详情弹层（若实现为面板则清空内容）。 */
+function showOrderDetailClose() {
+  const panel = $('orderDetail'); if (panel) panel.innerHTML = '<p class="muted">订单已删除。</p>';
+  const title = $('orderDetailTitle'); if (title) title.textContent = '订单详情';
+}
+
 /** 判断订单记录是否已终结（已完成/已取消）——终结订单只能只读回放，不得重新履约改写状态。 */
 function orderFinal(record) { return record?.status === '已完成' || record?.status === '已取消'; }
 
@@ -1458,7 +1548,7 @@ function renderRouteView() {
     ['重新规划次数', '0', changed ? '1' : '0'],
   ];
   $('comparisonBody').innerHTML = rows.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('');
-  setText('comparisonInsight', `同一订单、同一${timeSlots.find(t => t.id === state.slot).label}样本。代价 = 距离 + 0.45 × 时间 + 1.3 × 风险；所有时间值均为仿真假设。`);
+  setText('comparisonInsight', `同一订单、同一${timeSlots.find(t => t.id === state.slot).label}样本。代价 = 距离 + 0.45 × 时间 + 风险（常规 1.3 ×；实验驱动 2.2 ×，研究目的即降风险）；所有时间值均为仿真假设。`);
   renderMiningPanel();
 }
 /** V2.4：展示 Apriori 实验规则如何真实改变访问顺序（常规 vs 实验驱动两方案对比）。 */
@@ -2412,7 +2502,9 @@ let pedLastFrame = 0, pedLoopTick = 0;
 function pedestrianLoop(now) {
   requestAnimationFrame(pedestrianLoop);
   const ped = state.pedSystem;
-  if (!ped || !ped.running || document.hidden || state.running) { pedLastFrame = 0; return; }
+  // V3.3：回放期间 state.running 被置 true，但主仿真心跳（animate）在回放时直接返回，
+  // 行人此前会因此冻住。让位条件改为「主仿真真的在推进」——回放时行人照常逛街。
+  if (!ped || !ped.running || document.hidden || (state.running && !state.replay)) { pedLastFrame = 0; return; }
   if (!pedLastFrame) { pedLastFrame = now; return; }
   const dt = Math.min((now - pedLastFrame) / 1000, .05);
   pedLastFrame = now;
@@ -2816,6 +2908,17 @@ window.__NEXUS = Object.freeze({
   debugCamera: (from, at) => scene3d?.debugCamera?.(from, at),
   debugWorld: (point, height) => scene3d?.debugWorld?.(point, height),
   debugCheckout: list => scene3d?.setCheckoutStatus?.(list),
+  // V3.3 测试钩子：同一组货区，分别用常规与实验驱动模式规划，返回两方案的长度/风险/热度对比。
+  comparePlans: (shelfIds, scenario = 'peak', slot = '09') => {
+    const fake = shelfIds.map(id => { const shelf = shelves.find(x => x.id === id);
+      return { product: { id: `I-${id}`, name: `probe-${id}`, department: '', aisle: '', price: 1, shelfId: id, point: shelf ? shelf.point : [0, 0] }, qty: 1, shelfId: id }; });
+    const a = buildPlan(fake, scenario, slot, 'full');
+    const b = buildPlan(fake, scenario, slot, 'mining');
+    const dump = p => ({ len: +p.length.toFixed(1), risk: +p.risk.toFixed(2), cost: +p.cost.toFixed(1),
+      heat: +pathHeat(p.points).toFixed(3), order: p.stops.map(s => s.shelfId).join('>'),
+      points: p.points.map(pt => pt.map(n => +n.toFixed(0))) });
+    return { full: dump(a), mining: dump(b) };
+  },
   setPedDensity: value => state.pedSystem?.setDensity(value),
   setPedMode: value => state.pedSystem?.setMode(value),
   injectCrossing: (direction, options) => state.pedSystem?.injectCrossing(state.displayPosition, direction || [1, 0], options),
