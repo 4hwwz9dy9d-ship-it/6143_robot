@@ -2871,7 +2871,9 @@ loadResearch().then(data => {
   }
   rules = data.rules.rules.map(rule => ({ ...rule, from: `I${rule.from}`, to: `I${rule.to}` }));
   buildZoneHeat(data.rules);
-  restorePendingOrders();
+  // 回填待配送队列后必须重渲染一次：否则总览 KPI 还停在上一次「0 单进行中」的快照上，
+  // 直到用户点开某个视图或下一帧事件才更新——这正是「数字不更新」的另一条路径。
+  if (restorePendingOrders()) renderAll();
   populateFilters(); scheduleCatalogSearch(); renderRules(); renderRecommendations();
   renderResearchDashboard(data); renderDataAudit(); renderPickupFeasibility(); renderInventory();
   initRestockControls();

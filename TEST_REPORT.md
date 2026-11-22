@@ -728,8 +728,9 @@ steer = 远离该行人一侧的 min(shortfall + 0.12, 0.45) m
 | 完成多单后顶部数字仍是 0，刷新后归零 | KPI 只数内存里的 `state.completed`（每次刷新清空，且只有本页确认的订单会进数组） | 新增 `orderCounts()`（`systemCore.js`）直接遍历持久化订单表；`app.js` 的 `orderStats()` 以持久化记录为准，再叠加内存里尚未落库的事件 |
 | 之前别的视图完成的单不计入 | 同上，`state.completed` 是页面级数组 | 同上，`orderStats()` 成为唯一口径，`renderLiveOps()` 的 `opsOrders / opsDone / kpiOrders / kpiCompleted` 全部走它 |
 | 用户无法判断数字含义 | 脚注只写「回充电桩」 | 脚注改为「已线上确认并回充电桩 · 历史共 N 单」，把分母摊开 |
+| **刷新后「进行中」还是 0**（第二处漏渲染） | `restorePendingOrders()` 把待配送单回填进 `state.queue` 之后没有触发重渲染，KPI 停在上一次「0 单」的快照上，直到用户切视图才更新 | 初始化链改为 `if (restorePendingOrders()) renderAll();` |
 
-实测（T1/T5/T5b）：提交 2 单 → `kpiOrders=2`；完成 1 单 → `kpiCompleted=1`、`stats={active:0, completed:1, cancelled:1, total:2}`；**刷新后仍为 1**，脚注「历史共 2 单」。
+实测（T1/T2/T5/T5b）：提交 2 单 → `kpiOrders=2`；刷新 → 队列恢复 2 单且 `kpiOrders` 仍为 `2`（T2 新增断言 `kpiOrders === stats.active`）；完成 1 单 → `kpiCompleted=1`、`stats={active:0, completed:1, cancelled:1, total:2}`；**刷新后仍为 1**，脚注「历史共 2 单」。最终验收（3 单：完成 / 取消 / 待配送）：`active 1 / completed 1 / cancelled 1 / total 3`，刷新后四项与「历史共 3 单」完全一致。
 
 ### 22.2 订单历史「取消」点了没用
 根因：`cancelOrderById()` 只处理两种情况——「在队列里」和「当前正在执行」；第三类**只存在于持久化记录里的待配送单**（例如刷新后未回填、或历史里的早期订单）直接落到 `return false`，界面毫无反应。
