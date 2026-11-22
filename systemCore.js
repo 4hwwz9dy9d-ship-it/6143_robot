@@ -110,7 +110,16 @@ export function saveOrder(order) {
 export function patchOrder(id, patch) {
   const index = data.orders.findIndex(item => item.id === id);
   if (index < 0) return null;
-  data.orders[index] = { ...data.orders[index], ...clone(patch) };
+  const current = data.orders[index];
+  const next = clone(patch);
+  // V2.4 状态机守卫：已终结订单（已完成/已取消）不得被改回「配送中」等中途状态。
+  // 只读回放只沿 path 显示，不会调用本函数；此处防止任何历史遗留路径误写脏数据。
+  const finalStates = ['已完成', '已取消', 'Completed', 'Cancelled'];
+  const midStates = ['配送中', '待分配', '待处理', 'Delivering', 'Pending', 'Unassigned'];
+  if (finalStates.includes(current.status) && next.status && midStates.includes(next.status)) {
+    delete next.status; // 忽略非法逆向状态迁移，其余补丁（如进度）仍允许
+  }
+  data.orders[index] = { ...current, ...next };
   persist();
   return data.orders[index];
 }

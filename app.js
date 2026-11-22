@@ -53,6 +53,11 @@ const state = {
   activeRobotId: 'AMR-01', returnLeg: null, returnReason: '', historyFilter: 'ALL', historySort: 'desc',
   simSpeed: 1, // 仿真倍速 1/2/3/5：只缩放仿真时间，规则、检查与决策全部保持逐帧执行
   nextAvailable: false, // 队列中有待处理订单且机器人已归位：显示「继续下一单」手动入口
+  // V2.4 只读回放：历史订单沿已记录 path 回放，不改写订单状态、不与仿真共用状态机。
+  replay: null, origHistory: null, // replay = {id,record,path,robotId,progress,playing,duration}
+  // V2.4 充电：{active, robotId, rate}；机器人在充电桩补电，电量按仿真时间恢复。
+  charging: null,
+  miningEnabled: false, // V2.4：路径优化是否启用 Apriori 实验关联加权
 };
 const behaviorLabels = ROBOT_STATE_CN;
 const PED_STATE_CN = { ENTER_STORE: '进店', WALK_TO_SECTION: '前往货架', WALKING: '行走中', BROWSING: '选购停留',
@@ -358,6 +363,50 @@ function uniqueStops(lines) {
   }
   return [...map.values()];
 }
+/** V2.4 实验关联：基于 Apriori 真实购物篮规则，计算两个货区之间的共购关联强度。
+ *  返回 0~1 的奖励权重：订单中同时买了 A、B 两货区商品的规则置信度/提升度越高，权重越大。
+ *  路径优化据此把"实验证实常一起购买"的货区在访问顺序上排得更近，让实验数据真正影响规划。 */
+const shelfRuleCache = new Map();
+function shelfProductIds(shelfId) {
+  if (!shelfRuleCache.has(shelfId)) {
+    const ids = new Set([...productById.values()].filter(p => p.shelfId === shelfId).map(p => p.id));
+    shelfRuleCache.set(shelfId, ids);
+  }
+  return shelfRuleCache.get(shelfId);
+}
+function associationWeight(shelfA, shelfB, lines) {
+  if (!rules.length || shelfA === shelfB) return 0;
+  const bought = new Set((lines || []).map(l => l.product.id));
+  const a = shelfProductIds(shelfA), b = shelfProductIds(shelfB);
+  let best = 0;
+  for (const rule of rules) {
+    if (rule.confidence < .15 || rule.lift <= 1) continue;
+    const pairA = a.has(rule.from) && b.has(rule.to);
+    const pairB = b.has(rule.from) && a.has(rule.to);
+    if (!pairA && !pairB) continue;
+    // 只有当前订单确实买了规则涉及的商品，才算"本次实验命中"，避免空泛关联。
+    const relevant = bought.has(rule.from) || bought.has(rule.to);
+    const w = Math.min(1, rule.confidence * .6 + Math.min(rule.lift, 4) / 4 * .4) * (relevant ? 1 : .35);
+    if (w > best) best = w;
+  }
+  return best;
+}
+/** 返回本次订单命中的关联规则（用于路径优化页展示实验依据）。 */
+function matchedAssociations(lines) {
+  if (!rules.length) return [];
+  const shelfOf = id => productById.get(id)?.shelfId;
+  const inOrder = new Set((lines || []).map(l => l.product.id));
+  const out = [];
+  for (const rule of rules) {
+    if (rule.confidence < .15 || rule.lift <= 1) continue;
+    if (!inOrder.has(rule.from) && !inOrder.has(rule.to)) continue;
+    const sa = shelfOf(rule.from), sb = shelfOf(rule.to);
+    if (!sa || !sb || sa === sb) continue;
+    out.push({ from: rule.from, to: rule.to, fromShelf: sa, toShelf: sb,
+      confidence: rule.confidence, lift: rule.lift, support: rule.support });
+  }
+  return out.sort((x, y) => (y.lift * y.confidence) - (x.lift * x.confidence)).slice(0, 6);
+}
 function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobot().waitSlot) {
   const stops = uniqueStops(lines), n = stops.length, cache = new Map();
   const leg = (a, b) => { const k = `${key(a)}>${key(b)}`; if (!cache.has(k)) cache.set(k, planLeg(a, b, scenario, slot, mode)); return cache.get(k); };
@@ -365,8 +414,17 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
   const start = stops.map(s => leg(startPoint, s.point));
   const checkout = stops.map(s => leg(s.point, STORE.checkout));
   const between = stops.map((a, i) => stops.map((b, j) => i === j ? null : leg(a.point, b.point)));
+  // V2.4 实验驱动：模式 'mining' 时对段代价施加 Apriori 共购奖励——实验证实常一起购买的
+  // 两货区之间代价降低，Held–Karp 因而倾向于把它们排得更近（真实实验数据改变访问顺序）。
+  const mining = mode === 'mining';
+  const matches = mining ? matchedAssociations(lines) : [];
+  const adjustedCost = (i, j, base) => {
+    if (!mining || !base) return base?.cost ?? Infinity;
+    const w = associationWeight(stops[i].shelfId, stops[j].shelfId, lines);
+    return Math.max(base.cost * .25, base.cost - w * base.cost * .45); // 最多降 45% 代价
+  };
   const order = []; let bestCost = Infinity;
-  let method = 'Held–Karp 精确访问顺序';
+  let method = mining ? 'Held–Karp 精确 · 实验关联加权' : 'Held–Karp 精确访问顺序';
   if (n > 12) {
     method = '最近代价启发式（不保证全局最优）';
     const remaining = new Set(stops.map((_, i) => i)); let previous = -1;
@@ -374,12 +432,13 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
       let choice = -1, best = Infinity;
       for (const j of remaining) {
         const candidate = previous < 0 ? start[j] : between[previous][j];
-        if (candidate && candidate.cost < best) { best = candidate.cost; choice = j; }
+        const candCost = (previous < 0 ? candidate?.cost : adjustedCost(previous, j, candidate)) ?? Infinity;
+        if (candidate && candCost < best) { best = candCost; choice = j; }
       }
       if (choice < 0) return null;
       order.push(choice); remaining.delete(choice); previous = choice;
     }
-    bestCost = start[order[0]].cost + order.slice(1).reduce((sum, j, i) => sum + between[order[i]][j].cost, 0) + checkout[order.at(-1)].cost + finish.cost;
+    bestCost = (start[order[0]]?.cost ?? 0) + order.slice(1).reduce((sum, j, i) => sum + adjustedCost(order[i], j, between[order[i]][j]), 0) + checkout[order.at(-1)].cost + finish.cost;
   } else {
     const states = 1 << n, all = states - 1, costs = new Float64Array(states * n), previous = new Int8Array(states * n);
     costs.fill(Infinity); previous.fill(-1);
@@ -389,7 +448,7 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
       if (!Number.isFinite(current)) continue;
       for (let rest = all ^ mask; rest; rest &= rest - 1) {
         const k = 31 - Math.clz32(rest & -rest), step = between[j][k]; if (!step) continue;
-        const index = ((mask | (1 << k)) * n + k), next = current + step.cost;
+        const index = ((mask | (1 << k)) * n + k), next = current + adjustedCost(j, k, step);
         if (next < costs[index]) { costs[index] = next; previous[index] = j; }
       }
     }
@@ -404,6 +463,8 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
   }
   const legs = [start[order[0]], ...order.slice(1).map((j, i) => between[order[i]][j]), checkout[order.at(-1)], finish];
   const plan = { stops: order.map(i => stops[i]), legs, cost: bestCost, method, startPoint: [...startPoint] };
+  if (mining) { plan.mining = true; plan.matchedRules = matches; plan.associationSavings =
+    (between.length ? order.slice(1).reduce((s, j, i) => s + (between[order[i]][j]?.cost ?? 0) - adjustedCost(order[i], j, between[order[i]][j]), 0) : 0); }
   plan.points = legs.flatMap((leg, i) => i ? leg.points.slice(1) : leg.points);
   plan.length = legs.reduce((sum, leg) => sum + leg.length, 0);
   plan.time = legs.reduce((sum, leg) => sum + leg.time, 0) + n * 3 + 5;
@@ -568,13 +629,45 @@ function renderLiveOps() {
   $('livePreviewList').innerHTML = preview.map(([label, value], i) =>
     `<li><span>${label}<small>${escapeHtml(value)}</small></span><span class="pill ${i < state.stage ? 'pill--ok' : 'pill--info'}">${i < state.stage ? '已完成' : '待处理'}</span></li>`).join('');
 }
+let twinStaticBuilt = false;
 function renderOverviewPreview() {
-  $('previewZones').innerHTML = shelves.map(s => {
-    const x = s.xMin * (644 / STORE.width) + 8, y = s.yMin * (364 / STORE.height) + 8;
-    const color = s.kind === 'cooler' ? '#3D7BD6' : s.kind === 'produce' ? '#20A995' : s.kind === 'promo' ? '#E8A34A' : '#84919B';
-    return `<rect x="${x}" y="${y}" width="${(s.xMax - s.xMin) * 4.6}" height="${(s.yMax - s.yMin) * 4.1}" rx="3" fill="${color}" opacity=".28" stroke="${color}" stroke-width="1"/>`;
+  const W = STORE.width, H = STORE.height, SX = 644 / W, SY = 364 / H;
+  const tx = x => x * SX + 8, ty = y => y * SY + 8;
+  // —— 静态底图（通道/装置/货架/门）只构建一次 ——
+  if (!twinStaticBuilt && $('twinAisles')) {
+    twinStaticBuilt = true;
+    $('twinAisles').innerHTML = [
+      ...STORE.aisleXs.map(x => `<line x1="${tx(x)}" y1="${ty(6)}" x2="${tx(x)}" y2="${ty(H - 6)}" stroke="#dbe8e1" stroke-width="1.4"/>`),
+      ...STORE.crossYs.map(y => `<line x1="${tx(6)}" y1="${ty(y)}" x2="${tx(W - 4)}" y2="${ty(y)}" stroke="#dbe8e1" stroke-width="1.4"/>`),
+    ].join('');
+    $('twinFixtures').innerHTML = layoutFixtures.map(f => {
+      const color = f.kind === 'promo' ? '#E8A34A' : f.kind === 'kiosk' ? '#20A995' : f.kind === 'checkout' ? '#7b93a8' : f.kind === 'queue' ? '#c4d2dc' : f.kind === 'robotwait' ? '#bfe3d6' : f.kind === 'cart' ? '#9fb8c4' : '#aab8bf';
+      return `<rect x="${tx(f.x - f.w / 2)}" y="${ty(f.y - f.h / 2)}" width="${f.w * SX}" height="${f.h * SY}" rx="2" fill="${color}" opacity=".45"/>`;
+    }).join('');
+    $('twinShelves').innerHTML = shelves.map(s => {
+      const color = s.kind === 'cooler' ? '#3D7BD6' : s.kind === 'produce' ? '#20A995' : s.kind === 'bulk' ? '#E8A34A' : '#84919B';
+      return `<rect x="${tx(s.xMin)}" y="${ty(s.yMin)}" width="${(s.xMax - s.xMin) * SX}" height="${(s.yMax - s.yMin) * SY}" rx="2" fill="${color}" opacity=".32" stroke="${color}" stroke-width=".8"/>`;
+    }).join('');
+    $('twinGates').innerHTML = [
+      [STORE.entrance, '入口', '#20A995'], [STORE.checkout, '收银', '#7b93a8'], [STORE.exit, '出口', '#E8A34A'],
+    ].map(([p, label, c]) => `<g><rect x="${tx(p[0]) - 13}" y="${ty(p[1]) - 7}" width="26" height="14" rx="4" fill="#fff" stroke="${c}" stroke-width="1.2"/><text x="${tx(p[0])}" y="${ty(p[1]) + 3}" font-size="8" text-anchor="middle" fill="${c}">${label}</text></g>`).join('');
+  }
+  if (!$('twinRobot')) return;
+  // —— 动态层：路径 / 人流热力 / 行人 / 机器人，全部读取与 3D 同源的 state ——
+  const route = (state.plan?.points || []).map((p, i) => `${i ? 'L' : 'M'}${tx(p[0])},${ty(p[1])}`).join(' ');
+  const traveled = state.history.length > 1 ? state.history.map((p, i) => `${i ? 'L' : 'M'}${tx(p[0])},${ty(p[1])}`).join(' ') : '';
+  $('previewRoute').innerHTML = (route ? `<path d="${route}" fill="none" stroke="#20A995" stroke-width="2" stroke-dasharray="5 3" opacity=".85"/>` : '')
+    + (traveled ? `<path d="${traveled}" fill="none" stroke="#159e86" stroke-width="2.6" opacity=".9"/>` : '');
+  const people = state.pedSystem?.snapshot() || [];
+  $('twinHeat').innerHTML = people.map(p => `<circle cx="${tx(p.x)}" cy="${ty(p.y)}" r="9" fill="#ffb347" opacity=".10"/>`).join('');
+  $('twinCrowd').innerHTML = people.map(p => `<circle cx="${tx(p.x)}" cy="${ty(p.y)}" r="2.2" fill="${p.cart ? '#E8A34A' : '#5b7f92'}" opacity=".9"/>`).join('');
+  $('twinRobot').innerHTML = state.fleet.map(robot => {
+    const pos = robot.id === state.activeRobotId ? state.displayPosition : robot.position;
+    const c = state.charging?.active ? '#E8A34A' : state.replay ? '#7b6cf0' : '#0f6f5e';
+    return `<g><circle cx="${tx(pos[0])}" cy="${ty(pos[1])}" r="5.4" fill="#fff" stroke="${c}" stroke-width="1.6"/><circle cx="${tx(pos[0])}" cy="${ty(pos[1])}" r="2.6" fill="${c}"/></g>`;
   }).join('');
-  $('previewRoute').innerHTML = state.plan ? `<path d="${state.plan.points.map((p, i) => `${i ? 'L' : 'M'}${p[0] * (644 / STORE.width) + 8},${p[1] * (364 / STORE.height) + 8}`).join(' ')}" fill="none" stroke="#20A995" stroke-width="2.4" stroke-dasharray="6 4"/>` : '';
+  const live = $('twinLive');
+  if (live) { live.textContent = state.replay ? '● 回放' : state.charging?.active ? '● 充电' : '● 实时'; live.setAttribute('fill', state.replay ? '#7b6cf0' : state.charging?.active ? '#E8A34A' : '#20A995'); }
 }
 function renderQueue() {
   const entries = [
@@ -647,10 +740,19 @@ function showOrderDetail(id) {
   $('detailDemoBtn').onclick = () => viewOrderDemo(id);
   const cancel = $('detailCancelBtn'); if (cancel) cancel.onclick = () => cancelOrderById(id, '用户在订单历史中取消');
 }
-/** 从持久化记录还原订单并载入 3D 配送演示：定位到对应机器人与任务，无需手动重找。 */
+/** 判断订单记录是否已终结（已完成/已取消）——终结订单只能只读回放，不得重新履约改写状态。 */
+function orderFinal(record) { return record?.status === '已完成' || record?.status === '已取消'; }
+
+/** 从持久化记录还原订单并载入 3D 配送演示：定位到对应机器人与任务，无需手动重找。
+ *  V2.4：已终结订单走「只读轨迹回放」，绝不改写其状态；进行中订单仍是重新载入任务。 */
 function viewOrderDemo(id) {
   const record = getOrderRecord(id);
   if (!record) { setText('orderMessage', `订单 ${id} 不存在，无法打开演示。`); return; }
+  exitReplay(false); // 先清理可能存在的旧回放
+  if (orderFinal(record)) {
+    startReplay(record);
+    return;
+  }
   // 若目标订单就是当前执行/排队中的订单，直接进入 3D 页面并定位到它的机器人。
   if (state.order?.id === id) {
     const robot = robotById(state.order.robotId) || activeRobot();
@@ -670,6 +772,82 @@ function viewOrderDemo(id) {
   scene3d?.setActive(true); scene3d?.resize();
   setText('orderMessage', `${id} 已载入 3D 配送演示：${state.order?.robotId || '机器人'}，点击播放可查看沿真实 A* 路径的取货与配送。`);
   renderAll();
+}
+
+/** V2.4 只读回放：沿 record.path 逐帧插值驱动机器人；不触碰 state.order / patchOrder，状态永不被改写。 */
+function startReplay(record) {
+  const path = (record.path?.length > 1 ? record.path : (record.cancelPosition ? [record.start, record.cancelPosition] : []))
+    .map(p => [...p]);
+  if (path.length < 2) { setText('orderMessage', `订单 ${record.id} 没有可回放的轨迹数据。`); return; }
+  const robotId = record.robotId && robotById(record.robotId) ? record.robotId : activeRobot().id;
+  const robot = robotById(robotId);
+  state.activeRobotId = robotId;
+  // 计算回放时长：按记录中的实际用时，缺省按轨迹点密度估算，限制在 4~30 秒，避免过长/过短。
+  const duration = Math.max(4, Math.min(30, (record.deliverSeconds && record.deliverSeconds > 0)
+    ? record.deliverSeconds : path.length * .12));
+  state.replay = { id: record.id, record, path, robotId, progress: 0, playing: false, duration,
+    lastFrame: 0, label: record.status === '已完成' ? '已完成 · 回放' : '已取消 · 回放' };
+  state.running = false; state.finished = false;
+  state.origHistory = state.history;
+  state.history = [[...path[0]]];
+  state.position = [...path[0]]; state.displayPosition = [...path[0]]; state.inertialVelocity = [0, 0];
+  if (robot) { robot.position = [...path[0]]; robot.status = 'IDLE'; }
+  syncRobotPose(state.displayPosition, 'IDLE', null);
+  scene3d?.setHistory(state.history);
+  scene3d?.setRobots(robotFleetSnapshot());
+  NEXUS_UI?.showView('supermarket');
+  scene3d?.setActive(true); scene3d?.resize();
+  setText('playLabel', '播放回放'); setText('playIcon', '▶');
+  status('配送回放', `${record.id} · ${state.replay.label}，共 ${path.length} 个轨迹点。`, 'CHARGING');
+  log(`进入只读回放：${record.id}（${state.replay.label}），订单状态不会被修改。`);
+  setText('orderMessage', `${record.id} 已进入只读回放（${state.replay.label}），点击「播放回放」观看沿真实记录轨迹的移动。`);
+  renderAll();
+}
+
+/** 退出回放并恢复进入前的历史轨迹；silent=true 时不清空订单消息（供 viewOrderDemo 前置清理调用）。 */
+function exitReplay(silent = true) {
+  if (!state.replay) return false;
+  state.replay.playing = false; state.running = false;
+  state.replay = null;
+  if (state.origHistory) { state.history = state.origHistory; state.origHistory = null; }
+  const robot = activeRobot();
+  if (robot) { robot.position = [...robot.waitSlot]; robot.status = 'IDLE'; }
+  state.position = [...(robot?.waitSlot || STORE.entrance)]; state.displayPosition = [...state.position];
+  syncRobotPose(state.displayPosition, 'IDLE', null);
+  scene3d?.setHistory(state.history); scene3d?.setRobots(robotFleetSnapshot());
+  setText('playLabel', '开始履约'); setText('playIcon', '▶');
+  if (!silent) setText('orderMessage', '已退出回放，机器人归位待命。');
+  return true;
+}
+
+/** 回放心跳：与仿真主循环解耦，按仿真倍速推进，走到终点自动停止（状态不变）。 */
+function replayLoop(now) {
+  const r = state.replay;
+  if (!r || !r.playing) return;
+  if (!r.lastFrame) r.lastFrame = now;
+  const dt = Math.min((now - r.lastFrame) / 1000, .05) * state.simSpeed;
+  r.lastFrame = now;
+  r.progress = Math.min(1, r.progress + dt / r.duration);
+  const d = r.progress * (r.path.length - 1);
+  const i = Math.min(r.path.length - 2, Math.floor(d));
+  const t = d - i;
+  const a = r.path[i], b = r.path[i + 1];
+  const pos = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  state.position = pos; state.displayPosition = [...pos];
+  state.history = [...r.path.slice(0, i + 1), [...pos]];
+  const robot = robotById(r.robotId);
+  if (robot) { robot.position = [...pos]; robot.distance = d * .17; }
+  syncRobotPose(state.displayPosition, 'RETURNING', r.id);
+  scene3d?.setHistory(state.history);
+  scene3d?.setRobots(robotFleetSnapshot());
+  renderProgress();
+  if (r.progress >= 1) {
+    r.playing = false; state.running = false;
+    setText('playLabel', '重新播放'); setText('playIcon', '▶');
+    status('回放结束', `${r.id} 回放完成 · 订单状态未改变。`, 'CHARGING');
+    renderAll(); return;
+  }
+  requestAnimationFrame(replayLoop);
 }
 function renderStockout() {
   const select = $('stockoutSelect'), previous = state.stockoutId;
@@ -698,6 +876,14 @@ function renderOrderState() {
   renderQueue(); renderStockout();
 }
 function renderProgress() {
+  if (state.replay) {
+    const pct = Math.round(state.replay.progress * 100);
+    setWidth('progressFill', pct); setText('progressPercent', `${pct}%`);
+    setText('progressText', `${state.replay.id} · ${state.replay.label} · ${pct}%`);
+    setWidth('fulfillFill', pct); setText('fulfillPct', `${pct}%`);
+    setText('nextTarget', '只读回放');
+    return;
+  }
   const done = state.plan?.legs.slice(0, state.stage).reduce((n, leg) => n + leg.length, 0) || 0;
   const percent = state.awaitingPickup ? 100 : state.plan ? Math.min(100, Math.round((done + state.legDistance) / state.plan.length * 100)) : 0;
   setWidth('progressFill', percent); setText('progressPercent', `${percent}%`);
@@ -727,6 +913,10 @@ function renderRobotCenter() {
   setText('robotDestination', nextName());
   setText('robotBattery2', `${state.battery.toFixed(0)}%`); setText('batteryText2', `${state.battery.toFixed(0)}%`);
   setWidth('batteryFill2', state.battery);
+  setText('batteryText', `${state.battery.toFixed(0)}%`); setWidth('batteryFill', state.battery); // 3D 页任务面板电量条
+  const chargeBtn = $('chargeBtn');
+  if (chargeBtn) chargeBtn.textContent = state.charging?.active ? 'Ⅱ 暂停充电' : '⚡ 回坞充电';
+  if (state.charging?.active) setText('robotStatusText', `充电中 · 电量 ${state.battery.toFixed(0)}% · ${activeRobot().id}`);
   setText('robotLoad2', kgText(state.bought.reduce((n, x) => n + x.product.weight * x.qty, 0)));
   setText('robotDistance2', state.traveled.toFixed(1));
   const loaded = state.bought.reduce((n, x) => n + x.product.weight * x.qty, 0);
@@ -779,6 +969,32 @@ function renderRouteView() {
   ];
   $('comparisonBody').innerHTML = rows.map(row => `<tr>${row.map(cell => `<td>${cell}</td>`).join('')}</tr>`).join('');
   setText('comparisonInsight', `同一订单、同一${timeSlots.find(t => t.id === state.slot).label}样本。代价 = 距离 + 0.45 × 时间 + 1.3 × 风险；所有时间值均为仿真假设。`);
+  renderMiningPanel();
+}
+/** V2.4：展示 Apriori 实验规则如何真实改变访问顺序（常规 vs 实验驱动两方案对比）。 */
+function renderMiningPanel() {
+  const box = $('miningResult'); if (!box) return;
+  const toggle = $('miningToggleBtn');
+  if (toggle) { toggle.textContent = state.miningEnabled ? '✓ 实验驱动已启用（点击关闭）' : '启用实验驱动规划'; toggle.setAttribute('aria-pressed', String(state.miningEnabled)); }
+  if (!state.order) { box.innerHTML = '提交订单后可查看本次命中的关联规则与优化收益。'; return; }
+  const regular = buildPlan(state.order.lines, state.scenario, state.slot, 'full');
+  const mining = buildPlan(state.order.lines, state.scenario, state.slot, 'mining');
+  const matched = matchedAssociations(state.order.lines);
+  if (!regular || !mining) { box.innerHTML = '当前订单无法计算对比路径。'; return; }
+  if (!matched.length) {
+    box.innerHTML = `<p class="assumption">本次订单未命中置信度≥15% 且提升度>1 的共购规则，实验驱动规划与常规规划一致（避免无依据的强制关联）。当前顺序：入口 → ${regular.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 出口。</p>`;
+    return;
+  }
+  const ruleRows = matched.slice(0, 5).map(r => `<li>${escapeHtml(productById.get(r.from)?.name || r.from)} + ${escapeHtml(productById.get(r.to)?.name || r.to)} · 货区 ${r.fromShelf}/${r.toShelf} · 支持度 ${(r.support * 100).toFixed(3)}% · 置信度 ${(r.confidence * 100).toFixed(1)}% · 提升度 ${r.lift.toFixed(2)}</li>`).join('');
+  const sameOrder = regular.stops.map(s => s.shelfId).join(',') === mining.stops.map(s => s.shelfId).join(',');
+  const savings = Math.max(0, regular.length - mining.length);
+  box.innerHTML = `<p class="assumption">本单命中 <b>${matched.length}</b> 条真实购物篮共购规则（来自 <b>${research ? research.rules.baskets.toLocaleString() : '—'}</b> 个训练篮的 Apriori 挖掘）。这些实验结论被写入 Held–Karp 的段代价：共购货区之间的转移代价最多降低 45%，从而让访问顺序更贴合真实购买行为。</p>
+    <ul style="margin:8px 0">${ruleRows}</ul>
+    <div class="grid grid-2" style="margin-top:8px">
+      <div><b>常规规划</b><div class="muted">入口 → ${regular.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 出口</div><div>里程 ${regular.length.toFixed(1)} · 用时 ${regular.time.toFixed(1)}s · 代价 ${regular.cost.toFixed(1)}</div></div>
+      <div><b>实验驱动规划${state.miningEnabled ? '（当前采用）' : ''}</b><div class="muted">入口 → ${mining.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 出口</div><div>里程 ${mining.length.toFixed(1)} · 用时 ${mining.time.toFixed(1)}s · 代价 ${mining.cost.toFixed(1)}</div></div>
+    </div>
+    <p class="assumption" style="margin-top:8px">${sameOrder ? '本单两方案访问顺序相同，但实验权重已参与代价评估；' : `实验关联改变了访问顺序（${regular.stops.map(s=>s.shelfId).join('→')} → ${mining.stops.map(s=>s.shelfId).join('→')}），`}${savings > .05 ? `物理里程减少 ${savings.toFixed(1)} 地图单位。` : '里程相近，收益主要体现在减少跨区折返与贴合真实购买行为。'}</p>`;
 }
 function scoreExistingRoute(plan, scenario, slot) {
   if (!plan) return { cost: 0, time: 0, risk: 0, length: 0, points: [] };
@@ -868,6 +1084,10 @@ function renderAll() {
   renderLiveOps(); renderQueue(); renderOrderState(); renderInventory(); renderProgress();
   renderTimeline(); renderRobotCenter(); renderRouteView(); renderSimulationView(); renderPresentationHud();
   renderOverviewPreview(); renderPedestrianPanel(); renderHistory(); renderRestocks();
+  const replay = !!state.replay;
+  const exitBtn = $('exitReplayBtn'); if (exitBtn) exitBtn.hidden = !replay;
+  const resetBtn = $('resetBtn'); if (resetBtn) resetBtn.textContent = replay ? '↺ 回到初始' : '↺ 重新开始';
+  const nextBtn = $('nextOrderBtn'); if (nextBtn && replay) nextBtn.hidden = true;
   $('normalBtn')?.setAttribute('aria-pressed', String(state.scenario === 'normal'));
   $('peakBtn')?.setAttribute('aria-pressed', String(state.scenario === 'peak'));
   $('scenarioNormal').setAttribute('aria-pressed', String(state.scenario === 'normal'));
@@ -1010,7 +1230,7 @@ function resetPlayback(preserveSafety = false) {
   state.robotBrain?.reset();
   syncRobotPose(waitSlot, state.order ? 'ASSIGNED' : 'IDLE', state.order?.id || null);
   state.dynamicObstacles = preserveSafety ? dynamic : [];
-  state.plan = state.order ? buildPlan(state.order.lines, state.scenario, state.slot) : null;
+  state.plan = state.order ? buildPlan(state.order.lines, state.scenario, state.slot, state.miningEnabled ? 'mining' : 'full') : null;
   state.normalPlan = state.order ? buildPlan(state.order.lines, 'normal', state.slot) : null;
   setText('playLabel', '开始履约'); setText('playIcon', '▶');
   status(state.order ? '已收到支付订单' : '等待订单',
@@ -1081,6 +1301,7 @@ function submitOrder() {
     start: [...(robot?.waitSlot || STORE.entrance)], end: [...STORE.exit],
     path: [], startedAt: null, completedAt: null, cancelledAt: null,
     progress: 0, deliverSeconds: null, cancelProgress: null,
+    scenario: state.scenario, slot: state.slot, // V2.4：回放保真——记录当时客流场景/时段
   };
   state.queue.push(order); state.cart.clear(); renderCart(); renderRecommendations();
   if (!state.order && robot) activateNext();
@@ -1385,6 +1606,8 @@ function stepSimulation(dt) {
   state.traveled += travelled; state.battery = Math.max(0, state.battery - travelled * .09);
   // 3D 模型、跟随相机与舰队面板都读取舰队位姿；配送中必须逐帧同步，否则只有路径在动、机器人停在泊位。
   const active = activeRobot();
+  // V2.4：把全局仿真电量同步到当前机器人，使舰队面板/调度打分/3D 显示都反映真实电量。
+  active.battery = state.battery;
   active.distance += travelled;
   syncRobotPose(state.displayPosition, robotState(), state.order?.id);
   if (state.battery < 15 && !state.events.has('lowBattery')) {
@@ -1409,7 +1632,7 @@ function scaledSubsteps(realDelta) {
   return { count: Math.max(1, Math.ceil(total / sub)), step: Math.min(sub, total || sub) };
 }
 function animate(now) {
-  if (!state.running) return;
+  if (!state.running || state.replay) return; // 回放由 replayLoop 独立驱动，主仿真心跳不介入
   if (!state.lastFrame) state.lastFrame = now;
   const delta = (now - state.lastFrame) / 1000;
   state.lastFrame = now;
@@ -1435,6 +1658,24 @@ function pedestrianLoop(now) {
 }
 function startPedestrianLoop() { requestAnimationFrame(pedestrianLoop); }
 function playPause() {
+  // V2.4 充电中：播放按钮兼作「暂停充电」。
+  if (state.charging?.active) { stopCharging('已暂停'); return; }
+  // V2.4 只读回放：独立播放/暂停，不进入订单状态机，绝不 patchOrder。
+  if (state.replay) {
+    const r = state.replay;
+    if (r.playing) {
+      r.playing = false; state.running = false; r.lastFrame = 0;
+      setText('playLabel', '继续回放'); setText('playIcon', '▶');
+      status('回放暂停', `${r.id} 停在 ${(r.progress * 100).toFixed(0)}%。`, 'CHARGING');
+    } else {
+      if (r.progress >= 1) { r.progress = 0; r.lastFrame = 0; }
+      r.playing = true; state.running = true; r.lastFrame = 0;
+      setText('playLabel', '暂停回放'); setText('playIcon', 'Ⅱ');
+      status('配送回放', `${r.id} 正在沿记录轨迹回放。`, 'RETURNING');
+      requestAnimationFrame(replayLoop);
+    }
+    return;
+  }
   if (state.shortage) { status('请先处理缺货', '请在任务面板选择接受替代品或跳过。', 'PICKING'); return; }
   if (state.assistPending) { status('请确认协助取货', '员工核对商品后机器人才能移动。', 'PICKING'); return; }
   if (state.fault || state.events.has('failure')) { status('故障安全停车', faultAdvice[state.fault || 'localization'], 'FAULT'); return; }
@@ -1567,7 +1808,11 @@ function bindEvents() {
   $('scenarioPeak').addEventListener('click', () => { state.scenario = 'peak'; updateScenario(); });
   $('timeSlot').addEventListener('change', () => { state.slot = $('timeSlot').value; renderCrowd(); updateScenario(); });
   $('playBtn').addEventListener('click', playPause);
-  $('resetBtn').addEventListener('click', () => { resetPlayback(); log('当前订单已重新开始，机器人已返回入口。'); });
+  $('resetBtn').addEventListener('click', () => {
+    if (exitReplay()) { log('已退出回放，机器人归位待命。'); return; }
+    resetPlayback(); log('当前订单已重新开始，机器人已返回入口。');
+  });
+  $('exitReplayBtn')?.addEventListener('click', () => { if (exitReplay()) log('已退出回放，订单状态保持不变。'); });
   $('safetyTestBtn')?.addEventListener('click', toggleBlock);
   $('cameraResetBtn').addEventListener('click', () => setCamera('full'));
   $('cameraFull')?.addEventListener('click', () => setCamera('full'));
@@ -1593,6 +1838,13 @@ function bindEvents() {
   });
   $('nextOrderBtn')?.addEventListener('click', startNextOrder);
   $('gotoOrderBtn')?.addEventListener('click', () => NEXUS_UI?.showView('order'));
+  $('chargeBtn')?.addEventListener('click', () => { if (state.charging?.active) stopCharging('已暂停'); else startCharging(); });
+  $('miningToggleBtn')?.addEventListener('click', () => {
+    state.miningEnabled = !state.miningEnabled;
+    if (state.order) resetPlayback();
+    log(state.miningEnabled ? '已启用实验驱动规划：Apriori 共购规则参与 Held–Karp 访问顺序决策。' : '已关闭实验驱动规划，恢复常规几何代价。');
+    renderMiningPanel();
+  });
   $('orderMessage')?.addEventListener('click', event => {
     const demoId = event.target.closest('[data-view-demo]')?.dataset.viewDemo;
     if (demoId) viewOrderDemo(demoId);
@@ -1665,6 +1917,55 @@ function setSimSpeed(value) {
     btn.setAttribute('aria-pressed', String(Number(btn.dataset.simSpeed) === speed)));
   log(`演示速度已设为 ${speed}×：仅缩放仿真时间，路径规划/避障/TTC/订单与库存规则不变。`);
 }
+
+/* -------------------------------------------------- V2.4 机器人充电闭环 */
+/** 仿真电量是单一真源；把当前值同步到舰队中指定机器人，供面板/调度/3D 使用。 */
+function syncBattery(robot) {
+  const target = robot || activeRobot();
+  if (target) target.battery = state.battery;
+  scene3d?.setRobots(robotFleetSnapshot());
+}
+/** 开始充电：机器人回充电桩（若正在配送则拒绝），电量按仿真时间恢复，指示灯变忙。 */
+function startCharging() {
+  if (state.replay) { status('回放中不可充电', '请先退出回放。', 'CHARGING'); return false; }
+  if (state.running) { status('请先暂停履约', '机器人配送途中无法回坞，请先暂停或等待配送完成。', 'FAULT'); return false; }
+  const robot = activeRobot();
+  const dock = STORE.chargingDocks[0];
+  if (!dock) { log('未配置充电桩，无法充电。', 'warn'); return false; }
+  if (state.battery >= 99.5) { status('电量已充满', `当前电量 ${state.battery.toFixed(0)}%，无需充电。`, 'IDLE'); return false; }
+  robot.position = [...dock.position]; state.position = [...dock.position]; state.displayPosition = [...dock.position];
+  state.inertialVelocity = [0, 0];
+  syncRobotPose(state.displayPosition, 'CHARGING', null);
+  state.charging = { active: true, robotId: robot.id, lastFrame: 0, rate: 6 }; // 每秒 +6%（仿真时间）
+  scene3d?.setCharging?.(true);
+  setText('playLabel', '暂停充电'); setText('playIcon', 'Ⅱ');
+  status('充电中', `${robot.id} 已在 ${dock.id} 补电：${state.battery.toFixed(0)}% → 100%。`, 'CHARGING');
+  log(`${robot.id} 回坞充电，电量 ${state.battery.toFixed(0)}%。`, 'ok');
+  requestAnimationFrame(chargeLoop);
+  renderAll();
+  return true;
+}
+function stopCharging(reason = '手动停止') {
+  if (!state.charging) return;
+  state.charging.active = false; state.charging = null;
+  scene3d?.setCharging?.(false);
+  setText('playLabel', '开始履约'); setText('playIcon', '▶');
+  status('充电结束', `${reason}，当前电量 ${state.battery.toFixed(0)}%。`, 'IDLE');
+  log(`充电结束（${reason}），电量 ${state.battery.toFixed(0)}%。`, 'ok');
+  syncBattery(); renderAll();
+}
+function chargeLoop(now) {
+  const c = state.charging;
+  if (!c || !c.active) return;
+  if (!c.lastFrame) c.lastFrame = now;
+  const dt = Math.min((now - c.lastFrame) / 1000, .05) * state.simSpeed;
+  c.lastFrame = now;
+  state.battery = Math.min(100, state.battery + c.rate * dt);
+  syncBattery();
+  renderRobotCenter(); renderLiveOps(); renderProgress();
+  if (state.battery >= 100) { stopCharging('已充满'); return; }
+  requestAnimationFrame(chargeLoop);
+}
 function setRobotCount(value) {
   const count = Math.max(1, Math.min(2, Number(value) || 1));
   if (state.running || state.returnLeg) { setText('robotCountStatus', '请先暂停当前履约再修改机器人数量'); return; }
@@ -1691,6 +1992,18 @@ window.__NEXUS = Object.freeze({
   state,
   applyPedPreset,
   setSimSpeed, setRobotCount, startNextOrder, activateNext,
+  viewOrderDemo, exitReplay, startReplay,
+  startCharging, stopCharging, associationWeight, matchedAssociations,
+  replayTick: dt => { // 测试用：同步推进回放 dt 秒（不依赖 rAF 时钟）
+    const r = state.replay; if (!r || !r.playing) return null;
+    r.progress = Math.min(1, r.progress + dt / r.duration);
+    const d = r.progress * (r.path.length - 1), i = Math.min(r.path.length - 2, Math.floor(d)), t = d - i;
+    const a = r.path[i], b = r.path[i + 1], pos = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    state.displayPosition = [...pos];
+    const robot = robotById(r.robotId); if (robot) robot.position = [...pos];
+    syncRobotPose(state.displayPosition, 'RETURNING', r.id);
+    return { progress: r.progress, position: pos };
+  },
   armInfo: id => scene3d?.getRobotArmInfo?.(id),
   debugFaceCamera: () => scene3d?.debugFaceCamera?.(),
   setPedDensity: value => state.pedSystem?.setDensity(value),

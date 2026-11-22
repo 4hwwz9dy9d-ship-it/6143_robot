@@ -94,11 +94,22 @@
       </div>
 
       <div class="supermarket-preview">
-        <svg viewBox="0 0 660 380" role="img" aria-label="超市区域平面预览">
+        <svg id="twinMap" viewBox="0 0 660 380" role="img" aria-label="数字孪生实时平面图">
+          <defs>
+            <pattern id="twinGrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0H0V20" fill="none" stroke="#e6eeea" stroke-width="1"/></pattern>
+          </defs>
           <rect x="8" y="8" width="644" height="364" rx="14" fill="#f7faf8" stroke="#dfe8e3"/>
-          <g id="previewZones"></g>
+          <rect x="8" y="8" width="644" height="364" rx="14" fill="url(#twinGrid)"/>
+          <g id="twinAisles"></g>
+          <g id="twinFixtures"></g>
+          <g id="twinShelves"></g>
+          <g id="twinHeat"></g>
+          <g id="twinCrowd"></g>
           <g id="previewRoute"></g>
-          <text x="28" y="352" font-size="9" fill="#84919b">数字孪生平面图 · 176 × 141 地图单位 · 与 3D 共用 STORE 坐标</text>
+          <g id="twinRobot"></g>
+          <g id="twinGates"></g>
+          <text x="28" y="352" font-size="9" fill="#84919b">数字孪生平面图 · 实时同步 3D · 176 × 141 地图单位</text>
+          <text id="twinLive" x="620" y="352" font-size="9" text-anchor="end" fill="#20A995">● 实时</text>
         </svg>
         <div class="preview-side">
           <p class="section-kicker">3D SUPERMARKET PREVIEW</p>
@@ -252,6 +263,7 @@
             <div class="playbar">
               <button id="playBtn" class="btn btn-teal" type="button"><span id="playIcon">▶</span><span id="playLabel">开始履约</span></button>
               <button id="resetBtn" class="btn btn-secondary" type="button">↺ 重新开始</button>
+              <button id="exitReplayBtn" class="btn btn-secondary" type="button" hidden>退出回放</button>
               <button id="nextOrderBtn" class="btn btn-secondary" type="button" hidden>继续下一单 →</button>
               <button id="gotoOrderBtn" class="btn btn-ghost" type="button">返回订单</button>
               <div class="speed-control" role="group" aria-label="演示速度">
@@ -382,7 +394,7 @@
       </div>
       <div class="kpi-row" style="margin-top:16px">
         <div class="kpi"><div class="kpi-label"><span class="en-mini">DESTINATION</span>当前目的地</div><div class="kpi-value" id="robotDestination" style="font-size:19px">—</div><div class="kpi-foot">当前 A* 路段目标</div></div>
-        <div class="kpi"><div class="kpi-label"><span class="en-mini">BATTERY (SIMULATED)</span>剩余电量（仿真）</div><div class="kpi-value" id="robotBattery2">100%</div><div class="kpi-foot">随仿真行驶距离下降</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">BATTERY (SIMULATED)</span>剩余电量（仿真）</div><div class="kpi-value" id="robotBattery2">100%</div><div class="kpi-foot">随仿真行驶距离下降</div><button id="chargeBtn" class="btn btn-teal btn-sm" type="button" style="margin-top:8px">⚡ 回坞充电</button></div>
         <div class="kpi"><div class="kpi-label"><span class="en-mini">PAYLOAD</span>当前载重</div><div class="kpi-value" id="robotLoad2">0.00 kg</div><div class="kpi-foot">容量 12.00 kg（假设）</div></div>
         <div class="kpi kpi--dark"><div class="kpi-label"><span class="en-mini">DISTANCE TRAVELED</span>累计行驶距离</div><div class="kpi-value" id="robotDistance2">0.0</div><div class="kpi-foot">自开始起的地图单位</div></div>
       </div>
@@ -427,6 +439,11 @@
         <div class="table-wrap"><table class="data-table"><thead><tr><th>指标</th><th>原方案</th><th>当前方案</th></tr></thead><tbody id="comparisonBody"></tbody></table></div>
         <p id="comparisonInsight" class="assumption"></p>
         <div id="benchmarkResult" class="order-message" style="margin-top:12px">请先模拟支付订单，再运行基准测试。</div>
+      </div>
+      <!-- V2.4 实验数据驱动的路径优化：Apriori 共购规则真实参与 Held–Karp 访问顺序决策 -->
+      <div class="card card-pad" style="margin-top:16px">
+        <div class="card-head"><div><p class="section-kicker">EXPERIMENT-DRIVEN ROUTING</p><h3>关联实验驱动的路径优化</h3><p id="miningNote">基于 Apriori 真实购物篮规则：让实验证实常被一起购买的货区在访问顺序上相邻，减少折返。</p></div><button id="miningToggleBtn" class="btn btn-teal btn-sm" type="button">启用实验驱动规划</button></div>
+        <div id="miningResult" class="order-message">提交订单后可查看本次命中的关联规则与优化收益。</div>
       </div>
     </section>
 

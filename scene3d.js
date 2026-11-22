@@ -802,30 +802,48 @@ function buildScene(container) {
   });
   flushProducts();
 
-  // V2.2：每个收银台常驻一名工作人员（绿色制服马甲 + 工牌），站在收银台后侧，
-  // 与行人系统解耦，始终在岗；位置取自收银台坐标，跟随统一 STORE 坐标源。
-  const staffUniform = mat(0x2f8f6e, { roughness: .85 });
-  const staffShirt = mat(0xf4f6f2, { roughness: .9 });
-  const staffSkin = mat(0xe0ae87, { roughness: .95 });
-  const staffHair = mat(0x2a2521, { roughness: .95 });
-  const staffBadge = mat(0xf6d97a, { emissive: 0x8a7330, emissiveIntensity: .2 });
-  function makeCashier(x, y) {
-    const g = new THREE.Group();
-    const p = floorPoint([x, y], 0); g.position.set(p.x, 0, p.z);
-    addCylinder(g, .14, .16, .62, staffUniform, 0, .52, 0, 12);      // 制服马甲躯干
-    addBox(g, .24, .30, .12, staffShirt, 0, .62, -.10);               // 白衬衫领口
-    addBox(g, .10, .10, .02, staffBadge, .06, .58, -.17);             // 工牌
-    for (const side of [-1, 1]) {
-      addCylinder(g, .045, .045, .34, staffUniform, side * .17, .5, -.03, 8).rotation.z = side * .12;
-      addBox(g, .075, .04, .18, staffSkin, side * .17, .31, -.10);    // 手臂
-      addCylinder(g, .055, .055, .40, mat(0x35404a), side * .075, .20, 0, 8); // 腿
-    }
-    addCylinder(g, .105, .105, .20, staffSkin, 0, .96, 0, 14);        // 头
-    addCylinder(g, .108, .108, .07, staffHair, 0, 1.06, 0, 14);       // 头发
-    g.rotation.y = Math.PI; // 面向收银台前方（+Z 世界 → 顾客侧）
+  // V2.4：充电桩（入口左下空地）。底座 + 立柱 + 充电枪 + 指示灯，供机器人回坞补电。
+  const chargingDocks = [];
+  let chargingActive = false;
+  for (const dock of STORE.chargingDocks) {
+    const p = floorPoint(dock.position, 0);
+    const g = new THREE.Group(); g.position.set(p.x, 0, p.z);
+    addRounded(g, .70, .06, .70, .05, mat(0x2a3a44), 0, .03, 0, true);        // 底座
+    addRounded(g, .16, .62, .16, .04, mat(0xd7e2e0), 0, .34, -.22, true);      // 立柱
+    addRounded(g, .22, .18, .12, .03, mat(0x3a4a54), 0, .60, -.22);            // 桩头
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(.045, 12, 10), materials.tealEmissive);
+    lamp.position.set(0, .70, -.22); g.add(lamp);                              // 满电/可用指示灯
+    const cable = new THREE.Mesh(new THREE.TorusGeometry(.10, .018, 6, 14, Math.PI * 1.15), mat(0x24323a));
+    cable.position.set(.04, .42, -.06); cable.rotation.set(Math.PI / 2, 0, .4); g.add(cable); // 充电枪线缆
+    const plate = makeLabel('充电桩', '#123A34', '#7fe0c6', .42);
+    plate.position.set(0, .92, -.22); g.add(plate);
+    tagGroup(g, 'charger', { id: dock.id });
     scene.add(g);
+    chargingDocks.push({ ...dock, group: g, lamp });
   }
-  for (const lane of STORE.checkoutLanes) makeCashier(lane.x, 3.4);
+
+  // V2.4：每个收银台常驻一名精细店员。直接复用 makePerson 的完整人形骨架
+  // （绿色马甲 + 白衬衫 + 领口 + 工牌 + 球头五官 + 马尾发髻 + 关节手臂/手掌 + 皮鞋 + 地面投影），
+  // 与参考图「绿马甲白衬衫黑长裤黑发女店员」一致；不再用粗糙圆柱堆叠。
+  // makePerson 局部正面朝 -Z；收银员面向顾客（世界 -Z，即店内 y 增大方向）时 rotation.y=0。
+  const cashiers = [];
+  function makeCashier(x, y, idx) {
+    const [body, rig] = makePerson(0, idx % 2 ? 0xe8b58e : 0xdcaa82, false);
+    const p = floorPoint([x, y], 0); body.position.set(p.x, 0, p.z);
+    body.rotation.y = 0; // 面向顾客侧（局部 -Z = 世界 -Z = 店内方向）
+    body.scale.setScalar(1.0);
+    // 收银站立姿态：双臂自然微前放收银台，站姿稳定（静态摆姿，不参与行人动画循环）。
+    rig.arms.forEach((arm, s) => {
+      arm.shoulder.rotation.x = -.16; arm.shoulder.rotation.z = (s === 0 ? -1 : 1) * .05;
+      arm.elbow.rotation.x = -.34;
+    });
+    rig.legs.forEach(leg => { leg.hip.rotation.x = 0; leg.knee.rotation.x = .02; });
+    if (body.userData.pick) body.userData.pick = { kind: 'cashier', id: `CASHIER-${idx + 1}` };
+    scene.add(body);
+    cashiers.push({ body, rig, phase: idx * 1.7 });
+    return body;
+  }
+  STORE.checkoutLanes.forEach((lane, i) => makeCashier(lane.x, 3.4, i));
 
   // 区域招牌（入口上方与后墙）
   const zoneSign = makeLabel('NEXUS RETAIL · 智能超市与机器人履约中心', '#172C40', '#9fe6d8', 1.8);
@@ -931,6 +949,18 @@ function buildScene(container) {
     fps = fps ? fps * .92 + (1 / Math.max(.001, dt)) * .08 : 1 / Math.max(.001, dt);
     if (!active || document.hidden || !container.offsetParent) return;
     const time = (now - startedAt) / 1000;
+    // 收银员微动画：轻微呼吸起伏 + 缓慢左右扫视，避免静态雕像感（与行人系统解耦）。
+    for (const c of cashiers) {
+      const breath = Math.sin(time * 1.4 + c.phase) * .008;
+      c.body.position.y = breath;
+      c.body.rotation.y = Math.sin(time * .45 + c.phase) * .10;
+    }
+    // 充电桩指示灯：待机青色常亮，充电中蓝色脉冲。
+    for (const dock of chargingDocks) {
+      const pulse = chargingActive ? .55 + .45 * Math.sin(time * 5) : 1;
+      dock.lamp.scale.setScalar(chargingActive ? .8 + .5 * pulse : 1);
+      dock.lamp.material = chargingActive ? materials.amberEmissive : materials.tealEmissive;
+    }
     for (const model of robotModels) {
       model.lidarRing.rotation.z = time * 2.4;
       for (const wheel of model.wheelMeshes) wheel.rotation.x = (model.group.userData.distance || 0) / .135;
@@ -994,6 +1024,8 @@ function buildScene(container) {
     },
     setShelfStock,
     setRobotState, setFleetCount, setPedestrians, setSafety, setQueueStatus,
+    // V2.4：充电桩指示——charging=true 时灯变忙绿脉冲，否则常亮青色待机。
+    setCharging(active) { chargingActive = !!active; },
     // 调试：读取/设置机器人机械臂姿态（供自动化视觉核对，不影响正常仿真）。
     getRobotArmInfo(id = robotModels[0].id) {
       const m = robotById.get(id) || robotModels[0];

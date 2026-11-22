@@ -364,3 +364,29 @@ Note: the earlier display `6 / 4` for navigation stops was corrected to cap the 
 | T4 归位 | 整备结束沿外侧通道从入口回归泊位 [24,8]，状态 IDLE |
 | T5 异常 | 0 |
 | 回归 | V2.2 9/9、V2.1 11/11 全 PASS |
+
+## 15. V2.4 回放bug修复 / 精细收银员 / 充电 / 数字孪生实时地图 / 实验驱动路径
+日期 2026-11-22。本地无头 Chrome 实测，脚本 `cdp-v24-tests.mjs`（8/8 PASS）+ V2.3 6/6 + V2.2 9/9 + V2.1 11/11 回归全通过，运行时异常 0。
+
+### 15.1 改动清单
+| 项目 | 改动 | 文件 |
+|---|---|---|
+| 回放 bug 根因 | "已完成"订单点 3D 回放→被当新单载入并 resetPlayback→playPause 用 `stage===0&&elapsed===0` 判定首单→`patchOrder(status:'配送中')` 把已终结状态永久改回配送中。修复：新增独立只读回放 `state.replay`，沿 `record.path` 插值驱动机器人；playPause 回放分支不进订单状态机、不 patchOrder；新增"退出回放"按钮；`systemCore.patchOrder` 加状态机守卫禁止终态→中途态 | `app.js`、`systemCore.js`、`index.html` |
+| 回放保真 | 下单时持久化 `scenario/slot`；回放按 `deliverSeconds` 定时长（4~30s），倍速同步；回放中拖尾/进度/状态文案独立显示 | `app.js` |
+| 精细收银员 | 收银台店员由粗糙圆柱堆叠改为复用 makePerson 完整人形骨架（球头五官/马尾/绿马甲白衬衫/工牌/关节手臂/皮鞋/地面投影），身高 1.09→1.64m，朝向修正面向顾客；加呼吸+扫视微动画 | `scene3d.js` |
+| 机器人充电 | 全局电量同步到舰队真源；新增充电桩 `chargingDocks`（入口左下空地，含底座/立柱/充电枪/指示灯）；`startCharging/stopCharging/chargeLoop`（仿真时间 +6%/秒，倍速同步）；机器人控制页加"回坞充电"按钮，3D 页电量条首次接通；充电指示灯脉冲 | `storeData.js`、`scene3d.js`、`app.js`、`index.html` |
+| 数字孪生平面图 | 总览区静态色块图替换为完整实时地图：通道/24 装置/18 品类着色货架/入口·收银·出口标签/行人热力/行人点/规划+已走双路径/机器人位置(回放紫·充电橙·常规绿)/实时状态标记；与 3D 共用 state 与 STORE 坐标 | `index.html`、`app.js` |
+| 实验驱动路径 | Apriori 真实规则（13.1万购物篮/2.8万条规则）接入路径优化：`associationWeight` 按命中规则的置信度/提升度算共购强度，`buildPlan('mining')` 在 Held–Karp 段代价最多降 45%，让实验证实共购的货区排得更近；路径页新增"关联实验驱动"面板展示命中规则、常规 vs 实验方案对比、里程收益；可一键开关 | `app.js`、`index.html` |
+
+### 15.2 实测结果（V2.4 8/8 PASS）
+| 测试 | 实测数据 |
+|---|---|
+| T0 UI 结构 | 数字孪生图层/充电按钮/实验面板/退出回放按钮全部存在 |
+| T1 数字孪生地图 | 18 货架、24 装置、3 门标、机器人层有内容，实时标记生效 |
+| T2 完成订单 | 配送→交接→返航完成，localStorage 状态='已完成' |
+| T3 回放bug修复 | 回放已完成单：进入只读回放(400轨迹点)、orderChanged=false、播放到 progress=1 后状态仍='已完成' |
+| T4 退出回放 | replay 清除、状态仍='已完成' |
+| T5 充电 | 电量30%回坞→机器人 pos=[46,8]=充电桩、进入/退出充电正常 |
+| T6 实验关联 | 28052 条规则/131209 篮；关联函数可用；开关启用后 method='Held–Karp 精确·实验关联加权' |
+| T7 异常 | 0 |
+| 回归 | V2.3 6/6、V2.2 9/9、V2.1 11/11 全 PASS |

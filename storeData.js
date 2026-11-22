@@ -54,6 +54,10 @@ export const STORE = {
   // 默认只启用 1 台（AMR-01）；后台可配置第二台（AMR-02），两泊位相距 1.7 m 不重叠。
   robotWaitSlots: Object.freeze([[24, 8], [34, 8]]),
   robotWait: [24, 8],
+  // V2.4 充电桩：位于入口左下侧、机器人泊位旁的空地，不占主通道 y=26，也不与购物车区(x=10)重叠。
+  chargingDocks: Object.freeze([
+    Object.freeze({ id: 'CHG-1', position: [46, 8], waitSlot: [46, 8] }),
+  ]),
   exitLane: [170, 20],
   outsideExit: [182, 26],
   // 机器人从右墙出口离开后，经场景外侧服务通道返回左入口（不穿墙、不瞬移）。
