@@ -164,6 +164,7 @@ export class PedestrianSystem {
       state: 'ENTER_STORE', timer: 0, phase: this.random() * TAU,
       route: [], routeIndex: 0, goal: null, sections: 0,
       yieldToRobot: 0, blocked: 0, crossing: !!forced.crossing,
+      yieldSide: 0, yieldTimer: 0,
       lane: null, queueSlot: -1,
       color: [0x2f6b4f, 0xc2a878, 0x3f5a42, 0x243b52, 0x7d3341, 0x4a4f55][type.look % 6],
       skin: [0xf0c9a8, 0xe0ae87, 0xc98d68, 0x8d5c42, 0xf5d7b8][Math.floor(this.random() * 5)],
@@ -293,7 +294,11 @@ export class PedestrianSystem {
     for (let i = this.people.length - 1; i >= 0; i--) {
       const person = this.people[i];
       this.advance(person, step, robot);
-      if (person.state === 'EXITING' && dist(person.position, person.goal || STORE.exitLane) < 2.6) {
+      // 走出出口即消失：一旦越过右墙开口外侧（x > width + 6）立即移除，
+      // 避免行人停留在墙外铺装区产生视觉穿模；离店计数在此时结算。
+      const passedExit = person.state === 'EXITING' && person.position[0] > STORE.width + 6;
+      const reachedGoal = person.state === 'EXITING' && dist(person.position, person.goal || STORE.exitLane) < 2.6;
+      if (passedExit || reachedGoal) {
         this.releaseLane(person);
         this.people.splice(i, 1); this.metrics.exits++;
       }
@@ -370,32 +375,39 @@ export class PedestrianSystem {
       }
     }
 
-    // 对机器人反应：保留侧向让行分量，避免双向死锁。
+    // 对机器人反应：V2.2 改进——行人主动、坚定地侧移让出通道，带方向记忆避免来回摆动。
+    // 只在真正接近（前方或迎面）时触发，远离者不纠缠；让行方向锁定 1.4 秒，避免人群围住机器人打转。
     if (robot?.position) {
       const dx = person.position[0] - robot.position[0], dy = person.position[1] - robot.position[1];
       const d = Math.hypot(dx, dy), dM = d * M;
-      if (dM < 2.8 && d > .0001) {
+      person.yieldTimer = Math.max(0, (person.yieldTimer || 0) - dt);
+      if (dM < 3.0 && d > .0001) {
         const side = [-dy / d, dx / d];
-        const gain = clamp((2.8 - dM) / 2.8, 0, 1);
         const toward = -(desired[0] * dx + desired[1] * dy) / d;
-        if (toward > 0 && dM < 2.2) {
+        // 锁定让行方向一次，持续朝同一侧移动直到计时结束，杜绝左右横跳。
+        if (person.yieldTimer <= 0) {
           const sideDot = desired[0] * side[0] + desired[1] * side[1];
-          desired[0] = side[0] * Math.max(sideDot, 0);
-          desired[1] = side[1] * Math.max(sideDot, 0);
-        } else if (toward > 0) {
+          person.yieldSide = sideDot >= 0 ? 1 : -1;
+          person.yieldTimer = 1.4;
+          if (person.yieldToRobot <= 0) this.metrics.pedestrianYields++;
+        }
+        const gain = clamp((3.0 - dM) / 3.0, 0, 1);
+        const goSide = [side[0] * person.yieldSide, side[1] * person.yieldSide];
+        // 迎面或同向逼近：把朝机器人的分量替换为侧向让行，而不是原地停住。
+        if (toward > 0) {
           desired[0] -= toward * dx / d; desired[1] -= toward * dy / d;
         }
-        desired[0] += side[0] * maxSpeed * gain * 1.5;
-        desired[1] += side[1] * maxSpeed * gain * 1.5;
-        desired[0] *= 1 - gain * .45; desired[1] *= 1 - gain * .45;
-        if (person.yieldToRobot <= 0) this.metrics.pedestrianYields++;
-        person.yieldToRobot = .8;
-        if (dM < 1.0) {
-          const sideDot = desired[0] * side[0] + desired[1] * side[1];
-          desired[0] = side[0] * sideDot; desired[1] = side[1] * sideDot;
-          person.blocked = .8;
+        desired[0] += goSide[0] * maxSpeed * (0.9 + gain * 0.9);
+        desired[1] += goSide[1] * maxSpeed * (0.9 + gain * 0.9);
+        if (dM < 0.95) {
+          // 极近距离：完全转为侧向快速脱离，绝不原地打转。
+          const sideDot = desired[0] * goSide[0] + desired[1] * goSide[1];
+          desired[0] = goSide[0] * Math.max(maxSpeed, sideDot);
+          desired[1] = goSide[1] * Math.max(maxSpeed, sideDot);
+          person.blocked = .5;
           this.metrics.blocks++;
         }
+        person.yieldToRobot = 1.0;
       }
     }
     person.yieldToRobot = Math.max(0, person.yieldToRobot - dt);
@@ -441,7 +453,7 @@ export class PedestrianSystem {
     const r = (person.radius || .26) / M;
     for (const s of shelves) if (x > s.xMin - r && x < s.xMax + r && y > s.yMin - r && y < s.yMax + r) return true;
     for (const f of layoutFixtures) {
-      if (!['wall', 'promo', 'checkout'].includes(f.kind)) continue;
+      if (!['wall', 'promo', 'checkout', 'kiosk'].includes(f.kind)) continue;
       if (x > f.x - f.w / 2 - r && x < f.x + f.w / 2 + r && y > f.y - f.h / 2 - r && y < f.y + f.h / 2 + r) return true;
     }
     return false;

@@ -225,7 +225,7 @@ function buildScene(container) {
   }
   floorPatch(45, 44, 18, 22, 'wood', 0xffffff);
   floorPatch(126, 116, 18, 22, 'wood', 0xffffff);
-  for (const [x, y] of [[45, 12], [72, 12], [126, 12]]) floorPatch(x, y, 13, 11, 'stone', 0xffe9c8);
+  for (const [x, y] of [[45, 12], [72, 12], [99, 12]]) floorPatch(x, y, 13, 11, 'stone', 0xffe9c8); // 促销岛 A/B/C（C 已避开收银排队区）
   floorPatch(10, 9, 13, 8, 'tile', 0xd8e4e6);            // 购物车停放区：入口左下角，不挡入口主通道
   for (const slot of STORE.robotWaitSlots) floorPatch(slot[0], slot[1], 7, 6, 'stone', 0xd6ecdf); // 独立机器人泊位
   // 机器人任务完成后从右出口离开，沿场景外侧服务通道返回左入口（与世界坐标同源）。
@@ -462,9 +462,27 @@ function buildScene(container) {
     const safetyRing = new THREE.Mesh(new THREE.RingGeometry(.77, .80, 48),
       new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .2, side: THREE.DoubleSide, depthWrite: false }));
     safetyRing.rotation.x = -Math.PI / 2; safetyRing.position.y = .009; robot.add(safetyRing);
+    // 关节式机械臂：底座位于顶部平台后侧，取货时向机身正面 (-Z) 伸出夹爪。
+    // 肩/肘/腕分开建模，frame() 按 picking 状态平滑收放，避免与货架穿模。
+    const armBase = new THREE.Group();
+    armBase.position.set(0, .70, .18); robot.add(armBase);
+    addCylinder(armBase, .075, .085, .10, materials.graphite, 0, .05, 0, 14);
+    const shoulder = new THREE.Group(); shoulder.position.y = .10; armBase.add(shoulder);
+    addCylinder(shoulder, .055, .055, .07, materials.aluminum, 0, 0, 0, 12).rotation.z = Math.PI / 2;
+    const upperArm = addBox(shoulder, .07, .26, .07, materials.white, 0, .13, 0);
+    const elbow = new THREE.Group(); elbow.position.y = .26; shoulder.add(elbow);
+    addCylinder(elbow, .045, .045, .06, materials.graphite, 0, 0, 0, 12).rotation.z = Math.PI / 2;
+    const foreArm = addBox(elbow, .055, .22, .055, mat(0xe7f1ef), 0, .11, 0);
+    const wrist = new THREE.Group(); wrist.position.y = .22; elbow.add(wrist);
+    addCylinder(wrist, .04, .04, .05, materials.aluminum, 0, 0, 0, 10).rotation.z = Math.PI / 2;
+    // 两指夹爪：以手腕为原点向 +Y 开口，取货时夹合。
+    const gripperL = addBox(wrist, .02, .10, .035, materials.graphite, -.07, .07, 0);
+    const gripperR = addBox(wrist, .02, .10, .035, materials.graphite, .07, .07, 0);
+    addBox(wrist, .16, .02, .05, materials.aluminum, 0, .02, 0);
     const robotTag = makeLabel(id, '#172C40', '#8ce5d5', .42);
-    robotTag.position.y = 1.02; robot.add(robotTag);
-    return { id, group: robot, statusBar, statusRing, safetyRing, lidarRing, facePixels, wheelMeshes, robotState: 'idle' };
+    robotTag.position.y = 1.06; robot.add(robotTag);
+    return { id, group: robot, statusBar, statusRing, safetyRing, lidarRing, facePixels, wheelMeshes,
+      arm: { shoulder, elbow, wrist, gripperL, gripperR, reach: 0 }, robotState: 'idle' };
   }
 
   const robotModels = STORE.robotWaitSlots.map((slot, i) => createRobotModel(`AMR-${String(i + 1).padStart(2, '0')}`));
@@ -752,6 +770,14 @@ function buildScene(container) {
         addBox(scene, .16, .22, .02, materials.screen, p.x - .32, h + .19, p.z - .06);
         addBox(scene, .12, .05, .1, materials.graphite, p.x + .1, h + .06, p.z + .1);
       }
+      if (f.kind === 'kiosk') {
+        // 自助结账机：立柱机身 + 触摸屏 + 扫码窗 + 支付区 + 顶部指示灯。
+        addBox(scene, f.w * X_SCALE * .82, 1.35, f.h * X_SCALE * .8, mat(0xe6eef0), p.x, .675, p.z, true);
+        addBox(scene, f.w * X_SCALE * .72, .42, .03, materials.screen, p.x, 1.02, p.z - f.h * X_SCALE * .4 - .012);
+        addBox(scene, f.w * X_SCALE * .5, .06, .16, materials.graphite, p.x, .74, p.z - f.h * X_SCALE * .4 - .06);
+        addBox(scene, .12, .05, .1, materials.tealEmissive, p.x + f.w * X_SCALE * .25, 1.4, p.z);
+        addBox(scene, f.w * X_SCALE * .8, .05, f.h * X_SCALE * .78, materials.aluminum, p.x, 0.02, p.z);
+      }
       if (f.kind === 'promo') {
         for (let k = 0; k < 14; k++) {
           const px = p.x + (rnd(i * 13 + k) - .5) * f.w * X_SCALE * .78;
@@ -776,12 +802,38 @@ function buildScene(container) {
   });
   flushProducts();
 
+  // V2.2：每个收银台常驻一名工作人员（绿色制服马甲 + 工牌），站在收银台后侧，
+  // 与行人系统解耦，始终在岗；位置取自收银台坐标，跟随统一 STORE 坐标源。
+  const staffUniform = mat(0x2f8f6e, { roughness: .85 });
+  const staffShirt = mat(0xf4f6f2, { roughness: .9 });
+  const staffSkin = mat(0xe0ae87, { roughness: .95 });
+  const staffHair = mat(0x2a2521, { roughness: .95 });
+  const staffBadge = mat(0xf6d97a, { emissive: 0x8a7330, emissiveIntensity: .2 });
+  function makeCashier(x, y) {
+    const g = new THREE.Group();
+    const p = floorPoint([x, y], 0); g.position.set(p.x, 0, p.z);
+    addCylinder(g, .14, .16, .62, staffUniform, 0, .52, 0, 12);      // 制服马甲躯干
+    addBox(g, .24, .30, .12, staffShirt, 0, .62, -.10);               // 白衬衫领口
+    addBox(g, .10, .10, .02, staffBadge, .06, .58, -.17);             // 工牌
+    for (const side of [-1, 1]) {
+      addCylinder(g, .045, .045, .34, staffUniform, side * .17, .5, -.03, 8).rotation.z = side * .12;
+      addBox(g, .075, .04, .18, staffSkin, side * .17, .31, -.10);    // 手臂
+      addCylinder(g, .055, .055, .40, mat(0x35404a), side * .075, .20, 0, 8); // 腿
+    }
+    addCylinder(g, .105, .105, .20, staffSkin, 0, .96, 0, 14);        // 头
+    addCylinder(g, .108, .108, .07, staffHair, 0, 1.06, 0, 14);       // 头发
+    g.rotation.y = Math.PI; // 面向收银台前方（+Z 世界 → 顾客侧）
+    scene.add(g);
+  }
+  for (const lane of STORE.checkoutLanes) makeCashier(lane.x, 3.4);
+
   // 区域招牌（入口上方与后墙）
   const zoneSign = makeLabel('NEXUS RETAIL · 智能超市与机器人履约中心', '#172C40', '#9fe6d8', 1.8);
   zoneSign.position.set(0, 3.0, -floorD / 2 + .2); scene.add(zoneSign);
   [['生鲜 · 乳品 · 冷冻', -11], ['食品杂货', 0], ['日用 · 个护', 11]].forEach(([label, x]) => {
     const sign = makeLabel(label, '#ffffff', '#1c6b5c', 1.05);
-    sign.position.set(x, 2.2, -floorD / 2 + .2); scene.add(sign);
+    // 抬高到冷柜顶部标签（约 2.34 m）之上，避免文字与冷柜/墙面穿模。
+    sign.position.set(x, 2.72, -floorD / 2 + .24); scene.add(sign);
   });
 
   const crowdZone = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 2.0),
@@ -882,6 +934,16 @@ function buildScene(container) {
     for (const model of robotModels) {
       model.lidarRing.rotation.z = time * 2.4;
       for (const wheel of model.wheelMeshes) wheel.rotation.x = (model.group.userData.distance || 0) / .135;
+      // 机械臂：取货/协助时伸出到货架正面（-Z 局部），否则收回贴身竖直停放。
+      const arm = model.arm; if (!arm) continue;
+      const picking = model.robotState === 'picking' || model.robotState === 'PICKING';
+      const targetReach = picking ? 1 : 0;
+      arm.reach += (targetReach - arm.reach) * Math.min(1, dt * 4.5);
+      arm.shoulder.rotation.x = -arm.reach * 1.15;          // 上臂前倾伸向 -Z
+      arm.elbow.rotation.x = arm.reach * .55;                // 前臂下探取货
+      arm.wrist.rotation.x = arm.reach * .62;                // 腕部对准货架层高
+      const open = .07 - arm.reach * .035;                   // 夹爪靠近时收拢
+      arm.gripperL.position.x = -open; arm.gripperR.position.x = open;
     }
     if (cameraMode === 'follow' || cameraMode === 'close') {
       const robotPos = robot.position, angle = robot.rotation.y;
@@ -932,6 +994,16 @@ function buildScene(container) {
     },
     setShelfStock,
     setRobotState, setFleetCount, setPedestrians, setSafety, setQueueStatus,
+    // 调试：读取/设置机器人机械臂姿态（供自动化视觉核对，不影响正常仿真）。
+    getRobotArmInfo(id = robotModels[0].id) {
+      const m = robotById.get(id) || robotModels[0];
+      return { reach: m.arm?.reach ?? 0, shoulderX: m.arm?.shoulder.rotation.x ?? 0,
+        elbowX: m.arm?.elbow.rotation.x ?? 0, state: m.robotState };
+    },
+    debugFaceCamera() {
+      const m = robotModels[0];
+      m.group.rotation.y = Math.PI; // 正面（局部 -Z）转向世界 +Z，即 close 相机方向
+    },
     setPickHandler(handler) { pickHandler = typeof handler === 'function' ? handler : null; },
     setScenario(scenario, slot = '09') {
       const peak = scenario === 'peak';

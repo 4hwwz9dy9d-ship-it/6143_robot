@@ -252,6 +252,8 @@
             <div class="playbar">
               <button id="playBtn" class="btn btn-teal" type="button"><span id="playIcon">▶</span><span id="playLabel">开始履约</span></button>
               <button id="resetBtn" class="btn btn-secondary" type="button">↺ 重新开始</button>
+              <button id="nextOrderBtn" class="btn btn-secondary" type="button" hidden>继续下一单 →</button>
+              <button id="gotoOrderBtn" class="btn btn-ghost" type="button">返回订单</button>
               <div class="speed-control" role="group" aria-label="演示速度">
                 <span class="speed-label">演示速度 <b id="simSpeedBadge">1×</b></span>
                 <div class="segmented speed-segmented">
@@ -373,7 +375,7 @@
       </div>
       <div class="robot-hero">
         <div class="robot-portrait" aria-hidden="true">
-          <img id="robotPortraitImg" data-brand="robotFront" alt="AMR 机器人">
+          <img id="robotPortraitImg" data-brand="controlVisual" alt="AMR 机器人">
           <span id="robotPortraitTag" class="robot-portrait-tag">AMR-01</span>
         </div>
         <div><p class="section-kicker" style="color:#68c8bb">AMR-01 · 自主移动机器人</p><h2 id="robotStatusText">待机 · 满电 · 等待订单</h2><p id="robotTaskText">当前无任务。请在订单管理中提交订单，然后在 3D 超市页面点击播放。</p><div class="btn-row"><span class="pill pill--dark" id="robotModeText">模式：待命</span><span class="pill pill--dark" id="robotStateBadge">状态：待机</span></div></div>

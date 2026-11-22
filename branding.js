@@ -8,7 +8,8 @@ export const BRAND_ASSETS = Object.freeze({
   robotSide:  './assets/brand/amr-side.jpg',
   robotBack:  './assets/brand/amr-back.jpg',
   robotFace:  './assets/brand/amr-face.jpg',
-  heroVisual: './assets/brand/paper-logo.jpg',
+  heroVisual: './assets/brand/paper-logo-4.jpg',
+  controlVisual: './assets/brand/amr-control.jpg',
 });
 
 /** 把所有带 data-brand 的 <img> 指向统一素材表（单一替换点）。 */
@@ -25,6 +26,6 @@ export function applyBrandAssets(root = document) {
 export function updateBrandRobotImage(root = document, index = 0) {
   const img = root.querySelector('#robotPortraitImg');
   if (!img) return;
-  const key = index % 2 === 0 ? 'robotFront' : 'robotSide';
+  const key = index % 2 === 0 ? 'controlVisual' : 'robotSide';
   if (img.dataset.brand !== key) { img.dataset.brand = key; img.src = BRAND_ASSETS[key]; }
 }

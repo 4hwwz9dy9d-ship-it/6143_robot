@@ -35,6 +35,8 @@
 | `assets/brand/amr-side.jpg` | AMR 带货篮侧视渲染图 | 备用展示（第二台机器人） |
 | `assets/brand/amr-back.jpg` | AMR 背面渲染图 | 备用展示 |
 | `assets/brand/amr-face.jpg` | 表情屏特写条 | 备用展示 |
-| `assets/brand/paper-logo.jpg` | 用户提供的「论文 logo 设计」等轴场景图：AMR 沿虚线路径穿越三组货架 | 第一页总览主视觉（`heroVisual`） |
+| `assets/brand/paper-logo-4.jpg` | 用户提供的「论文logo设计 (4)」深蓝背景等轴场景图：机器人沿虚线路径穿越四组货架 | 第一页总览主视觉（`heroVisual`，V2.2 替换） |
+| `assets/brand/amr-control.jpg` | 用户提供的「论文logo设计 (2)」机器人特写：白色机身 + 双目表情屏 + 顶置 LiDAR + 四轮底盘 | 机器人控制中心页主图（`controlVisual`，V2.2 替换） |
+| `assets/brand/paper-logo.jpg` | 上一版总览图（等轴场景，浅色背景） | 备用（已由 paper-logo-4.jpg 取代总览位） |
 
 **替换接口**：以上路径全部集中在 `branding.js` 的 `BRAND_ASSETS`。用户后续提供正式图片时只改这一处，不需要改 `index.html` / `app.js`。界面图片是说明图，不会冒充 3D 实时渲染；3D 中的机器人仍由 `scene3d.js` 实时生成。

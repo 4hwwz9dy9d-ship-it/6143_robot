@@ -313,3 +313,34 @@ Note: the earlier display `6 / 4` for navigation stops was corrected to cap the 
 | V2.1 全量回归 | 11/11 PASS；T1 完整配送+经出口返航、T5 四档倍速、T6 5×零碰撞、T7 平面图一致全部保持通过 |
 | 总览图片 | `heroRobotImg` src=`./assets/brand/paper-logo.jpg`，naturalWidth=1920，naturalHeight=1026 |
 | 运行时异常 | 0 |
+
+## 13. V2.2  场景精细化、机械臂、离店归位与订单联动
+日期 2026-11-22。本地无头 Chrome 实测，脚本 `cdp-v22-tests.mjs`（9/9 PASS）+ `cdp-v21-tests.mjs` 回归（11/11 PASS）。
+
+### 13.1 本轮改动
+| 项目 | 改动 | 文件 |
+|---|---|---|
+| 唯一出入口 | 删除 `layoutFixtures` 中店内 y=20 的「入口/出口」门框（与墙上真实开口形成两套），只保留左右墙 y=26 的单一开口与门楣标牌 | `storeData.js`、`scene3d.js` |
+| 机械臂 | 机器人顶部新增关节式机械臂（底座/肩/上臂/肘/前臂/腕/双指夹爪），取货时按 picking 状态平滑伸出至机身正面 (-Z)，待机收回；实测 reach 0→1、肩 -1.15 rad、肘 0.55 rad | `scene3d.js` |
+| 仅补货需协助 | 常规取货（含冷链/整箱饮料）改为机械臂自动完成，不再触发员工协助暂停；员工协助只发生在库存管理页的「补货」作业 | `app.js` |
+| 行人避让 | 行人对机器人检测半径 2.8→3.0 m，引入让行方向锁定（yieldSide/yieldTimer 1.4 s）避免左右横跳围观；极近距离(<0.95m)全力侧移脱离；机器人对已让行行人放宽阈值减少无谓停车 | `pedestrian.js`、`robotBehavior.js` |
+| 出口消失 | 行人一旦越过右墙开口外侧（x>width+6）立即从仿真与渲染移除并结算离店，避免墙外穿模 | `pedestrian.js` |
+| 离店3秒归位 | 交接完成后机器人驶出右出口→门外整备 3 秒→沿外侧通道从入口回归泊位；waitAt 由 exitOuter 里程计算，倍速下同步 | `app.js`（beginReturn/stepReturn） |
+| 收银场景 | 每个收银台常驻 1 名绿制服店员；新增 2 台自助结账机（kiosk）；促销岛 C 从 x=126 移到 x=99 避开排队区（原位置与排队区1穿模）；后墙分区招牌抬高至 2.72 m 避免与冷柜标签重叠 | `storeData.js`、`scene3d.js`、`ui.css`、`pedestrian.js` |
+| 图片替换 | 总览主视觉改为 paper-logo-4.jpg，机器人控制页改为 amr-control.jpg，统一走 branding.js | `branding.js`、`index.html`、`assets/brand/*` |
+| 订单联动 | 返航后不再自动推进队列；订单页「履约流水线」与 3D 页 playbar 均新增「继续下一单」手动按钮与「还有 N 单等待处理」提示；无下一单则机器人归位休息；两页可一键互跳 | `app.js`（startNextOrder/renderQueue）、`index.html`、`layout.js`、`ui.css` |
+
+### 13.2 实测结果（V2.2 9/9 PASS）
+| 测试 | 实测数据 |
+|---|---|
+| T0 唯一出入口 | layoutFixtures 不含 entrance/exit kind，墙上开口 entrance/exit y=26 保留 |
+| T1 常规取货免协助 | assistPending=false，日志中「需要员工协助」0 次 |
+| T2 离店3秒归位 | waitAt=12，门外位置 [182,26] 处 waitLeft 2.98→0（180 子步=3 秒），路径含出口/外侧/入口 |
+| T3 行人主动让行 | 高峰场景 pedestrianYields=11，让行标志生效 |
+| T3b 出口消失 | 注入 x=180 的 EXITING 行人，一帧后即被移除，exits+1 |
+| T4 收银场景防穿模 | 自助机 2 台、促销岛 C x=99、与所有排队区零重叠、收银台 4 个 |
+| T5 图片替换 | 总览 src=paper-logo-4.jpg、控制页 src=amr-control.jpg，均加载成功 |
+| T6 手动下一单 | 连下 2 单，配送+返航后 order=null、按钮可见；点击 startNextOrder 后新订单 NX-0004、队列 1→0、自动切到 3D 页 |
+| T7 运行时异常 | 0 |
+| 机械臂专项 | 待机 reach=0；picking 状态 reach≈1、肩 -1.15 rad、肘 0.55 rad |
+| V2.1 回归 | 11/11 PASS，5× 加速零碰撞（最小距离 3.0 m） |

@@ -113,6 +113,10 @@ export class RobotBehavior {
       // 已明确远离且距离足够：不占用通行决策，避免无意义反复减速。
       const away = isPerson && relativeHeading > .45;
       if (away && d > P.radius + radius + .75) return;
+      // V2.2：行人已主动侧移让行（yieldToRobot>0）时放宽决策阈值，
+      // 让机器人保持通行，避免双方互相等待形成"围住机器人"的观感。
+      const yielding = isPerson && (obj.avoiding || obj.yieldToRobot > 0);
+      if (yielding && d > P.radius + radius + .55) return;
 
       const candidate = {
         id: obj.id || 'obstacle', distance: d, ttc, closest, safety, along, lateral,

@@ -165,13 +165,15 @@ export const layoutFixtures = [
   { label: '杂货侧柜',   x: 172, y: 116, w: 5,  h: 18, kind: 'wall' },
   { label: '促销岛 A',   x: 45,  y: 12,  w: 11, h: 9,  kind: 'promo' },
   { label: '促销岛 B',   x: 72,  y: 12,  w: 11, h: 9,  kind: 'promo' },
-  { label: '促销岛 C',   x: 126, y: 12,  w: 10, h: 9,  kind: 'promo' },
+  // V2.2：促销岛 C 从 x=126 移到 x=99，避开收银排队区（x≥130）；原位置与排队区1穿模。
+  { label: '促销岛 C',   x: 99,  y: 12,  w: 10, h: 9,  kind: 'promo' },
+  // 两台自助结账机：位于前场空位，不占机器人主通道 y=26，也不与收银台/排队区重叠。
+  { label: '自助结账 1', x: 56,  y: 6,   w: 7,  h: 4,  kind: 'kiosk' },
+  { label: '自助结账 2', x: 84,  y: 6,   w: 7,  h: 4,  kind: 'kiosk' },
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `收银台 ${String(i + 1).padStart(2, '0')}`, x: lane.x, y: 6, w: 7, h: 4, kind: 'checkout' })),
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `排队区 ${i + 1}`, x: lane.x, y: 16, w: 4, h: 15, kind: 'queue' })),
   ...STORE.robotWaitSlots.map((p, i) => ({ label: `机器人泊位 ${i + 1}`, x: p[0], y: p[1], w: 8, h: 7, kind: 'robotwait' })),
   { label: '购物车停放区', x: 10,  y: 9,  w: 11, h: 7,  kind: 'cart' },
-  { label: '入口', x: 8,   y: 20, w: 10, h: 6, kind: 'entrance' },
-  { label: '出口', x: 170, y: 20, w: 10, h: 6, kind: 'exit' },
 ];
 
 // Teaching catalog: English names, mapped to real zones. Price/weight/stock
