@@ -58,6 +58,8 @@ const state = {
   // V2.4 充电：{active, robotId, rate}；机器人在充电桩补电，电量按仿真时间恢复。
   charging: null,
   miningEnabled: false, // V2.4：路径优化是否启用 Apriori 实验关联加权
+  // V2.9：人群挡路时的自主改道。reroutes 是累计次数（与订单无关），cooldown 防抖。
+  reroutes: 0, rerouteCooldown: 0, lastReroute: null,
 };
 const behaviorLabels = ROBOT_STATE_CN;
 const PED_STATE_CN = { ENTER_STORE: '进店', WALK_TO_SECTION: '前往货架', WALKING: '行走中', BROWSING: '选购停留',
@@ -289,6 +291,41 @@ function initRestockControls() {
 /* ------------------------------------------------- navigation graph / A* */
 function edgeKey(a, b) { const ka = key(a), kb = key(b); return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`; }
 const nodes = buildNavNodes();
+
+/* V2.9：实时人群场。
+   静态的 shelfCrowd 只能表达「这个货区平时人多」，无法表达「此刻这条通道被 5 个人堵住了」，
+   所以把行人的实时快照按 4 地图单位栅格化。只有动态改道时才打开 liveCrowdOn，
+   这样初始规划（Held–Karp / 首次 A*）保持可复现，不会因为某帧行人位置不同而抖动。 */
+const CROWD_CELL = 4;
+const REROUTE = Object.freeze({
+  cooldown: 4.5,      // 两次改道的最小间隔（仿真秒），防止来回横跳
+  peopleAhead: 2,     // 前方通道内达到几人才考虑改道（2 人并排已经能把 2 m 通道堵死）
+  look: 16,           // 前视距离（地图单位，≈2.7 m）：看得早一点，才有改道余地
+  halfWidth: 2.1,     // 前视走廊半宽（≈0.36 m，比车宽略窄，只统计真正挡路的人）
+  gain: .12,          // 新路径的暴露人数至少要比原路径低 12% 才值得改
+  perPerson: 18.0,    // 每个挡路行人在边代价上的等价增量：3 人并排堵住一条纵向通道
+                      // ≈ 多绕 54 单位，所以真堵死时 A* 会主动改走另一条纵向通道，而不是硬挤
+});
+let crowdField = new Map();
+let crowdTotal = 0;
+let liveCrowdOn = false;
+function refreshCrowdField(list) {
+  crowdField = new Map(); crowdTotal = list.length;
+  for (const p of list) {
+    const k = `${Math.floor(p.x / CROWD_CELL)},${Math.floor(p.y / CROWD_CELL)}`;
+    crowdField.set(k, (crowdField.get(k) || 0) + 1);
+  }
+}
+function crowdAround(point, radius = 5.5) {
+  if (!crowdField.size) return 0;
+  const r = Math.ceil(radius / CROWD_CELL);
+  const cx = Math.floor(point[0] / CROWD_CELL), cy = Math.floor(point[1] / CROWD_CELL);
+  let n = 0;
+  for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) {
+    const c = crowdField.get(`${cx + dx},${cy + dy}`); if (c) n += c;
+  }
+  return n;
+}
 function edgeCost(a, b, scenario, slot, mode = 'full') {
   const length = dist(a, b), center = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
   const nearby = shelves.filter(s => dist(s.point, center) < 20).map(s => shelfCrowd(slot, s.id));
@@ -297,8 +334,11 @@ function edgeCost(a, b, scenario, slot, mode = 'full') {
   const congestion = state.events.has('congestion') && crowd >= 4 ? 1.4 : 1;
   const predictedTime = length * (1 + .025 * crowd * congestion + (hot ? 2.6 : 0));
   const risk = length * (.025 * crowd * congestion + (hot ? 2.8 : 0));
-  const cost = mode === 'distance' ? length : mode === 'time' ? length + .45 * predictedTime : length + .45 * predictedTime + 1.3 * risk;
-  return { length, predictedTime, risk, cost };
+  // 实时人群：边中点附近有多少人，就按人头上浮代价（动态改道专用）
+  const live = liveCrowdOn ? crowdAround(center) : 0;
+  const cost = (mode === 'distance' ? length : mode === 'time' ? length + .45 * predictedTime : length + .45 * predictedTime + 1.3 * risk)
+    + live * REROUTE.perPerson;
+  return { length, predictedTime, risk, cost, live };
 }
 function astar(start, finish, scenario, slot, mode = 'full') {
   if (!nodes.has(key(start)) || !nodes.has(key(finish))) return null;
@@ -481,13 +521,233 @@ function replanCurrentLeg(reason) {
   if (!state.plan || state.stage > state.plan.stops.length) return false;
   const leg = state.plan.legs[state.stage]; if (!leg) return false;
   const target = leg.points.at(-1);
-  const from = nearestNode(state.position);
+  const from = nextNodeAhead(leg, state.legDistance).point;
   const fresh = planLeg(from, target, state.scenario, state.slot);
   if (!fresh) { state.running = false; status('无安全路径', '通道封闭导致当前目标不可达，机器人已安全停车。', 'SAFE STOP'); log(`${reason}：没有可行的替代路径，机器人已停车。`, 'danger'); return false; }
-  leg.points = [state.position, ...fresh.points.slice(1)];
+  leg.points = stitchPath(state.position, fresh.points);
   leg.lengths = leg.points.slice(1).map((p, i) => dist(leg.points[i], p));
-  leg.length = fresh.length; state.legDistance = 0;
+  leg.length = leg.lengths.reduce((a, b) => a + b, 0); state.legDistance = 0;
   drawRoutes(); log(`${reason}：A* 已重新规划当前路段（${fresh.length.toFixed(1)} 地图单位）。`, 'warn');
+  return true;
+}
+
+/* ------------------------------------------- V2.9 人群挡路 → 自主改道 */
+/** 当前行进方向（配送段 / 返航段通用），供前视统计与调试接口使用。 */
+function currentDirection() {
+  if (state.returnLeg) return legDirection(state.returnLeg, state.returnLeg.distance);
+  const leg = state.plan?.legs[state.stage];
+  return leg ? legDirection(leg, state.legDistance) : [1, 0];
+}
+/** 从前视走廊里数「真正挡在车道上」的顾客（比机器人车身略窄，路过的人不算）。 */
+function peopleAhead(point, direction, list, look = REROUTE.look, halfWidth = REROUTE.halfWidth) {
+  let n = 0;
+  for (const p of list) {
+    const rx = p.x - point[0], ry = p.y - point[1];
+    const along = rx * direction[0] + ry * direction[1];
+    if (along < .6 || along > look) continue;
+    if (Math.abs(-rx * direction[1] + ry * direction[0]) > halfWidth) continue;
+    n++;
+  }
+  return n;
+}
+/**
+ * 当前所在路段的「下一个节点」。
+ * 重规划/改道必须从这里开始：若退回到身后最近的节点，会出现「先倒回去再往前走」的来回抖动
+ * （实测会把机器人卡在 `[69.6,62]` 附近左右横跳，永远走不出当前通道）。
+ */
+function nextNodeAhead(leg, at) {
+  let left = at;
+  for (let i = 0; i < leg.lengths.length; i++) {
+    if (left <= leg.lengths[i] + .001 || i === leg.lengths.length - 1)
+      return { index: i, point: leg.points[i + 1] ?? leg.points.at(-1) };
+    left -= leg.lengths[i];
+  }
+  return { index: Math.max(0, leg.lengths.length - 1), point: leg.points.at(-1) };
+}
+/** 当前所在路段的起始节点（身后那个），用于「往回绕」的改道候选。 */
+function prevNodeBehind(leg, at) {
+  return { index: Math.max(0, nextNodeAhead(leg, at).index), point: leg.points[nextNodeAhead(leg, at).index] ?? leg.points[0] };
+}
+/** 把「机器人当前位置」接在 A* 路径前面。
+ *  注意：原来写成 [from, ...path.slice(1)] 会把最近节点丢掉，导致第一条线段直接斜切
+ *  到第二个节点（会穿过货架）。这里保留最近节点，只在重合时才去重。 */
+function stitchPath(from, path) {
+  if (!path?.length) return [];
+  const [first, ...rest] = path;
+  return dist(from, first) < .05 ? [[...first], ...rest] : [[...from], ...path];
+}
+/** 路段剩余点（从当前位置切到终点），用于比较「原路 vs 新路」的人群暴露。 */
+function remainingPath(leg, at) {
+  const out = [];
+  let left = at;
+  for (let i = 0; i < leg.lengths.length; i++) {
+    if (left <= leg.lengths[i] + .001 || i === leg.lengths.length - 1) {
+      const a = leg.points[i], b = leg.points[i + 1];
+      const t = leg.lengths[i] > .001 ? Math.min(1, Math.max(0, left / leg.lengths[i])) : 1;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      for (let j = i + 1; j < leg.points.length; j++) out.push([...leg.points[j]]);
+      return out;
+    }
+    left -= leg.lengths[i];
+  }
+  return [[...leg.points.at(-1)]];
+}
+/** 一条路径的「人群暴露」：逐边在 1/4、1/2、3/4 处采样，累加附近人数
+ *  （只看中点会漏掉「堵在段口」的人，导致误判为没有改进空间）。 */
+function pathExposure(points) {
+  let people = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    for (const t of [.25, .5, .75])
+      people += crowdAround([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]) / 3;
+  }
+  return +people.toFixed(2);
+}
+function samePoints(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every((p, i) => Math.abs(p[0] - b[i][0]) < .01 && Math.abs(p[1] - b[i][1]) < .01);
+}
+/**
+ * 用实时人群场重新算到 target 的路径，并给出候选。
+ * 起点不强制用「前一个节点」：当前方节点本身就在人堆里时，从它出发会先扎进人群，
+ * 所以同时尝试「身后的节点」和「前方的节点」，按 `人群代价 + 长度` 打分取更优的一条。
+ */
+function crowdAwarePath(from, currentPoints, target, vias) {
+  const previous = liveCrowdOn;
+  liveCrowdOn = true;
+  const raw = [];
+  for (const via of vias) {
+    if (!via) continue;
+    const fresh = planLeg(via, target, state.scenario, state.slot);
+    if (!fresh) continue;
+    raw.push({ via, points: stitchPath(from, fresh.points) });
+  }
+  liveCrowdOn = previous;
+  if (!raw.length) return null;
+  const span = pts => pts.slice(1).reduce((n, p, i) => n + dist(pts[i], p), 0);
+  const scored = raw.map(c => {
+    const points = c.points, after = pathExposure(points), afterLength = span(points);
+    return { ...c, points, after, afterLength, score: after * REROUTE.perPerson + afterLength };
+  }).sort((a, b) => a.score - b.score);
+  const best = scored[0];
+  if (samePoints(best.points, currentPoints)) return null;
+  return { points: best.points, via: best.via, after: best.after, afterLength: best.afterLength,
+    before: pathExposure(currentPoints), beforeLength: span(currentPoints) };
+}
+
+/**
+ * 自主改道决策：
+ *   触发条件 A —— 前视走廊里挤了 ≥3 位顾客（人多了挡住路了）
+ *   触发条件 B —— 局部避障层连续 4 秒报「走不动」，请求重规划（urge）
+ * 采纳条件：新路径确实换了一条通道，且暴露人数比原路低 12% 以上（或原路已经堵死），
+ *           同时不能比原路绕太远（≤ 1.35 倍）。
+ * 改道后写 lastReroute，供 2D/日志/测试读取；冷却 4.5 s 防止来回跳。
+ */
+function decideCrowdReroute({ direction, snapshot, urge = false, leg, at, target }) {
+  const ahead = peopleAhead(state.displayPosition, direction, snapshot);
+  const note = (verdict, extra = {}) => {
+    state.lastRerouteTry = {
+      at: +(state.elapsed || 0).toFixed(1), ahead, urge, verdict,
+      position: state.displayPosition.map(n => +n.toFixed(1)), ...extra,
+    };
+    return null;
+  };
+  if (!urge && ahead < REROUTE.peopleAhead) return note('ahead-below-threshold');
+  // 关键：把当前行人快照写进人群场，后面的边代价与「暴露人数」才有意义。
+  refreshCrowdField(snapshot);
+  const current = remainingPath(leg, at);
+  const aheadNode = nextNodeAhead(leg, at).point;
+  const behindNode = prevNodeBehind(leg, at).point;
+  const better = crowdAwarePath(state.displayPosition, current, target, [aheadNode, behindNode]);
+  if (!better) return note('no-alternative');
+  const via = better.via;
+  const improvement = better.before - better.after;
+  const detail = {
+    via: via.map(n => +n.toFixed(1)),
+    exposureBefore: better.before, exposureAfter: better.after,
+    lengthBefore: +better.beforeLength.toFixed(1), lengthAfter: +better.afterLength.toFixed(1),
+    improvement: +improvement.toFixed(2),
+  };
+  // 绕行长度上限：平时不允许为了躲人乱绕（≤1.35 倍）；
+  // 但通道已被堵死、局部层连续 4 秒走不动时（urge），走远一点也比原地等更合理，
+  // 这正是「不死守一条路」——按时间/可行性权衡，而不是只看最短距离。
+  const maxFactor = urge ? 2.4 : 1.35;
+  // 采纳条件（两种情形分开，避免「绕一大圈」和「原地反复改道」两个极端）：
+  //  ① 平时：新路至少少穿 2 人，且不比原路长太多（≤1.25 倍 +6）——只为躲人轻微绕行；
+  //  ② 通道已被堵死（局部层连续 4 秒走不动，urge）：接受明显更长的绕行（≤2.4 倍 +30），
+  //     走远路也比原地干等合理；但这种「大改道」每段路只决策一次并锁定，防止来回横跳。
+  if (urge) {
+    if (improvement < .5) return note('no-gain', detail);
+    if (better.afterLength > better.beforeLength * 2.4 + 30) return note('detour-too-long', detail);
+  } else {
+    if (improvement < Math.max(2, better.before * REROUTE.gain)) return note('gain-too-small', detail);
+    if (better.afterLength > better.beforeLength * 1.25 + 6) return note('detour-too-long', detail);
+  }
+  state.lastRerouteTry = { at: +(state.elapsed || 0).toFixed(1), ahead, urge, verdict: 'accepted', ...detail };
+  return { ...better, ahead, via, urge };
+}
+function applyReroute(leg, points, { resetDistance = true } = {}) {
+  leg.points = points;
+  leg.lengths = points.slice(1).map((p, i) => dist(points[i], p));
+  leg.length = leg.lengths.reduce((a, b) => a + b, 0);
+  if (resetDistance) leg.distance = 0;
+  return leg.length;
+}
+/** 配送途中的人群改道（订单段）。 */
+function maybeRerouteDelivery(direction, snapshot, behavior) {
+  if (!state.plan || state.rerouteCooldown > 0) return false;
+  const leg = state.plan.legs[state.stage]; if (!leg || leg.points.length < 2) return false;
+  const urge = !!behavior?.needsReplan || (behavior?.state === 'REPLANNING' && (behavior.speedFactor ?? 1) < .25);
+  const decision = decideCrowdReroute({
+    direction, snapshot, urge, leg, at: state.legDistance, target: leg.points.at(-1),
+  });
+  if (!decision) return false;
+  if ((leg.reroutes || 0) >= 2 || leg.committed) return false;
+  const before = leg.length;
+  leg.reroutes = (leg.reroutes || 0) + 1;
+  if (decision.urge || decision.afterLength > decision.beforeLength * 1.25 + 6) leg.committed = true;
+  state.legDistance = 0; state.lateralOffset = 0;
+  const length = applyReroute(leg, decision.points);
+  // 规划总长度同步修正，避免进度条因为改道而倒跳。
+  if (state.plan) state.plan.length = Math.max(1, state.plan.length - before + length);
+  state.rerouteCooldown = REROUTE.cooldown;
+  state.reroutes++;
+  state.lastReroute = {
+    at: state.elapsed, kind: 'delivery', ahead: decision.ahead,
+    exposureBefore: decision.before, exposureAfter: decision.after,
+    lengthBefore: +before.toFixed(1), lengthAfter: +length.toFixed(1), position: [...state.displayPosition],
+  };
+  drawRoutes(); renderAll();
+  log(`人群挡路：前方 ${decision.ahead} 位顾客挤在通道里，机器人自主改道（穿行人数 ${decision.before} → ${decision.after}，路径 ${before.toFixed(0)} → ${length.toFixed(0)} 单位）。`, 'warn');
+  status('自主绕行', `前方 ${decision.ahead} 位顾客挡住通道，机器人已自行改走另一条路，继续前往${nextName()}。`, 'AVOIDING');
+  return true;
+}
+/** 返航途中的人群改道（回充电桩同样不硬闯）。 */
+function maybeRerouteReturn(direction, snapshot, behavior) {
+  if (state.rerouteCooldown > 0) return false;
+  const leg = state.returnLeg; if (!leg || leg.points.length < 2) return false;
+  if (leg.viaExit) return false;   // 脚本化的「离店整备」动线不主动改道
+  const urge = !!behavior?.needsReplan || (behavior?.state === 'REPLANNING' && (behavior.speedFactor ?? 1) < .25);
+  const decision = decideCrowdReroute({
+    direction, snapshot, urge, leg, at: leg.distance, target: leg.target,
+  });
+  if (!decision) return false;
+  if ((leg.reroutes || 0) >= 2 || leg.committed) return false;
+  const before = leg.length;
+  leg.reroutes = (leg.reroutes || 0) + 1;
+  if (decision.urge || decision.afterLength > decision.beforeLength * 1.25 + 6) leg.committed = true;
+  applyReroute(leg, decision.points);
+  leg.waitAt = 0; leg.waited = true; // 改道后不再走外侧整备点的计时
+  state.rerouteCooldown = REROUTE.cooldown;
+  state.reroutes++;
+  state.lastReroute = {
+    at: state.elapsed, kind: 'return', ahead: decision.ahead,
+    exposureBefore: decision.before, exposureAfter: decision.after,
+    lengthBefore: +before.toFixed(1), lengthAfter: +leg.length.toFixed(1), position: [...state.displayPosition],
+  };
+  drawRoutes(); renderAll();
+  log(`人群挡路：返航途中前方 ${decision.ahead} 位顾客，机器人自主改道回充电桩（穿行人数 ${decision.before} → ${decision.after}）。`, 'warn');
+  status('自主绕行', `返航通道被 ${decision.ahead} 位顾客占据，已改走另一条路回充电桩。`, 'AVOIDING');
   return true;
 }
 
@@ -951,6 +1211,7 @@ function renderRobotCenter() {
     ['图节点数', `${nodes.size}`],
     ['生效的受限边', `${state.closedEdges.size}`],
     ['动态障碍物', `${state.dynamicObstacles.length}`],
+    ['人群自主改道', `${state.reroutes || 0} 次${state.lastReroute ? ` · 最近 ${state.lastReroute.ahead} 人挡路` : ''}`],
     ['仿真已用时', `${state.elapsed.toFixed(1)} 秒`],
     ['规划总代价', state.plan ? state.plan.cost.toFixed(1) : '—'],
     ['规划风险值', state.plan ? state.plan.risk.toFixed(1) : '—'],
@@ -1037,6 +1298,7 @@ function scoreExistingRoute(plan, scenario, slot) {
 function renderSimulationView() {
   const conditions = [
     ['行人横穿', state.events.has('pedestrian')],
+    ['人群堵路（自主改道）', (state.pedSystem?.people || []).some(p => p.planted) || (state.reroutes || 0) > 0],
     ['购物车阻挡', state.events.has('cart')],
     ['中央通道封闭', state.closedEdges.size > 0],
     ['超载测试', orderWeight() > CAPACITY || state.events.has('overload')],
@@ -1146,6 +1408,8 @@ function sampledPath() { return state.history.filter((_, i) => i % 6 === 0 || i 
 
 /**
  * 返航/回坞：沿真实 A* 路径驶向目标点（默认为机器人的充电桩对接位）。
+ * V2.9：默认走店内就近最短路径（不再强制绕出店再回来）；
+ * viaExit=true 才走「右出口 → 外侧整备 3 秒 → 左入口」的离店演示动线。
  * options.target 可指定其它合法站点；options.purpose === 'charge' 时
  * 抵达后直接对接充电，而不是进入待命。
  */
@@ -1157,10 +1421,13 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false, opti
   const robot = activeRobot();
   const target = options.target || robot.waitSlot;
   const purpose = options.purpose || 'park';
-  const start = nearestNode(from);
+  const activeLeg = state.plan?.legs[state.stage];
+  const start = activeLeg && from === state.displayPosition
+    ? nextNodeAhead(activeLeg, state.legDistance).point
+    : nearestNode(from);
   const fresh = planLeg(start, target, state.scenario, state.slot);
   if (!fresh) { log(`${reason}：无法计算返回充电桩的可行路径，机器人保持当前位置并请求人工介入。`, 'danger'); return false; }
-  let points = [from, ...fresh.points.slice(1)];
+  let points = stitchPath(from, fresh.points);
   // V2.2：完成交接后先驶出右出口，在店外整备 3 秒，再经外侧通道从入口回归（V2.7 终点为充电桩对接位）。
   const o = STORE.outsideReturn;
   const toGate = viaExit ? planLeg(nearestNode(from), STORE.exit, state.scenario, state.slot) : null;
@@ -1182,7 +1449,9 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false, opti
   }
   const wasRunning = state.running;
   state.returnLeg = { points, lengths, length: lengths.reduce((a, b) => a + b, 0), distance: 0,
-    waitAt, waited: false, waitLeft: 0, target: [...target], purpose };
+    waitAt, waited: false, waitLeft: 0, target: [...target], purpose,
+    // 离店整备是一条脚本化演示动线（出店→外侧等待→入口回归），不参与自主改道。
+    viaExit: !!(viaExit && toGate && toBay) };
   state.returnReason = reason;
   state.running = true; state.lastFrame = 0; state.pauseLeft = 0;
   syncRobotPose(from, 'RETURNING', null);
@@ -1211,7 +1480,10 @@ function stepReturn(dt) {
   const result = state.robotBrain.evaluate({ position: state.displayPosition, velocity: state.inertialVelocity,
     direction, pedestrians: snapshot, obstacles: state.dynamicObstacles, dt: step });
   state.behavior = result;
-  // 店外整备：到达 staging（远离出口的前墙外侧服务通道中央）后停 3 秒（仿真时间，倍速下同步缩短），展示机器人离店且不挡出口。
+  // V2.9：返航同样不会被一条固定的路线绑住——人群挡住就自己换通道。
+  state.rerouteCooldown = Math.max(0, state.rerouteCooldown - step);
+  maybeRerouteReturn(direction, snapshot, result);
+  // 店外整备（仅当显式要求「离店演示」时才走外侧通道）：到达 staging 后停 3 秒再回充电桩。
   if (leg.waitAt > 0 && !leg.waited && leg.distance >= leg.waitAt - .01) {
     leg.waited = true; leg.waitLeft = 3;
     status('离店整备', '机器人已驶出出口并让开门口，在外侧整备 3 秒后从入口返回充电桩。', 'CHARGING');
@@ -1290,6 +1562,7 @@ function resetPlayback(preserveSafety = false) {
   state.lateralOffset = 0; state.inertialVelocity = [0, 0]; state.lastLogic = [...waitSlot];
   state.history = [[...waitSlot]]; state.detected = new Set(); state.traveled = 0;
   state.returnLeg = null; state.returnReason = '';
+  state.rerouteCooldown = 0; state.lastReroute = null;
   state.behavior = null; state.lastCollisionAt = -1;
   scene3d?.setPayStation?.(false);
   state.robotBrain?.reset();
@@ -1528,8 +1801,10 @@ function confirmHandoff() {
   scene3d?.setPayStation?.(false);
   syncRobotPose(state.displayPosition, 'RETURNING', null);
   setText('orderMessage', `${finished.id} 已确认订单，机器人正在返回充电桩并补电。`);
-  // V2.7：确认后不再停在收银区/泊位，直接回充电桩对接位，抵达后自动补电。
-  beginReturn('配送完成', state.displayPosition, true, { target: dockSlotPoint(), purpose: 'charge' });
+  // V2.9：确认订单后「就近回桩」——直接从自助收银台买单位沿 A* 最短路径回充电桩，
+  // 不再绕右出口 + 外侧整备 + 左入口那一圈（那一圈只是早期「离店整备演示」，
+  // 需要时仍可传 viaExit=true 手动演示，默认关闭）。
+  beginReturn('配送完成', state.displayPosition, false, { target: dockSlotPoint(), purpose: 'charge' });
   renderAll();
 }
 function cancelOrder(id) {
@@ -1571,6 +1846,39 @@ function toggleSuddenPerson() {
 }
 
 /* ------------------------------------------------------ simulation events */
+/**
+ * V2.9：在机器人前方通道内放置一小群「停留的顾客」（用于人群堵路演练）。
+ * 直接复用行人系统的真实个体（有体型/半径/避让规则），不是纯几何障碍，
+ * 所以机器人面对的是「真人挡路 → 要么侧向绕、要么改道」的同一套决策。
+ */
+function plantCrowd(count = 4) {
+  const ped = state.pedSystem; if (!ped) return 0;
+  const dir = currentDirection(), side = [-dir[1], dir[0]], base = state.displayPosition;
+  let placed = 0;
+  for (let i = 0; i < count; i++) {
+    // 沿车道排成一列（横向只错开半米，避免整整齐齐像摆拍），
+    // 起点放在 1.8 m 外——太近顾客会按「给机器人让路」的规则立刻散开，
+    // 太远又超出前视距离，都不利于观察「改道」这个决策本身。
+    const along = 10.5 + i * 2.2;
+    const lateral = (i % 2 ? 1 : -1) * .55;
+    const person = ped.spawnOne(base, { type: i % 2 ? 'cart' : 'regular' });
+    if (!person) continue;
+    const at = [base[0] + dir[0] * along + side[0] * lateral, base[1] + dir[1] * along + side[1] * lateral];
+    // 优先沿车道方向找一个真实可站的位置，实在不行才交给 safePoint 兜底。
+    let spot = ped.isFree(at, person.radius) ? at : null;
+    if (!spot) for (const back of [2.5, -2.5, 5, -5, 7.5]) {
+      const cand = [at[0] + dir[0] * back, at[1] + dir[1] * back];
+      if (ped.isFree(cand, person.radius)) { spot = cand; break; }
+    }
+    person.position = [...(spot || ped.safePoint(at, person.radius))];
+    person.goal = null; person.route = []; person.routeIndex = 0;
+    person.state = 'BROWSING'; person.timer = 20 + i * 1.6;
+    person.faceHeading = Math.atan2(dir[1], dir[0]) + Math.PI;
+    person.velocity = [0, 0]; person.planted = true;
+    ped.people.push(person); placed++;
+  }
+  return placed;
+}
 function handleSimEvent(type) {
   if (type === 'pedestrian' || type === 'cart') {
     const nextPoint = state.plan?.legs[state.stage]?.points.at(-1) || [70, 45];
@@ -1592,6 +1900,20 @@ function handleSimEvent(type) {
     publishPedestrians();
     if (state.plan && state.running) replanCurrentLeg('障碍物事件');
     drawCrowd(); renderAll(); return;
+  }
+  if (type === 'crowd') {
+    // V2.9 人群堵路演练：在当前通道正前方放一小群停留的顾客，
+    // 观察机器人是否「按实时人群场自己改道」，而不是沿原路线硬挤或原地等。
+    const placed = plantCrowd(5);
+    state.events.add('crowd');
+    if (placed) {
+      log(`人群堵路演练：${placed} 位顾客停在机器人前方通道内（停留约 10 秒），等待机器人自主判断绕行。`, 'warn');
+      status('人群挡路', `前方通道有 ${placed} 位顾客停留；前视走廊人数超过阈值时，机器人会自行改走另一条路。`, 'AVOIDING');
+    } else {
+      log('人群堵路演练：当前位置附近没有可放置行人的空位。', 'danger');
+      status('人群挡路', '通道内无法放置行人，请换一个位置重试。', 'SAFE STOP');
+    }
+    renderAll(); return;
   }
   if (type === 'aisle') {
     const edge = [[STORE.hotCorridor.xMin + 15, STORE.hotCorridor.y], [STORE.hotCorridor.xMin + 35, STORE.hotCorridor.y]], id = edgeKey(...edge);
@@ -1688,6 +2010,9 @@ function stepSimulation(dt) {
     state.robotBrain.acknowledgeReplan();
     if (replanCurrentLeg('行人/障碍物导致通道受阻')) log('局部避障层已请求 A* 重新规划当前路段。', 'warn');
   }
+  // V2.9：人群挡路时不再死守原路线——用实时人群场重算一条更少穿人的通道。
+  state.rerouteCooldown = Math.max(0, state.rerouteCooldown - step);
+  maybeRerouteDelivery(direction, snapshot, result);
   if (result.state === 'YIELD' || result.state === 'WAIT' || result.state === 'EMERGENCY_STOP') {
     status(behaviorLabels[result.state], result.reason, result.state === 'EMERGENCY_STOP' ? 'FAULT' : 'SAFE STOP');
   } else if (['SLOW_DOWN', 'AVOIDANCE', 'RESUME'].includes(result.state)) {
@@ -2151,6 +2476,29 @@ window.__NEXUS = Object.freeze({
   injectCrossing: (direction, options) => state.pedSystem?.injectCrossing(state.displayPosition, direction || [1, 0], options),
   injectHeadOn: (direction, options) => state.pedSystem?.injectHeadOn(state.displayPosition, direction || [1, 0], options),
   step: dt => stepSimulation(dt),
+  // V2.9：默认就近回桩；如需演示早期「出店 → 外侧整备 → 入口返回」动线，可手动调用。
+  returnViaExit: () => beginReturn('离店整备演示', state.displayPosition, true,
+    { target: dockSlotPoint(), purpose: 'charge' }),
+  // V2.9 测试钩子：直接读当前人群判定，不修改任何状态。
+  crowdProbe() {
+    const snapshot = state.pedSystem?.snapshot() || [];
+    const leg = state.returnLeg || state.plan?.legs[state.stage] || null;
+    const at = state.returnLeg ? state.returnLeg.distance : state.legDistance;
+    const direction = currentDirection();
+    return {
+      ahead: peopleAhead(state.displayPosition, direction, snapshot),
+      pedestrians: snapshot.length,
+      reroutes: state.reroutes || 0,
+      cooldown: +(state.rerouteCooldown || 0).toFixed(2),
+      lastReroute: state.lastReroute ? { ...state.lastReroute } : null,
+      lastTry: state.lastRerouteTry ? { ...state.lastRerouteTry } : null,
+      pathPoints: leg ? leg.points.length : 0,
+      pathLength: leg ? +leg.length.toFixed(1) : 0,
+      returnLeg: state.returnLeg ? { length: +state.returnLeg.length.toFixed(1), purpose: state.returnLeg.purpose,
+        containsExit: state.returnLeg.points.some(p => p[0] === STORE.exit[0] && p[1] === STORE.exit[1]),
+        points: state.returnLeg.points.map(p => p.map(n => +n.toFixed(1))) } : null,
+    };
+  },
   advance(seconds, hz = 60) {
     const steps = Math.min(6000, Math.ceil(seconds * hz));
     for (let i = 0; i < steps && state.running; i++) stepSimulation(1 / hz);
@@ -2178,6 +2526,11 @@ window.__NEXUS = Object.freeze({
       nearMisses: brain?.metrics.nearMisses || 0, yields: brain?.metrics.yields || 0,
       replannings: brain?.metrics.replannings || 0, waitSeconds: brain?.metrics.waitSeconds || 0,
       humanInterventions: brain?.metrics.humanInterventions || 0,
+      // V2.9：人群自主改道统计（累计），以及最近一次改道的判定依据。
+      reroutes: state.reroutes || 0,
+      lastReroute: state.lastReroute ? { ...state.lastReroute } : null,
+      lastTry: state.lastRerouteTry ? { ...state.lastRerouteTry } : null,
+      crowdAhead: peopleAhead(state.displayPosition, currentDirection(), state.pedSystem?.snapshot() || []),
       minDistance: brain?.metrics.minDistance ?? Infinity,
       safetyEvents: [...state.safetyEvents],
       transitions: brain?.transitions.slice(-30) || [],

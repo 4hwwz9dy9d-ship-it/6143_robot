@@ -37,6 +37,9 @@ export class RobotBehavior {
     this.emergencyTime = 0;
     // V2.5：连续「侧向净空足够但被挡住」的时长，用于判定人机对峙僵局并主动绕行。
     this.bypassTime = 0;
+    // V2.9：主动偏出的横向位移（米，带符号）与其保持时间。
+    this.steer = 0;
+    this.steerHold = 0;
     this.metrics = {
       collisions: 0, nearMisses: 0, yields: 0, replannings: 0, bypasses: 0,
       waitSeconds: 0, humanInterventions: 0, minDistance: Infinity, minTtc: Infinity,
@@ -89,6 +92,9 @@ export class RobotBehavior {
     let worst = null;
     let emergency = false, nearMiss = false, collision = false;
     let avoidance = 0;
+    // V2.9：前方有人直挺挺挡在车道上时，机器人自己挑一侧空隙偏出去，
+    // 而不是等人让路或者原地干等（steerNeed 单位：米，带符号）。
+    let steerNeed = 0;
 
     const consider = (obj, radius, isPerson) => {
       const rel = [obj.x * M - robotPos[0], obj.y * M - robotPos[1]];
@@ -134,6 +140,17 @@ export class RobotBehavior {
       const clearance = Math.abs(lateral) - (P.width / 2 + radius + .25);
       if (clearance > 0 && along > .4 && !candidate.crossing && d < S.warnDistance + .6) {
         avoidance = avoidance || (lateral > 0 ? -1 : 1);
+      }
+      // V2.9：人正好压在中线上（净空不足）时，算一算「要偏多少才过得去」，
+      // 朝远离这个人的方向偏；横向最多偏 0.45 m（2 m 通道内仍留得下车身与安全间隙）。
+      if (along > 1 && along < S.warnDistance + 1.2 && !candidate.crossing) {
+        const required = P.width / 2 + radius + .20;       // 与人体中心的最小横向间距
+        const shortfall = required - Math.abs(lateral);
+        if (shortfall > .04) {
+          const side = lateral >= 0 ? -1 : 1;              // 向远离该行人的一侧偏
+          const need = side * Math.min(shortfall + .12, .45);
+          if (Math.abs(need) > Math.abs(steerNeed)) steerNeed = need;
+        }
       }
     };
 
@@ -225,10 +242,20 @@ export class RobotBehavior {
       if (this.state !== 'RESUME') this.clearTime = 0;
     }
 
+    // V2.9：把「选空隙」的横向意图做成带保持时间的平滑量，避免左右来回摆。
+    const canSteer = Math.abs(steerNeed) > .02 && speedFactor > .05 && this.state !== 'EMERGENCY_STOP';
+    if (canSteer) { this.steer = steerNeed; this.steerHold = .9; }
+    else {
+      this.steerHold = Math.max(0, this.steerHold - step);
+      if (this.steerHold === 0) this.steer += (0 - this.steer) * Math.min(1, step * 2.6);
+    }
+    const steerShift = this.steer / M;   // 米 → 地图单位
+
     this.setState(next, reason);
     return {
       state: this.state, speedFactor,
-      lateralShift: avoidance ? avoidance * (this.state === 'AVOIDANCE' ? 1.15 : .22) : 0,
+      lateralShift: Math.abs(steerShift) > .05 ? steerShift
+        : avoidance ? avoidance * (this.state === 'AVOIDANCE' ? 1.15 : .22) : 0,
       ttc: this.last.ttc, distance: this.last.distance, reason, emergency,
       needsReplan: this.replanPending, collision, nearMiss,
       brakeDistance, targetSpeed: P.maxSpeed * speedFactor,

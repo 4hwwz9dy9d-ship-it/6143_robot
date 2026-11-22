@@ -461,7 +461,10 @@ export class PedestrianSystem {
       person.detourCooldown = Math.max(0, (person.detourCooldown || 0) - dt);
       // V2.5：机器人贴到正在浏览的顾客身边时，顾客提前结束浏览、换个方向离开，
       // 避免「人站着不动 + 机器人停车等」形成围堵僵局。
-      if (robot?.position && dist(person.position, robot.position) * M < 1.7) person.timer = Math.min(person.timer, .35);
+      // V2.9：被标记为 planted 的顾客（人群堵路演练里「正忙着理货/交谈的一群人」）
+      // 不会因为机器人靠近就散开——这才会真的把通道堵住，逼机器人自己决定改道。
+      if (!person.planted && robot?.position && dist(person.position, robot.position) * M < 1.7)
+        person.timer = Math.min(person.timer, .35);
       if (person.faceHeading !== undefined) {
         person.heading = lerpAngle(person.heading, person.faceHeading, Math.min(1, dt * 6));
       }

@@ -359,6 +359,7 @@
               <p>触发规则驱动的仿真事件，观察机器人减速、停车或重新规划。</p>
               <div class="event-trigger">
                 <button type="button" data-event="pedestrian">行人横穿</button>
+                <button type="button" data-event="crowd">人群堵路</button>
                 <button type="button" data-event="cart">购物车阻挡</button>
                 <button type="button" data-event="aisle">通道封闭</button>
                 <button type="button" data-event="overload">机器人超载</button>
@@ -453,6 +454,7 @@
       <div class="section-title"><div><p class="section-kicker">SIMULATION CENTER</p><h2>打断规划，观察系统响应</h2><p>每个触发器都会改变驱动 3D 机器人、路径与任务进度的同一套状态机。</p></div><span class="badge">规则驱动仿真</span></div>
       <div class="sim-grid" id="simGrid">
         <div class="sim-card" data-sim-card="pedestrian"><h3>行人横穿</h3><p>在当前通道放置一名仿真行人。安全层让机器人减速，A* 可能重新规划。</p><button class="btn btn-secondary btn-sm" type="button" data-event="pedestrian">触发事件</button></div>
+        <div class="sim-card" data-sim-card="crowd"><h3>人群堵路</h3><p>在机器人前方通道放一小群停留的顾客。前视走廊人数超过阈值时，机器人用实时人群场重算路径、自主改走另一条通道，而不是死守原路线或原地等待。</p><button class="btn btn-secondary btn-sm" type="button" data-event="crowd">制造拥堵</button></div>
         <div class="sim-card" data-sim-card="cart"><h3>购物车阻挡</h3><p>一辆购物车占据部分通道。机器人减速，并在条件允许时绕行。</p><button class="btn btn-secondary btn-sm" type="button" data-event="cart">触发事件</button></div>
         <div class="sim-card" data-sim-card="aisle"><h3>通道封闭</h3><p>封闭中央横向通道。图中移除该边，A* 重新计算该路段。</p><button class="btn btn-secondary btn-sm" type="button" data-event="aisle">切换封闭</button></div>
         <div class="sim-card" data-sim-card="overload"><h3>机器人超载</h3><p>向购物车加入三箱 6 kg 商品（共 18 kg），12 kg 容量检查将阻止出发。</p><button class="btn btn-secondary btn-sm" type="button" data-event="overload">加入测试载重</button></div>
