@@ -5,9 +5,9 @@ import { createStoreScene } from './scene3d.js';
 import { STORE, PHYSICS, buildNavNodes, shelves, layoutFixtures, products, timeSlots, crowdSamples, shelfCrowd, peopleForScenario } from './storeData.js';
 import { PedestrianSystem, PEDESTRIAN_TYPES, PEDESTRIAN_STATES } from './pedestrian.js';
 import { RobotBehavior, ROBOT_STATES, ROBOT_STATE_CN } from './robotBehavior.js';
-import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel } from './instacart.js';
+import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel, zoneOfDepartment } from './instacart.js';
 import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js';
-import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
+import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, orderCounts, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
 import { BRAND_ASSETS, applyBrandAssets, updateBrandRobotImage } from './branding.js';
 
 const $ = id => document.getElementById(id);
@@ -121,6 +121,24 @@ function robotState() {
   return 'idle';
 }
 function activeOrderCount() { return (state.order ? 1 : 0) + state.queue.length; }
+/**
+ * 订单口径统一：已完成/已取消以「持久化订单记录」为准，再叠加本次会话里刚发生的事件。
+ * 之前总览 KPI 只数 state.completed（内存数组），刷新页面后归零、或在别的视图完成的订单
+ * 没有进入这个数组，就会出现「历史里一堆已完成、上面的数字不动」的问题。
+ */
+function orderStats() {
+  const counts = orderCounts();
+  let completed = counts.completed, cancelled = counts.cancelled;
+  // 极端情况下事件先于落库（例如本地存储被禁用）：把只在内存里发生的完成/取消补进来。
+  for (const entry of state.completed) {
+    const record = getOrderRecord(entry.id);
+    const stored = record?.status;
+    if (['已完成', 'Completed'].includes(entry.status) && !['已完成', 'Completed'].includes(stored)) completed++;
+    else if (['已取消', 'Cancelled'].includes(entry.status) && !['已取消', 'Cancelled'].includes(stored)) cancelled++;
+  }
+  return { active: (state.order ? 1 : 0) + state.queue.length, completed, cancelled, total: counts.total };
+}
+
 function alertProducts() { return [...productById.values()].filter(p => p.stock / p.capacity < .1); }
 const activeRobot = () => state.fleet.find(r => r.id === state.activeRobotId) || state.fleet[0];
 const robotById = id => state.fleet.find(r => r.id === id) || null;
@@ -297,6 +315,87 @@ const nodes = buildNavNodes();
    所以把行人的实时快照按 4 地图单位栅格化。只有动态改道时才打开 liveCrowdOn，
    这样初始规划（Held–Karp / 首次 A*）保持可复现，不会因为某帧行人位置不同而抖动。 */
 const CROWD_CELL = 4;
+/* ------------------------- V3.0 真实需求热度：实验数据驱动的「冷区绕行」 */
+/**
+ * 用 Apriori 规则反推真实需求热度：规则的 confidence = count / 前件购买次数，
+ * 所以「前件商品被买了多少次」= count / confidence。按部门汇总到店内 18 个货区，
+ * 得到 0~1 的「区域热度」。热区 = 真实买得多、必然人也多；冷区 = 真实买得少、通道更空。
+ * 注意：只有进入前 600 候选集的商品才有这条证据；未进入的品类按最低热度 0.08 处理
+ *（保守估计，不假装它们「没人买」），并在界面上标注口径。
+ * 实验驱动规划（mining）打开后，A* 的边代价会加上热度项，改道评分也会倾向冷区——
+ * 这样「按数据挖掘结果优化」不只是排个访问顺序，而是真的会为了避开人群折返走冷区。
+ */
+let zoneHeat = new Map();      // shelfId -> 0..1
+let zoneFrequency = new Map(); // shelfId -> 规则反推的购买次数合计
+let zoneKnown = new Set();     // 有样本的货区（frequency > 0）；其余是「样本外」，不是「没人买」
+const HEAT_FLOOR = .08;
+function buildZoneHeat(source) {
+  const sums = new Map();
+  const productFrequency = new Map();
+  for (const rule of source?.rules || []) {
+    if (!rule.confidence) continue;
+    const fromCount = rule.count / rule.confidence;
+    productFrequency.set(rule.from, Math.max(productFrequency.get(rule.from) || 0, fromCount));
+  }
+  for (const [id, f] of productFrequency) {
+    const product = source?.products?.[id]; if (!product) continue;
+    const zone = zoneOfDepartment(product.department, product.aisle);
+    sums.set(zone, (sums.get(zone) || 0) + f);
+  }
+  const max = Math.max(1, ...sums.values());
+  zoneHeat = new Map(); zoneFrequency = new Map(); zoneKnown = new Set();
+  for (const shelf of shelves) {
+    const f = sums.get(shelf.category) || 0;
+    // 频次跨度接近两个数量级：用 log 压缩，线性会把除生鲜/乳品以外的区域全压成 0。
+    zoneHeat.set(shelf.id, f ? Math.min(1, Math.log1p(f) / Math.log1p(max)) : HEAT_FLOOR);
+    zoneFrequency.set(shelf.id, Math.round(f));
+    if (f) zoneKnown.add(shelf.id);
+  }
+  return zoneHeat;
+}
+/** 某个点附近（24 单位内）的真实需求热度：取最近货区的热度并按距离线性衰减。
+ *  用「最近货区」而不是「多货区平均」，是为了让两条平行通道的差异足够明显——
+ *  平均值会把热区/冷区抹平，路径优化就看不出效果了。 */
+function heatAt(point, radius = 24) {
+  if (!zoneHeat.size) return 0;
+  let best = 0;
+  for (const shelf of shelves) {
+    const d = dist(shelf.point, point);
+    if (d >= radius) continue;
+    const h = (zoneHeat.get(shelf.id) || 0) * (1 - d / radius);
+    if (h > best) best = h;
+  }
+  return best;
+}
+/** 一条路径的平均热度（按边长加权），用于比较「原路 vs 冷区绕行」。 */
+function pathHeat(points = []) {
+  if (points.length < 2) return 0;
+  let sum = 0, total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i], l = dist(a, b);
+    sum += heatAt([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]) * l; total += l;
+  }
+  return total ? sum / total : 0;
+}
+/** 最冷的几个货区（用于界面说明「为什么绕这条道」）。
+ *  `known=false` 表示该品类没有进 600 件候选集、根本没有销量样本，它排在最前只是因为
+ *  按最低热度保守占位——界面上要标成「样本外」，不能当成「验证过没人买」。 */
+function coldestZones(count = 4) {
+  return shelves.map(s => ({ id: s.id, zone: s.category, heat: zoneHeat.get(s.id) ?? 0,
+      frequency: zoneFrequency.get(s.id) ?? 0, known: zoneKnown.has(s.id) }))
+    .sort((a, b) => a.heat - b.heat).slice(0, count);
+}
+/** 有真实销量样本的低需求冷区（优先用于界面说明与绕行候选）。 */
+function sampledColdZones(count = 3) {
+  return shelves.filter(s => zoneKnown.has(s.id))
+    .map(s => ({ id: s.id, zone: s.category, heat: zoneHeat.get(s.id) ?? 0, frequency: zoneFrequency.get(s.id) ?? 0, known: true }))
+    .sort((a, b) => a.heat - b.heat).slice(0, count);
+}
+const HEAT = Object.freeze({
+  edge: .55,       // 边代价里的热度权重：热区 +30%、冷区 −20%（足够在两条平行通道间做选择）
+  route: 90,       // 改道评分里「整条路平均热度」的权重（相当于 90 单位的长度）
+  tieMargin: 1.2,  // 少穿人数相差不超过 1.2 人时，视为「避让效果相当」，此时优先选更冷的路线
+});
 const REROUTE = Object.freeze({
   cooldown: 4.5,      // 两次改道的最小间隔（仿真秒），防止来回横跳
   peopleAhead: 2,     // 前方通道内达到几人才考虑改道（2 人并排已经能把 2 m 通道堵死）
@@ -336,13 +435,20 @@ function edgeCost(a, b, scenario, slot, mode = 'full') {
   const risk = length * (.025 * crowd * congestion + (hot ? 2.8 : 0));
   // 实时人群：边中点附近有多少人，就按人头上浮代价（动态改道专用）
   const live = liveCrowdOn ? crowdAround(center) : 0;
+  // V3.0 实验驱动：真实购买频次高的通道加价、冷区减价。只在 mining 模式生效，
+  // 保证「常规几何代价」和「实验驱动」两条方案仍然可比。
+  const heat = mode === 'mining' ? heatAt(center) : 0;
   const cost = (mode === 'distance' ? length : mode === 'time' ? length + .45 * predictedTime : length + .45 * predictedTime + 1.3 * risk)
-    + live * REROUTE.perPerson;
-  return { length, predictedTime, risk, cost, live };
+    + live * REROUTE.perPerson + (mode === 'mining' ? length * (heat - .45) * HEAT.edge : 0);
+  return { length, predictedTime, risk, cost, live, heat };
 }
 function astar(start, finish, scenario, slot, mode = 'full') {
   if (!nodes.has(key(start)) || !nodes.has(key(finish))) return null;
-  const open = new Set([key(start)]), came = new Map(), g = new Map([[key(start), 0]]), f = new Map([[key(start), dist(start, finish)]]);
+  // 实验驱动模式下，冷区会把边代价压到 0.85 × 长度以下；若启发式仍用纯欧氏距离，
+  // 就变成「高估剩余代价」，A* 会提前收敛到一条热通道上。这里按最小代价系数缩小启发式，
+  // 保证它仍是下界，A* 才会真的去比较「多走一点但穿过冷区」的路线。
+  const hFactor = mode === 'mining' ? .8 : 1;
+  const open = new Set([key(start)]), came = new Map(), g = new Map([[key(start), 0]]), f = new Map([[key(start), dist(start, finish) * hFactor]]);
   while (open.size) {
     let current = [...open].reduce((a, b) => (f.get(a) ?? Infinity) <= (f.get(b) ?? Infinity) ? a : b);
     if (current === key(finish)) {
@@ -357,7 +463,7 @@ function astar(start, finish, scenario, slot, mode = 'full') {
       const score = g.get(current) + edgeCost(currentPoint, nodes.get(neighbor).point, scenario, slot, mode).cost;
       if (score < (g.get(neighbor) ?? Infinity)) {
         came.set(neighbor, current); g.set(neighbor, score);
-        f.set(neighbor, score + dist(nodes.get(neighbor).point, finish)); open.add(neighbor);
+        f.set(neighbor, score + dist(nodes.get(neighbor).point, finish) * hFactor); open.add(neighbor);
       }
     }
   }
@@ -522,7 +628,7 @@ function replanCurrentLeg(reason) {
   const leg = state.plan.legs[state.stage]; if (!leg) return false;
   const target = leg.points.at(-1);
   const from = nextNodeAhead(leg, state.legDistance).point;
-  const fresh = planLeg(from, target, state.scenario, state.slot);
+  const fresh = planLeg(from, target, state.scenario, state.slot, state.miningEnabled ? 'mining' : 'full');
   if (!fresh) { state.running = false; status('无安全路径', '通道封闭导致当前目标不可达，机器人已安全停车。', 'SAFE STOP'); log(`${reason}：没有可行的替代路径，机器人已停车。`, 'danger'); return false; }
   leg.points = stitchPath(state.position, fresh.points);
   leg.lengths = leg.points.slice(1).map((p, i) => dist(leg.points[i], p));
@@ -616,23 +722,68 @@ function crowdAwarePath(from, currentPoints, target, vias) {
   const previous = liveCrowdOn;
   liveCrowdOn = true;
   const raw = [];
+  const mode = state.miningEnabled ? 'mining' : 'full';
   for (const via of vias) {
     if (!via) continue;
-    const fresh = planLeg(via, target, state.scenario, state.slot);
+    const fresh = planLeg(via, target, state.scenario, state.slot, mode);
     if (!fresh) continue;
-    raw.push({ via, points: stitchPath(from, fresh.points) });
+    raw.push({ via, points: stitchPath(from, fresh.points), legacy: false });
+  }
+  // V3.0：实验驱动开启时，额外尝试「折返穿过最冷的几个货区」的候选路径。
+  // 冷区 = 真实购买频次最低的通道（海鲜、文具、家庭日用…），人少、好走；
+  // 这条候选只有在「真的更少穿人」且长度没超过上限时才会被采纳。
+  // V3.0：优先用「有销量样本」的冷区，只有样本不足时才拿样本外货区补齐——
+  // 否则绕行理由会变成「这个品类没数据」，而不是「这个品类确实没人买」。
+  const mining = state.miningEnabled && zoneHeat.size > 0;
+  if (mining) {
+    const coldPool = sampledColdZones(4);
+    if (coldPool.length < 2) {
+      for (const zone of coldestZones(6)) {
+        if (coldPool.length >= 2) break;
+        if (!coldPool.some(z => z.id === zone.id)) coldPool.push(zone);
+      }
+    }
+    // 冷区候选必须从「当前路段的下一节点」出发，不能用当前位置直接连过去——
+    // 否则会拼出一条斜穿货架的直线（v2.9 修过的同一个坑）。
+    const startNode = vias[0];
+    if (startNode) for (const zone of coldPool) {
+      const shelf = shelves.find(s => s.id === zone.id);
+      if (!shelf) continue;
+      const head = planLeg(startNode, shelf.point, state.scenario, state.slot, 'mining');
+      const tail = planLeg(shelf.point, target, state.scenario, state.slot, 'mining');
+      if (!head || !tail) continue;
+      const points = stitchPath(from, [...head.points, ...tail.points.slice(1)]);
+      if (points.length < 2 || raw.some(c => samePoints(c.points, points))) continue;
+      raw.push({ via: shelf.point, points, cold: true });
+    }
   }
   liveCrowdOn = previous;
-  if (!raw.length) return null;
+  if (!raw.length) { state.lastCandidates = []; return null; }
   const span = pts => pts.slice(1).reduce((n, p, i) => n + dist(pts[i], p), 0);
   const scored = raw.map(c => {
     const points = c.points, after = pathExposure(points), afterLength = span(points);
-    return { ...c, points, after, afterLength, score: after * REROUTE.perPerson + afterLength };
+    const heat = mining ? pathHeat(points) : 0;
+    return { ...c, points, after, afterLength, heat,
+      score: after * REROUTE.perPerson + afterLength + (mining ? heat * HEAT.route : 0) };
   }).sort((a, b) => a.score - b.score);
-  const best = scored[0];
+  let best = scored[0];
+  // V3.0：实验驱动的「自己的思考」——如果几条路的避让效果相当（少穿人数差 ≤1.2），
+  // 就不再比谁最短，而是选真实需求最冷的通道。这样机器人会主动折返走人少的冷区，
+  // 而不是「躲开了人却一头扎进最热闹的生鲜通道」。
+  if (mining) {
+    const comparable = scored.filter(c => c.after <= best.after + HEAT.tieMargin
+      && c.afterLength <= best.afterLength * 1.75 + 14);
+    comparable.sort((a, b) => a.heat - b.heat || a.score - b.score);
+    if (comparable[0] && comparable[0].heat < best.heat - .005) best = comparable[0];
+  }
+  state.lastCandidates = scored.map(c => ({
+    via: c.via.map(n => +n.toFixed(1)), cold: !!c.cold,
+    after: +c.after.toFixed(2), len: +c.afterLength.toFixed(1), heat: +c.heat.toFixed(3),
+  }));
   if (samePoints(best.points, currentPoints)) return null;
   return { points: best.points, via: best.via, after: best.after, afterLength: best.afterLength,
-    before: pathExposure(currentPoints), beforeLength: span(currentPoints) };
+    before: pathExposure(currentPoints), beforeLength: span(currentPoints),
+    heat: best.heat, heatBefore: mining ? pathHeat(currentPoints) : 0 };
 }
 
 /**
@@ -662,26 +813,30 @@ function decideCrowdReroute({ direction, snapshot, urge = false, leg, at, target
   if (!better) return note('no-alternative');
   const via = better.via;
   const improvement = better.before - better.after;
+  const mining = state.miningEnabled && zoneHeat.size > 0;
   const detail = {
     via: via.map(n => +n.toFixed(1)),
     exposureBefore: better.before, exposureAfter: better.after,
     lengthBefore: +better.beforeLength.toFixed(1), lengthAfter: +better.afterLength.toFixed(1),
     improvement: +improvement.toFixed(2),
+    mining, heatBefore: +(better.heatBefore ?? 0).toFixed(3), heatAfter: +(better.heat ?? 0).toFixed(3),
   };
-  // 绕行长度上限：平时不允许为了躲人乱绕（≤1.35 倍）；
+  // 绕行长度上限：平时不允许为了躲人乱绕（≤1.25 倍）；
   // 但通道已被堵死、局部层连续 4 秒走不动时（urge），走远一点也比原地等更合理，
   // 这正是「不死守一条路」——按时间/可行性权衡，而不是只看最短距离。
-  const maxFactor = urge ? 2.4 : 1.35;
+  // 实验驱动开启时上限再放宽（≤1.5 倍 / 3.4 倍）：为了走数据上人少的冷区，
+  // 允许比常规方案多折返一段路，这是用户明确要求的「自己的思考」。
   // 采纳条件（两种情形分开，避免「绕一大圈」和「原地反复改道」两个极端）：
-  //  ① 平时：新路至少少穿 2 人，且不比原路长太多（≤1.25 倍 +6）——只为躲人轻微绕行；
-  //  ② 通道已被堵死（局部层连续 4 秒走不动，urge）：接受明显更长的绕行（≤2.4 倍 +30），
-  //     走远路也比原地干等合理；但这种「大改道」每段路只决策一次并锁定，防止来回横跳。
+  //  ① 平时：新路至少少穿 2 人（实验驱动下 ≥1 人），且不比原路长太多；
+  //  ② 通道已被堵死（局部层连续 4 秒走不动，urge）：接受明显更长的绕行，
+  //     但这种「大改道」每段路只决策一次并锁定，防止来回横跳。
   if (urge) {
     if (improvement < .5) return note('no-gain', detail);
-    if (better.afterLength > better.beforeLength * 2.4 + 30) return note('detour-too-long', detail);
+    if (better.afterLength > better.beforeLength * (mining ? 3.4 : 2.4) + (mining ? 45 : 30)) return note('detour-too-long', detail);
   } else {
-    if (improvement < Math.max(2, better.before * REROUTE.gain)) return note('gain-too-small', detail);
-    if (better.afterLength > better.beforeLength * 1.25 + 6) return note('detour-too-long', detail);
+    const need = mining ? Math.max(1, better.before * .08) : Math.max(2, better.before * REROUTE.gain);
+    if (improvement < need) return note('gain-too-small', detail);
+    if (better.afterLength > better.beforeLength * (mining ? 1.5 : 1.25) + (mining ? 10 : 6)) return note('detour-too-long', detail);
   }
   state.lastRerouteTry = { at: +(state.elapsed || 0).toFixed(1), ahead, urge, verdict: 'accepted', ...detail };
   return { ...better, ahead, via, urge };
@@ -702,10 +857,11 @@ function maybeRerouteDelivery(direction, snapshot, behavior) {
     direction, snapshot, urge, leg, at: state.legDistance, target: leg.points.at(-1),
   });
   if (!decision) return false;
-  if ((leg.reroutes || 0) >= 2 || leg.committed) return false;
+  const maxReroutes = state.miningEnabled ? 3 : 2;
+  if ((leg.reroutes || 0) >= maxReroutes || leg.committed) return false;
   const before = leg.length;
   leg.reroutes = (leg.reroutes || 0) + 1;
-  if (decision.urge || decision.afterLength > decision.beforeLength * 1.25 + 6) leg.committed = true;
+  if (decision.urge || decision.afterLength > decision.beforeLength * (state.miningEnabled ? 1.5 : 1.25) + 6) leg.committed = true;
   state.legDistance = 0; state.lateralOffset = 0;
   const length = applyReroute(leg, decision.points);
   // 规划总长度同步修正，避免进度条因为改道而倒跳。
@@ -716,9 +872,11 @@ function maybeRerouteDelivery(direction, snapshot, behavior) {
     at: state.elapsed, kind: 'delivery', ahead: decision.ahead,
     exposureBefore: decision.before, exposureAfter: decision.after,
     lengthBefore: +before.toFixed(1), lengthAfter: +length.toFixed(1), position: [...state.displayPosition],
+    heatBefore: +(decision.heatBefore ?? 0).toFixed(3), heatAfter: +(decision.heat ?? 0).toFixed(3),
+    mining: !!state.miningEnabled,
   };
   drawRoutes(); renderAll();
-  log(`人群挡路：前方 ${decision.ahead} 位顾客挤在通道里，机器人自主改道（穿行人数 ${decision.before} → ${decision.after}，路径 ${before.toFixed(0)} → ${length.toFixed(0)} 单位）。`, 'warn');
+  log(`人群挡路：前方 ${decision.ahead} 位顾客挤在通道里，机器人自主改道（穿行人数 ${decision.before} → ${decision.after}，路径 ${before.toFixed(0)} → ${length.toFixed(0)} 单位）${state.miningEnabled ? `，改走需求冷区（热度 ${(decision.heatBefore ?? 0).toFixed(2)} → ${(decision.heat ?? 0).toFixed(2)}）` : ''}。`, 'warn');
   status('自主绕行', `前方 ${decision.ahead} 位顾客挡住通道，机器人已自行改走另一条路，继续前往${nextName()}。`, 'AVOIDING');
   return true;
 }
@@ -732,10 +890,11 @@ function maybeRerouteReturn(direction, snapshot, behavior) {
     direction, snapshot, urge, leg, at: leg.distance, target: leg.target,
   });
   if (!decision) return false;
-  if ((leg.reroutes || 0) >= 2 || leg.committed) return false;
+  const maxReroutes = state.miningEnabled ? 3 : 2;
+  if ((leg.reroutes || 0) >= maxReroutes || leg.committed) return false;
   const before = leg.length;
   leg.reroutes = (leg.reroutes || 0) + 1;
-  if (decision.urge || decision.afterLength > decision.beforeLength * 1.25 + 6) leg.committed = true;
+  if (decision.urge || decision.afterLength > decision.beforeLength * (state.miningEnabled ? 1.5 : 1.25) + 6) leg.committed = true;
   applyReroute(leg, decision.points);
   leg.waitAt = 0; leg.waited = true; // 改道后不再走外侧整备点的计时
   state.rerouteCooldown = REROUTE.cooldown;
@@ -744,6 +903,8 @@ function maybeRerouteReturn(direction, snapshot, behavior) {
     at: state.elapsed, kind: 'return', ahead: decision.ahead,
     exposureBefore: decision.before, exposureAfter: decision.after,
     lengthBefore: +before.toFixed(1), lengthAfter: +leg.length.toFixed(1), position: [...state.displayPosition],
+    heatBefore: +(decision.heatBefore ?? 0).toFixed(3), heatAfter: +(decision.heat ?? 0).toFixed(3),
+    mining: !!state.miningEnabled,
   };
   drawRoutes(); renderAll();
   log(`人群挡路：返航途中前方 ${decision.ahead} 位顾客，机器人自主改道回充电桩（穿行人数 ${decision.before} → ${decision.after}）。`, 'warn');
@@ -797,6 +958,26 @@ function drawCrowd() {
     svg('rect', { x: s.xMin * 10, y: (STORE.height - s.yMax) * 10, width: (s.xMax - s.xMin) * 10, height: (s.yMax - s.yMin) * 10,
       fill: color, opacity: Math.min(.42, .08 + n * .05), rx: 5 }, $('heatLayer'));
   });
+  // V3.0：实验驱动开启时，把真实销量最低的三个货区在 2D 图上圈出来（虚线 + 标注），
+  // 让「为什么绕这条路」有可视化依据，而不是只在日志里写一句。
+  // 有样本的标「数据冷区」，没样本的（不在 600 件候选集里）老实标「样本外」。
+  if (state.miningEnabled && zoneHeat.size) {
+    const marked = sampledColdZones(3);
+    if (marked.length < 3) {
+      const extra = coldestZones(6).filter(z => !z.known && !marked.some(m => m.id === z.id));
+      marked.push(...extra.slice(0, 3 - marked.length));
+    }
+    marked.forEach((zone, i) => {
+      const s = shelves.find(x => x.id === zone.id); if (!s) return;
+      const tint = zone.known ? '#20A995' : '#93B7B0';
+      svg('rect', { x: s.xMin * 10 - 3, y: (STORE.height - s.yMax) * 10 - 3,
+        width: (s.xMax - s.xMin) * 10 + 6, height: (s.yMax - s.yMin) * 10 + 6,
+        fill: 'none', stroke: tint, 'stroke-width': 1.6, 'stroke-dasharray': zone.known ? '5 3' : '2 3', rx: 5, opacity: .85 }, $('heatLayer'));
+      const text = svg('text', { x: s.xMin * 10 + 2, y: (STORE.height - s.yMin) * 10 - 5, 'font-size': 9,
+        fill: zone.known ? '#16796a' : '#6C8A85', 'font-weight': 700 }, $('heatLayer'));
+      text.textContent = i === 0 ? `${zone.known ? '数据冷区' : '样本外'} · ${zoneLabel(s.category)}` : zoneLabel(s.category);
+    });
+  }
   const shown = crowd.length ? crowd : [...peopleForScenario(state.scenario, state.slot), ...state.dynamicObstacles];
   for (const p of shown) {
     const point = p.point || [p.x, p.y];
@@ -880,16 +1061,19 @@ function drawRobot() {
 /* --------------------------------------------------------- view rendering */
 function renderLiveOps() {
   const alerts = alertProducts();
+  const stats = orderStats();
   const robotLabels = { idle: '待机', moving: '行驶中', turning: '转向避障', picking: '取货中', blocked: '安全停车', charging: '充电中', error: '故障' };
   const robotLabel = robotLabels[robotState()];
   setText('opsRobot', robotLabel);
-  setText('opsOrders', activeOrderCount());
+  setText('opsOrders', stats.active);
   setText('opsStock', alerts.length);
-  setText('opsDone', state.completed.filter(c => c.status === '已完成' || c.status === 'Completed').length);
+  setText('opsDone', stats.completed);
   $('opsStock').className = alerts.length > 2 ? 'is-warn' : alerts.length ? '' : 'is-ok';
   $('opsRobot').className = robotLabel === '故障' || robotLabel === '安全停车' ? 'is-danger' : robotLabel === '待机' ? '' : 'is-ok';
-  setText('kpiOrders', activeOrderCount());
-  setText('kpiCompleted', state.completed.filter(c => c.status === '已完成' || c.status === 'Completed').length);
+  setText('kpiOrders', stats.active);
+  setText('kpiCompleted', stats.completed);
+  const completedFoot = document.querySelector('#kpiCompleted')?.parentElement?.querySelector('.kpi-foot');
+  if (completedFoot) completedFoot.textContent = `已线上确认并回充电桩 · 历史共 ${stats.total} 单`;
   setText('kpiStock', alerts.length);
   setText('kpiDistance', state.plan ? state.plan.length.toFixed(1) : '—');
   $('systemPill').textContent = state.fault ? '故障 · 安全停车' : state.blocked ? '通道已封闭' : '仿真就绪';
@@ -998,9 +1182,13 @@ function renderHistory() {
     const items = (record.lines || []).map(l => `${escapeHtml(l.name || l.product?.name || l.productId)} × ${l.qty}`).join('、');
     const time = record.createdAt ? new Date(record.createdAt).toLocaleString('zh-CN', { hour12: false }) : '—';
     const route = `${(record.start || []).map(n => Number(n).toFixed(0)).join(',')} → ${(record.end || []).map(n => Number(n).toFixed(0)).join(',')}`;
+    // V3.0：还没结束的订单不该显示「3D 回放」——它确实可以点进去重新配送，按钮就叫「去配送」；
+    // 同时在这一行直接给出「取消」，不必先打开详情（之前取消入口只有详情里那一个，还点不动）。
+    const final = orderFinal(record);
+    const action = final ? '3D 回放' : '去配送';
     return `<tr><td class="mono">${escapeHtml(record.id)}</td><td>${items}</td><td class="right">${money(record.paid || 0)}</td><td>${time}</td><td>${escapeHtml(record.robotId || '待分配')}</td><td class="mono">${route}</td>
       <td><span class="pill ${record.status === '已完成' ? 'pill--ok' : record.status === '已取消' ? 'pill--danger' : 'pill--info'}">${escapeHtml(orderStatusCn(record.status))}</span></td>
-      <td><button type="button" data-history-detail="${escapeHtml(record.id)}">详情</button> <button type="button" data-history-demo="${escapeHtml(record.id)}">3D 回放</button></td></tr>`;
+      <td><button type="button" data-history-detail="${escapeHtml(record.id)}">详情</button> <button type="button" data-history-demo="${escapeHtml(record.id)}">${action}</button>${final ? '' : ` <button type="button" class="link-danger" data-history-cancel="${escapeHtml(record.id)}">取消</button>`}</td></tr>`;
   }).join('') : '<tr><td colspan="8" class="muted">没有符合条件的订单。</td></tr>';
   setText('historyStoreBadge', persistenceStatus() === 'localStorage' ? '本地持久化' : '内存临时');
 }
@@ -1021,22 +1209,30 @@ function showOrderDetail(id) {
     ['取消前进度', record.cancelProgress != null ? `${(Number(record.cancelProgress) * 100).toFixed(0)}%` : '—'],
     ['已记录路径点', path.length],
   ];
+  // V3.0：未完成订单的主操作是「去配送」，完成的订单才是只读回放。
+  const final = orderFinal(record);
   $('orderDetail').innerHTML = `<div class="grid grid-2"><ul>${lines || '<li>无商品明细</li>'}</ul><table class="data-table"><tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td class="right mono">${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table></div>
-    <div class="btn-row" style="margin-top:12px"><button id="detailDemoBtn" class="btn btn-teal btn-sm" type="button">查看 3D 配送</button>${record.status !== '已完成' && record.status !== '已取消' ? '<button id="detailCancelBtn" class="btn btn-secondary btn-sm" type="button">取消该订单</button>' : ''}</div>`;
+    <div class="btn-row" style="margin-top:12px"><button id="detailDemoBtn" class="btn btn-teal btn-sm" type="button">${final ? '3D 回放' : '▶ 去配送（3D）'}</button>${final ? '' : '<button id="detailCancelBtn" class="btn btn-secondary btn-sm" type="button">取消该订单</button>'}</div>`;
   $('detailDemoBtn').onclick = () => viewOrderDemo(id);
   const cancel = $('detailCancelBtn'); if (cancel) cancel.onclick = () => cancelOrderById(id, '用户在订单历史中取消');
 }
 /** 判断订单记录是否已终结（已完成/已取消）——终结订单只能只读回放，不得重新履约改写状态。 */
 function orderFinal(record) { return record?.status === '已完成' || record?.status === '已取消'; }
 
-/** 从持久化记录还原订单并载入 3D 配送演示：定位到对应机器人与任务，无需手动重找。
- *  V2.4：已终结订单走「只读轨迹回放」，绝不改写其状态；进行中订单仍是重新载入任务。 */
-function viewOrderDemo(id) {
+/**
+ * 从持久化记录打开订单：已终结订单只读回放；未完成订单载入任务并**直接出发**（「去配送」）。
+ * V3.0：之前这个入口对未完成订单一律显示「3D 回放」，语义是错的——它其实会重建任务并等用户点播放。
+ */
+function viewOrderDemo(id, { start = true } = {}) {
   const record = getOrderRecord(id);
   if (!record) { setText('orderMessage', `订单 ${id} 不存在，无法打开演示。`); return; }
   exitReplay(false); // 先清理可能存在的旧回放
   if (orderFinal(record)) {
     startReplay(record);
+    return;
+  }
+  if (state.order && state.order.id !== id && state.running) {
+    setText('orderMessage', `当前正在配送 ${state.order.id}，请先暂停或完成后再切换到 ${id}。`);
     return;
   }
   // 若目标订单就是当前执行/排队中的订单，直接进入 3D 页面并定位到它的机器人。
@@ -1056,8 +1252,12 @@ function viewOrderDemo(id) {
   }
   NEXUS_UI?.showView('supermarket');
   scene3d?.setActive(true); scene3d?.resize();
-  setText('orderMessage', `${id} 已载入 3D 配送演示：${state.order?.robotId || '机器人'}，点击播放可查看沿真实 A* 路径的取货与配送。`);
+  const willStart = start && !state.running && !state.awaitingPickup;
+  setText('orderMessage', willStart
+    ? `${id} 已载入：${state.order?.robotId || '机器人'} 从充电桩出发，按 A* 路径取货后前往机器人自助收银台。`
+    : `${id} 已载入 3D 配送演示：${state.order?.robotId || '机器人'}，点击播放可查看沿真实 A* 路径的取货与配送。`);
   renderAll();
+  if (willStart) playPause();
 }
 
 /** V2.4 只读回放：沿 record.path 逐帧插值驱动机器人；不触碰 state.order / patchOrder，状态永不被改写。 */
@@ -1246,7 +1446,7 @@ function renderRouteView() {
   }
   const a = scoreExistingRoute(state.normalPlan, state.scenario, state.slot), b = state.plan;
   const changed = a.points.map(key).join('|') !== b.points.map(key).join('|');
-  setText('routeCompareNote', `${b.method} · 访问顺序：入口 → ${b.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 收银台 → 出口。`);
+  setText('routeCompareNote', `${b.method} · 访问顺序：充电桩 → ${b.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 机器人自助收银台。`);
   const rows = [
     ['路径长度', `${a.length.toFixed(1)} 地图单位`, `${b.length.toFixed(1)} 地图单位`],
     ['预计用时（仿真）', `${a.time.toFixed(1)} s`, `${b.time.toFixed(1)} s`],
@@ -1268,20 +1468,37 @@ function renderMiningPanel() {
   const mining = buildPlan(state.order.lines, state.scenario, state.slot, 'mining');
   const matched = matchedAssociations(state.order.lines);
   if (!regular || !mining) { box.innerHTML = '当前订单无法计算对比路径。'; return; }
+  // V3.0：把「真实需求热度」也展示出来——路径优化不只看共购规则，
+  // 还会在人群挡路时优先折返穿过真实销量最低的冷区。
+  const coldSampled = sampledColdZones(4);
+  const coldAll = coldestZones(4);
+  const uncovered = coldAll.filter(z => !z.known);
+  const coldList = coldSampled.length
+    ? coldSampled.map(z => `${escapeHtml(zoneLabel(z.zone))}（${z.frequency.toLocaleString()} 次）`).join('、')
+    : '—（当前订单没有可比的样本货区）';
+  const uncoveredNote = uncovered.length
+    ? `<br>另有 <b>${uncovered.length}</b> 个品类（${uncovered.map(z => escapeHtml(zoneLabel(z.zone))).join('、')}）没有进入 600 件候选集，<b>没有销量样本</b>，按最低热度 ${HEAT_FLOOR} 保守占位——它们不算「已证实没人买」，只是缺少证据。`
+    : '';
+  const coldBlock = `<div class="assumption" style="margin-top:10px"><b>真实需求冷区</b>（用 Apriori 规则反推的购买次数最低、且有样本的货区）：${coldList}。${uncoveredNote}<br>${state.miningEnabled
+    ? '已启用：A* 边代价按热度加减（热区 +30% / 冷区 −20%）；人群挡路时会优先折返穿过这些冷区，而不是硬挤热通道。'
+    : '启用后，这些冷区会作为「人少、好走」的备选通道参与边代价与改道评分。'}口径：前件购买次数 = 规则 count / confidence，再按品类汇总后用 log 归一化到 0–1。</div>`;
   if (!matched.length) {
-    box.innerHTML = `<p class="assumption">本次订单未命中置信度≥15% 且提升度>1 的共购规则，实验驱动规划与常规规划一致（避免无依据的强制关联）。当前顺序：入口 → ${regular.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 出口。</p>`;
+    box.innerHTML = `<p class="assumption">本次订单未命中置信度≥15% 且提升度>1 的共购规则，实验驱动规划与常规规划一致（避免无依据的强制关联）。当前顺序：充电桩 → ${regular.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 自助收银。</p>${coldBlock}`;
     return;
   }
   const ruleRows = matched.slice(0, 5).map(r => `<li>${escapeHtml(productById.get(r.from)?.name || r.from)} + ${escapeHtml(productById.get(r.to)?.name || r.to)} · 货区 ${r.fromShelf}/${r.toShelf} · 支持度 ${(r.support * 100).toFixed(3)}% · 置信度 ${(r.confidence * 100).toFixed(1)}% · 提升度 ${r.lift.toFixed(2)}</li>`).join('');
   const sameOrder = regular.stops.map(s => s.shelfId).join(',') === mining.stops.map(s => s.shelfId).join(',');
   const savings = Math.max(0, regular.length - mining.length);
+  // 路径平均需求热度：同样长度的两条路，实验驱动会挑真实购买频次更低的那条。
+  const heatRegular = pathHeat(regular.points), heatMining = pathHeat(mining.points);
+  const heatLine = `<div class="muted" style="margin-top:4px">路径平均需求热度：常规 ${heatRegular.toFixed(3)} → 实验驱动 ${heatMining.toFixed(3)}（越低越冷、人越少）</div>`;
   box.innerHTML = `<p class="assumption">本单命中 <b>${matched.length}</b> 条真实购物篮共购规则（来自 <b>${research ? research.rules.baskets.toLocaleString() : '—'}</b> 个训练篮的 Apriori 挖掘）。这些实验结论被写入 Held–Karp 的段代价：共购货区之间的转移代价最多降低 45%，从而让访问顺序更贴合真实购买行为。</p>
     <ul style="margin:8px 0">${ruleRows}</ul>
     <div class="grid grid-2" style="margin-top:8px">
-      <div><b>常规规划</b><div class="muted">入口 → ${regular.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 出口</div><div>里程 ${regular.length.toFixed(1)} · 用时 ${regular.time.toFixed(1)}s · 代价 ${regular.cost.toFixed(1)}</div></div>
-      <div><b>实验驱动规划${state.miningEnabled ? '（当前采用）' : ''}</b><div class="muted">入口 → ${mining.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 出口</div><div>里程 ${mining.length.toFixed(1)} · 用时 ${mining.time.toFixed(1)}s · 代价 ${mining.cost.toFixed(1)}</div></div>
+      <div><b>常规规划</b><div class="muted">充电桩 → ${regular.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 自助收银</div><div>里程 ${regular.length.toFixed(1)} · 用时 ${regular.time.toFixed(1)}s · 代价 ${regular.cost.toFixed(1)}</div></div>
+      <div><b>实验驱动规划${state.miningEnabled ? '（当前采用）' : ''}</b><div class="muted">充电桩 → ${mining.stops.map(s => `货区${s.shelfId}`).join(' → ')} → 自助收银</div><div>里程 ${mining.length.toFixed(1)} · 用时 ${mining.time.toFixed(1)}s · 代价 ${mining.cost.toFixed(1)}</div>${heatLine}</div>
     </div>
-    <p class="assumption" style="margin-top:8px">${sameOrder ? '本单两方案访问顺序相同，但实验权重已参与代价评估；' : `实验关联改变了访问顺序（${regular.stops.map(s=>s.shelfId).join('→')} → ${mining.stops.map(s=>s.shelfId).join('→')}），`}${savings > .05 ? `物理里程减少 ${savings.toFixed(1)} 地图单位。` : '里程相近，收益主要体现在减少跨区折返与贴合真实购买行为。'}</p>`;
+    <p class="assumption" style="margin-top:8px">${sameOrder ? '本单两方案访问顺序相同，但实验权重已参与代价评估；' : `实验关联改变了访问顺序（${regular.stops.map(s=>s.shelfId).join('→')} → ${mining.stops.map(s=>s.shelfId).join('→')}），`}${savings > .05 ? `物理里程减少 ${savings.toFixed(1)} 地图单位。` : '里程相近，收益主要体现在减少跨区折返与贴合真实购买行为。'}</p>${coldBlock}`;
 }
 function scoreExistingRoute(plan, scenario, slot) {
   if (!plan) return { cost: 0, time: 0, risk: 0, length: 0, points: [] };
@@ -1425,7 +1642,7 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false, opti
   const start = activeLeg && from === state.displayPosition
     ? nextNodeAhead(activeLeg, state.legDistance).point
     : nearestNode(from);
-  const fresh = planLeg(start, target, state.scenario, state.slot);
+  const fresh = planLeg(start, target, state.scenario, state.slot, state.miningEnabled ? 'mining' : 'full');
   if (!fresh) { log(`${reason}：无法计算返回充电桩的可行路径，机器人保持当前位置并请求人工介入。`, 'danger'); return false; }
   let points = stitchPath(from, fresh.points);
   // V2.2：完成交接后先驶出右出口，在店外整备 3 秒，再经外侧通道从入口回归（V2.7 终点为充电桩对接位）。
@@ -1528,26 +1745,49 @@ function stepReturn(dt) {
   return true;
 }
 
+/**
+ * 取消订单：队列中 / 执行中 / 仅存在于持久化记录里的「待配送」订单都要能取消。
+ * 之前第三类订单点「取消该订单」直接 return false（因为既不在 queue 也不在 order），
+ * 界面毫无反应——这就是订单历史里取消无效的原因。
+ */
 function cancelOrderById(id, reason = '用户取消订单') {
+  const cancelTime = new Date().toISOString();
+  const refreshDetail = () => {
+    if (getOrderRecord(id) && $('orderDetailTitle')?.textContent?.includes(id)) showOrderDetail(id);
+  };
   const index = state.queue.findIndex(order => order.id === id);
   if (index >= 0) {
     const [order] = state.queue.splice(index, 1);
-    order.status = '已取消'; order.cancelledAt = new Date().toISOString(); order.cancelProgress = 0;
+    order.status = '已取消'; order.cancelledAt = cancelTime; order.cancelProgress = 0;
     saveOrder(order); state.completed.push({ id, status: '已取消' });
-    log(`${id} 已在队列中取消，数据已更新。`); renderAll(); return true;
+    log(`${id} 已在队列中取消（${reason}），记录已持久化。`);
+    renderAll(); refreshDetail(); return true;
   }
-  if (!state.order || state.order.id !== id) return false;
-  const order = state.order, progress = orderProgress();
-  const cancelTime = new Date().toISOString();
-  patchOrder(id, { status: '已取消', cancelledAt: cancelTime, cancelProgress: progress,
-    cancelStage: state.stage, cancelPosition: [...state.displayPosition], path: sampledPath(), robotId: activeRobot().id });
-  state.completed.push({ id, status: '已取消' });
-  state.order = null; state.shortage = null; state.assistPending = null; state.awaitingPickup = false;
-  state.bought = []; state.finished = false; state.stage = 0; state.legDistance = 0;
-  log(`${id} 已取消：记录取消时间 ${new Date(cancelTime).toLocaleTimeString('zh-CN')}、取消前进度 ${(progress * 100).toFixed(0)}%。`);
-  beginReturn(reason, state.displayPosition);
-  renderAll(); return true;
+  if (state.order && state.order.id === id) {
+    const progress = orderProgress();
+    patchOrder(id, { status: '已取消', cancelledAt: cancelTime, cancelProgress: progress,
+      cancelStage: state.stage, cancelPosition: [...state.displayPosition], path: sampledPath(), robotId: activeRobot().id });
+    state.completed.push({ id, status: '已取消' });
+    state.order = null; state.shortage = null; state.assistPending = null; state.awaitingPickup = false;
+    state.bought = []; state.finished = false; state.stage = 0; state.legDistance = 0;
+    log(`${id} 已取消：记录取消时间 ${new Date(cancelTime).toLocaleTimeString('zh-CN')}、取消前进度 ${(progress * 100).toFixed(0)}%，机器人返航。`);
+    beginReturn(reason, state.displayPosition);
+    renderAll(); refreshDetail(); return true;
+  }
+  // 只存在于持久化记录（刷新后未恢复、或历史里的待配送单）：直接落库取消。
+  const record = getOrderRecord(id);
+  if (record && !orderFinal(record)) {
+    patchOrder(id, { status: '已取消', cancelledAt: cancelTime,
+      cancelProgress: Number(record.progress) || 0, note: reason });
+    state.completed.push({ id, status: '已取消' });
+    state.queue = state.queue.filter(order => order.id !== id);
+    log(`${id} 已在订单历史中取消（${reason}），状态已持久化。`);
+    renderAll(); refreshDetail(); return true;
+  }
+  log(`${id} 已经是${record ? orderStatusCn(record.status) : '不存在'}状态，无需取消。`, 'warn');
+  return false;
 }
+
 
 /* ------------------------------------------------------- task state machine */
 function resetPlayback(preserveSafety = false) {
@@ -1645,7 +1885,10 @@ function submitOrder() {
   state.queue.push(order); state.cart.clear(); renderCart(); renderRecommendations();
   if (!state.order && robot) activateNext();
   else { state.nextAvailable = state.queue.length > 0; renderAll(); }
-  saveOrder(state.order || order);
+  // V3.0：新单先落库；再补一次当前执行中的订单，避免「只有第一单被持久化、
+  // 排队订单刷新后消失」——这会让历史里的待配送单既取消不了也找不到。
+  saveOrder(order);
+  if (state.order && state.order.id !== order.id) saveOrder(state.order);
   const target = state.order === order ? order : null;
   const node = $('orderMessage');
   if (node) {
@@ -1807,10 +2050,36 @@ function confirmHandoff() {
   beginReturn('配送完成', state.displayPosition, false, { target: dockSlotPoint(), purpose: 'charge' });
   renderAll();
 }
-function cancelOrder(id) {
-  const index = state.queue.findIndex(order => order.id === id); if (index < 0) return;
-  state.queue.splice(index, 1); state.completed.push({ id, status: 'Cancelled' }); renderAll(); log(`${id} 已从队列中取消。`);
+function cancelOrder(id) { return cancelOrderById(id, '用户在队列中取消排队'); }
+/**
+ * 刷新页面后把「未完成订单」恢复成待配送队列。
+ * 之前订单只落库不回填，历史里能看到待配送单、总览 KPI 却是 0，用户点「去配送」还找不到入口。
+ * 恢复后：队列里能取消、能去配送，KPI 的「进行中订单」也和数据一致。
+ */
+function restorePendingOrders(limit = 6) {
+  const final = ['已完成', '已取消', 'Completed', 'Cancelled'];
+  const pending = listOrders()
+    .filter(record => !final.includes(record.status))
+    .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''))
+    .slice(0, limit);
+  let restored = 0;
+  for (const record of pending) {
+    if (state.order?.id === record.id || state.queue.some(order => order.id === record.id)) continue;
+    const order = hydrateOrder(record, productById);
+    if (!order.lines.length) { patchOrder(record.id, { status: '异常', note: '商品已不在当前目录' }); continue; }
+    // 上次中断在配送中/返航中：进度无法精确还原，退回「待分配」，由用户重新点「去配送」。
+    if (['配送中', '返航中'].includes(order.status)) {
+      order.status = '待分配';
+      patchOrder(record.id, { status: '待分配', note: '页面刷新后恢复为待配送' });
+    }
+    order.progress = 0;
+    state.queue.push(order);
+    restored++;
+  }
+  if (restored) log(`已从本地持久化恢复 ${restored} 笔未完成订单到待配送队列（可取消或重新去配送）。`);
+  return restored;
 }
+
 function cancelActive() {
   if (!state.order) return;
   cancelOrderById(state.order.id, '用户取消配送任务');
@@ -2280,9 +2549,16 @@ function bindEvents() {
   $('chargeBtn')?.addEventListener('click', () => { if (state.charging?.active) stopCharging('已暂停'); else startCharging(); });
   $('miningToggleBtn')?.addEventListener('click', () => {
     state.miningEnabled = !state.miningEnabled;
-    if (state.order) resetPlayback();
-    log(state.miningEnabled ? '已启用实验驱动规划：Apriori 共购规则参与 Held–Karp 访问顺序决策。' : '已关闭实验驱动规划，恢复常规几何代价。');
-    renderMiningPanel();
+    if (state.order && !state.running) resetPlayback();
+    if (state.miningEnabled && zoneHeat.size) {
+      const coldZones = sampledColdZones(3);
+      const cold = coldZones.length ? coldZones.map(z => zoneLabel(z.zone)).join('、') : '样本外货区';
+      log(`已启用实验驱动规划：Apriori 共购规则参与访问顺序，A* 边代价按真实需求热度加减（热区 +30% / 冷区 −20%）；人群挡路时优先折返穿过冷区（${cold}）。`);
+      status('实验驱动规划已启用', `路径会优先走真实购买频次低的冷区（${cold}），人少、好走。`, 'IDLE');
+    } else {
+      log('已关闭实验驱动规划，恢复常规几何代价。');
+    }
+    renderMiningPanel(); renderAll();
   });
   $('orderMessage')?.addEventListener('click', event => {
     const demoId = event.target.closest('[data-view-demo]')?.dataset.viewDemo;
@@ -2294,6 +2570,8 @@ function bindEvents() {
   $('historyTable')?.addEventListener('click', event => {
     const detailId = event.target.closest('[data-history-detail]')?.dataset.historyDetail;
     if (detailId) showOrderDetail(detailId);
+    const cancelId = event.target.closest('[data-history-cancel]')?.dataset.historyCancel;
+    if (cancelId) cancelOrderById(cancelId, '用户在订单历史中取消');
     const demoId = event.target.closest('[data-history-demo]')?.dataset.historyDemo;
     if (demoId) viewOrderDemo(demoId);
   });
@@ -2450,7 +2728,7 @@ function setCamera(mode) {
 
 /* 自动化回归测试钩子：所有数值直接来自运行中的仿真状态，不另造指标。 */
 window.__NEXUS = Object.freeze({
-  state, STORE,
+  state, STORE, shelves, layoutFixtures,
   applyPedPreset,
   setScenario: value => { state.scenario = value === 'peak' ? 'peak' : 'normal'; updateScenario('test'); return syncCrowdToScenario(); },
   setSimSpeed, setRobotCount, startNextOrder, activateNext,
@@ -2499,6 +2777,16 @@ window.__NEXUS = Object.freeze({
         points: state.returnLeg.points.map(p => p.map(n => +n.toFixed(1))) } : null,
     };
   },
+  // V3.0 测试钩子：订单统计口径、真实需求热度、冷区列表、任意路径的平均热度。
+  orderStats,
+  zoneHeat: () => [...zoneHeat].map(([id, heat]) => ({ id, heat: +heat.toFixed(3), frequency: zoneFrequency.get(id) || 0 })),
+  coldestZones: n => coldestZones(n),
+  sampledColdZones: n => sampledColdZones(n),
+  pathHeat: points => +pathHeat(points).toFixed(3),
+  heatAt: point => +heatAt(point).toFixed(3),
+  cancelOrder: (id, reason) => cancelOrderById(id, reason || '测试取消'),
+  restorePendingOrders,
+  viewOrder: (id, options) => viewOrderDemo(id, options),
   advance(seconds, hz = 60) {
     const steps = Math.min(6000, Math.ceil(seconds * hz));
     for (let i = 0; i < steps && state.running; i++) stepSimulation(1 / hz);
@@ -2582,6 +2870,8 @@ loadResearch().then(data => {
     const id = `I${row.id}`; if (!productById.has(id)) productById.set(id, convertProduct(row));
   }
   rules = data.rules.rules.map(rule => ({ ...rule, from: `I${rule.from}`, to: `I${rule.to}` }));
+  buildZoneHeat(data.rules);
+  restorePendingOrders();
   populateFilters(); scheduleCatalogSearch(); renderRules(); renderRecommendations();
   renderResearchDashboard(data); renderDataAudit(); renderPickupFeasibility(); renderInventory();
   initRestockControls();

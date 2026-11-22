@@ -387,3 +387,7 @@ body.presentation .presentation-exit { display: inline-flex; }
   .hud-block { padding-right: 8px; }
   .hud-block b { font-size: 11px; max-width: 150px; }
 }
+
+/* V3.0：订单历史行内的「取消」——文字型危险操作，和队列里的取消保持一致。 */
+.data-table button.link-danger { padding: 0; border: 0; background: transparent; color: #b45853; font-size: 11px; text-decoration: underline; }
+.data-table button.link-danger:hover { color: #8d3b36; }

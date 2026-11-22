@@ -126,6 +126,16 @@ export function patchOrder(id, patch) {
 
 export function getOrderRecord(id) { return data.orders.find(item => item.id === id) || null; }
 export function listOrders() { return clone(data.orders); }
+/** 轻量统计：只数状态，不做深拷贝——总览 KPI 每次渲染都会调用。 */
+export function orderCounts() {
+  let completed = 0, cancelled = 0, pending = 0;
+  for (const order of data.orders) {
+    if (order.status === '已完成' || order.status === 'Completed') completed++;
+    else if (order.status === '已取消' || order.status === 'Cancelled') cancelled++;
+    else pending++;
+  }
+  return { completed, cancelled, pending, total: data.orders.length };
+}
 
 /* ------------------------------------------------------------------ 补货 */
 export function addRestock(record) {

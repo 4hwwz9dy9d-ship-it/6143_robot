@@ -196,10 +196,16 @@ export const shelves = zoneDefs.map((d, i) => {
   // 偏移量控制在单元净空内，不侵入任何 A* 通道节点/边。
   const jitterX = ((i * 7) % 5 - 2) * .9;   // -1.8 ~ +1.8 单位
   const jitterY = ((i * 11) % 5 - 2) * 1.1; // -2.2 ~ +2.2 单位
-  const cx = colCenter(d.col) + jitterX, cy = ROW_CENTERS[d.row] + jitterY;
+  // V3.0：最右一列（col 5）紧贴右墙，原来 13 单位的货架把「货架—右墙」压到
+  // 只剩 0.5–0.9 m，靠墙冷柜再塞进来就四台柜子叠在角落里。这里把这一列收窄到
+  // 9 单位并居中放在 x≈163.5：左侧主通道 2.4 m（机器人），右侧靠墙通道 1.3 m（行人）。
+  const lastCol = d.col === 5;
+  const w = lastCol ? 9 : d.w;
+  const cx = (lastCol ? 163.5 + jitterX * .35 : colCenter(d.col) + jitterX);
+  const cy = ROW_CENTERS[d.row] + jitterY;
   return {
     id: `${d.row + 1}-${d.col + 1}`, category: d.category, kind: d.kind,
-    xMin: +(cx - d.w / 2).toFixed(2), xMax: +(cx + d.w / 2).toFixed(2),
+    xMin: +(cx - w / 2).toFixed(2), xMax: +(cx + w / 2).toFixed(2),
     yMin: +(cy - d.h / 2).toFixed(2), yMax: +(cy + d.h / 2).toFixed(2),
     shelfHeight: d.height, row: d.row, column: d.col,
     // 取货点位于左侧通道上的导航节点，距离货架边缘约 1.1 m。
@@ -223,10 +229,14 @@ export const layoutFixtures = [
   { label: '零食墙',     x: 4,   y: 80,  w: 5,  h: 18, kind: 'wall' },
   { label: '日用墙',     x: 4,   y: 116, w: 5,  h: 18, kind: 'wall' },
   { label: '后侧冷柜 A', x: 40,  y: 137, w: 34, h: 5,  kind: 'wall' },
+  // V3.0：原「冷藏侧柜 / 杂货侧柜」贴在右墙 x=172，与最右一列货架在 x 方向上重叠
+  // 1.5–3.3 单位（≈0.25–0.56 m），四台柜子在右后角落视觉上粘成一坨。
+  // 现在两台都移到后墙：一台补在 A/B 之间，一台占据后墙右角，与 C 只留 1 单位的柜缝；
+  // 右墙整面让出来，形成 1.3 m 宽的行人靠墙通道，机器人走左侧 2.4 m 主通道。
+  { label: '杂货侧柜',   x: 65,  y: 137, w: 14, h: 5,  kind: 'wall' },
   { label: '后侧冷柜 B', x: 90,  y: 137, w: 34, h: 5,  kind: 'wall' },
   { label: '后侧冷柜 C', x: 140, y: 137, w: 32, h: 5,  kind: 'wall' },
-  { label: '冷藏侧柜',   x: 172, y: 80,  w: 5,  h: 20, kind: 'wall' },
-  { label: '杂货侧柜',   x: 172, y: 116, w: 5,  h: 18, kind: 'wall' },
+  { label: '冷藏侧柜',   x: 166, y: 137, w: 18, h: 5,  kind: 'wall' },
   { label: '促销岛 A',   x: 45,  y: 12,  w: 11, h: 9,  kind: 'promo' },
   { label: '促销岛 B',   x: 72,  y: 12,  w: 11, h: 9,  kind: 'promo' },
   // V2.2：促销岛 C 从 x=126 移到前场空地；V2.8 再左移到 x=94，

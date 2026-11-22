@@ -53,12 +53,18 @@ export async function loadResearch() {
   ]);
   return { index, summary, rules, clusters, top, topReordered };
 }
+/** 真实部门/货道 → 店内 18 个货区。convertProduct 与「区域需求热度」共用同一套映射，
+ *  保证路线优化里用到的冷/热区，和商品目录里显示的货区完全一致。 */
+export function zoneOfDepartment(department, aisle = '') {
+  let zone = shelfByDepartment[department] || 'Stationery';
+  if (department === 'produce') zone = 'Fresh Produce';
+  if (department === 'meat seafood') zone = /seafood|fish|shellfish/i.test(aisle) ? 'Seafood' : 'Meat';
+  if (department === 'household' && /clean|laundry/i.test(aisle)) zone = 'Cleaning Supplies';
+  if (department === 'pantry' && /oil|vinegar/i.test(aisle)) zone = 'Grains & Oils';
+  return zone;
+}
 export function convertProduct(row) {
-  let zone = shelfByDepartment[row.department] || 'Stationery';
-  if (row.department === 'produce') zone = 'Fresh Produce';
-  if (row.department === 'meat seafood') zone = /seafood|fish|shellfish/i.test(row.aisle) ? 'Seafood' : 'Meat';
-  if (row.department === 'household' && /clean|laundry/i.test(row.aisle)) zone = 'Cleaning Supplies';
-  if (row.department === 'pantry' && /oil|vinegar/i.test(row.aisle)) zone = 'Grains & Oils';
+  const zone = zoneOfDepartment(row.department, row.aisle);
   const shelf = shelves.find(item => item.category === zone) || shelves[0];
   return {
     id: `I${row.id}`, sourceId: row.id, name: row.name,
