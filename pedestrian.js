@@ -241,8 +241,9 @@ export class PedestrianSystem {
   beginDetour(person, robot) {
     const goal = person.goal ? [...person.goal]
       : (person.section?.point ? [...person.section.point] : [...STORE.exit]);
-    // 以「机器人 → 原目标」为前进方向，绕行点放在机器人前方、并在行人当前所在侧
-    // 拉开足够横向距离（≈1.7 m）。这样行人是真正从机器人旁边绕过去，而不是原地打转。
+    // V3.1：绕行点放在机器人**后方**（沿「机器人 → 原目标」反方向退、再向行人所在侧拉开
+    // ≈2 m）。旧版把绕行点放在机器人前方，行人会从机器人面前斜切过去、看起来像「围着机器转」；
+    // 真人遇到挡路的机器人会退半步、从它背后绕过去继续走。
     const axis = [goal[0] - robot.position[0], goal[1] - robot.position[1]];
     const g = Math.hypot(axis[0], axis[1]) || 1;
     const fwd = [axis[0] / g, axis[1] / g];
@@ -250,13 +251,25 @@ export class PedestrianSystem {
     const rel = [person.position[0] - robot.position[0], person.position[1] - robot.position[1]];
     const sign = (rel[0] * side[0] + rel[1] * side[1]) >= 0 ? 1 : -1;
     const raw = [
-      robot.position[0] + fwd[0] * 14 + side[0] * sign * 10,
-      robot.position[1] + fwd[1] * 14 + side[1] * sign * 10,
+      robot.position[0] - fwd[0] * 12 + side[0] * sign * 14,
+      robot.position[1] - fwd[1] * 12 + side[1] * sign * 14,
     ];
     const pt = [clamp(raw[0], 6, STORE.width - 6), clamp(raw[1], 6, STORE.height - 6)];
+    // V3.1b：脱离点吸附到导航图节点——「离机器人 ≥16 单位（≈2.7 m）且顺路（离人也近、
+    // 离原目标也近）」的节点优先。旧版直接用几何偏移点，路线可能贴着机器人甚至被货架
+    // 卡死（行人在货架边反复蹭=另一种「围机器人转」）。
+    let escape = this.safePoint(pt, person.radius);
+    let bestScore = Infinity;
+    for (const node of this.nodes.values()) {
+      const p2 = node.point;
+      const dRobot = dist(p2, robot.position), dPerson = dist(p2, person.position);
+      if (dRobot < 16 || dPerson < 8 || dPerson > 46) continue;
+      const score = dPerson + dist(p2, goal);
+      if (score < bestScore) { bestScore = score; escape = [...p2]; }
+    }
     person.detourGoal = goal;
     person.detourReturn = person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state;
-    this.sendTo(person, this.safePoint(pt, person.radius), 'DETOUR');
+    this.sendTo(person, escape, 'DETOUR');
     person.detourCooldown = 6.0;
     person.stallTimer = 0;
     person.yieldTimer = 0;
@@ -474,7 +487,7 @@ export class PedestrianSystem {
         else { person.sections++; const s = this.pickSection(); person.section = s; this.sendTo(person, s.point, 'WALK_TO_SECTION'); }
       }
       person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
-      this.move(person, dt);
+      this.move(person, dt, robot);
       return;
     }
 
@@ -491,7 +504,7 @@ export class PedestrianSystem {
         if (person.timer <= 0) this.sendTo(person, STORE.outsideExit, 'EXITING');
       }
       person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
-      this.move(person, dt);
+      this.move(person, dt, robot);
       return;
     }
 
@@ -567,7 +580,13 @@ export class PedestrianSystem {
         // 锁定让行方向一次，持续朝同一侧移动直到计时结束，杜绝左右横跳。
         if (person.yieldTimer <= 0) {
           const sideDot = desired[0] * side[0] + desired[1] * side[1];
-          person.yieldSide = sideDot >= 0 ? 1 : -1;
+          let chosen = sideDot >= 0 ? 1 : -1;
+          // V3.1c：让行方向要感知货架——窄通道里机器人停着时，一侧可能被货架堵死，
+          // 只按「期望方向」选边会把人顶在货架和机器人之间反复蹭（碰撞的来源）。
+          const open = sgn => !this.blockedByFixture(
+            robot.position[0] + side[0] * sgn * 4, robot.position[1] + side[1] * sgn * 4, person);
+          if (!open(chosen) && open(-chosen)) chosen = -chosen;
+          person.yieldSide = chosen;
           person.yieldTimer = 2.2;
           if (person.yieldToRobot <= 0) this.metrics.pedestrianYields++;
         }
@@ -577,10 +596,15 @@ export class PedestrianSystem {
         if (toward > 0) {
           desired[0] -= toward * dx / d; desired[1] -= toward * dy / d;
         }
-        desired[0] += goSide[0] * maxSpeed * (0.9 + gain * 0.9);
-        desired[1] += goSide[1] * maxSpeed * (0.9 + gain * 0.9);
+        // V3.1：让行 = 离机器人 2.2 m 以内时侧移让开、2.2 m 以外恢复正常走路，
+        // 不再持续绕着机器人兜圈。
+        // 中距离（0.95–3 m）：侧移让出通道即可，不再持续绕圈；
+        // 极近距离（<0.95 m）：快速侧移脱离——这是防碰撞的关键动作，不能弱化。
+        const far = dM >= 2.2;
+        const stepAside = far ? .3 : (.8 + gain * .8);
+        desired[0] += goSide[0] * maxSpeed * stepAside;
+        desired[1] += goSide[1] * maxSpeed * stepAside;
         if (dM < 0.95) {
-          // 极近距离：完全转为侧向快速脱离，绝不原地打转。
           const sideDot = desired[0] * goSide[0] + desired[1] * goSide[1];
           desired[0] = goSide[0] * Math.max(maxSpeed, sideDot);
           desired[1] = goSide[1] * Math.max(maxSpeed, sideDot);
@@ -600,13 +624,15 @@ export class PedestrianSystem {
       const dx = person.position[0] - robot.position[0], dy = person.position[1] - robot.position[1];
       const d = Math.hypot(dx, dy), dM = d * M;
       if (dM < 2.2 && d > .0001) {
+        // V3.1：绕行路线本身已避开机器人，这里只保留轻量排斥防贴身——
+        // 旧版排斥太强，会把人顶在 2.2 m 边界上原地卡死（另一种「围着机器人转」）。
         const nx = dx / d, ny = dy / d;
         const toward = -(desired[0] * nx + desired[1] * ny);
         if (toward > 0) { desired[0] += nx * toward; desired[1] += ny * toward; }
         const gain = clamp((2.2 - dM) / 2.2, 0, 1);
-        desired[0] += nx * maxSpeed * (.5 + gain * 1.6);
-        desired[1] += ny * maxSpeed * (.5 + gain * 1.6);
-        if (dM < 1.0) { desired[0] += nx * maxSpeed * 1.5; desired[1] += ny * maxSpeed * 1.5; }
+        desired[0] += nx * maxSpeed * (.12 + gain * .55);
+        desired[1] += ny * maxSpeed * (.12 + gain * .55);
+        if (dM < 1.0) { desired[0] += nx * maxSpeed * .7; desired[1] += ny * maxSpeed * .7; }
       }
     }
 
@@ -618,10 +644,26 @@ export class PedestrianSystem {
     const speed = Math.hypot(person.velocity[0], person.velocity[1]);
     if (speed > .08) person.heading = lerpAngle(person.heading, Math.atan2(person.velocity[0], person.velocity[1]), Math.min(1, dt * 7));
     person.phase += (speed * M / Math.max(.5, type.height)) * dt * 3.4;
-    this.move(person, dt);
+    this.move(person, dt, robot);
   }
 
-  move(person, dt) {
+  move(person, dt, robot = null) {
+    // V3.1c：机器人车体是实体。行人贴近车体时沿 hull 边缘滑过，绝不进入车体——
+    // 机器人停在通道上等行人时，这是「人绕过停着的车」与「人穿进车里」的分界线。
+    let robotHull = null;
+    if (robot?.position) {
+      robotHull = (PHYSICS.robot.radius + (person.radius || .26)) / M + .15;
+      const [rx, ry] = robot.position;
+      const dNow = Math.hypot(person.position[0] - rx, person.position[1] - ry);
+      if (dNow < robotHull) {
+        // 已经在 hull 内（极少见，例如追尾碰撞余量）：径向推出去。
+        const nx = (person.position[0] - rx) / (dNow || 1), ny = (person.position[1] - ry) / (dNow || 1);
+        person.position[0] = rx + nx * robotHull;
+        person.position[1] = ry + ny * robotHull;
+        person.velocity[0] += nx * Math.abs(person.velocity[0]) * .5;
+        person.velocity[1] += ny * Math.abs(person.velocity[1]) * .5;
+      }
+    }
     // V2.1 硬约束：左墙只在入口开口可穿越，右墙只在出口开口可穿越。
     const inEntryY = Math.abs(person.position[1] - STORE.openings.entrance.y) <= STORE.openings.entrance.halfHeight - (person.radius || .26) / M;
     const inExitY = Math.abs(person.position[1] - STORE.openings.exit.y) <= STORE.openings.exit.halfHeight - (person.radius || .26) / M;
@@ -630,8 +672,13 @@ export class PedestrianSystem {
     const canUseExit = atRightWall && inExitY && person.state === 'EXITING';
     const minX = canUseEntry ? 0 : 4;
     const maxX = canUseExit ? STORE.width + 8 : STORE.width - 4;
-    const nextX = clamp(person.position[0] + person.velocity[0] * dt, minX, maxX);
-    const nextY = clamp(person.position[1] + person.velocity[1] * dt, 4, STORE.height - 4);
+    let nextX = clamp(person.position[0] + person.velocity[0] * dt, minX, maxX);
+    let nextY = clamp(person.position[1] + person.velocity[1] * dt, 4, STORE.height - 4);
+    if (robotHull !== null && robot?.position) {
+      const [rx, ry] = robot.position;
+      if (Math.hypot(nextX - rx, person.position[1] - ry) < robotHull) { nextX = person.position[0]; person.velocity[0] = 0; }
+      if (Math.hypot(person.position[0] - rx, nextY - ry) < robotHull) { nextY = person.position[1]; person.velocity[1] = 0; }
+    }
     if (!this.blockedByFixture(nextX, person.position[1], person)) person.position[0] = nextX; else person.velocity[0] = 0;
     if (!this.blockedByFixture(person.position[0], nextY, person)) {
       const crossingWall = person.position[0] < 4 || person.position[0] > STORE.width - 4;

@@ -37,9 +37,9 @@ export class RobotBehavior {
     this.emergencyTime = 0;
     // V2.5：连续「侧向净空足够但被挡住」的时长，用于判定人机对峙僵局并主动绕行。
     this.bypassTime = 0;
-    // V2.9：主动偏出的横向位移（米，带符号）与其保持时间。
-    this.steer = 0;
-    this.steerHold = 0;
+    // V3.1：绕行侧记忆（防抖），替代旧的「挤缝 steer」。
+    this.avoidSide = 0;
+    this.avoidHold = 0;
     this.metrics = {
       collisions: 0, nearMisses: 0, yields: 0, replannings: 0, bypasses: 0,
       waitSeconds: 0, humanInterventions: 0, minDistance: Infinity, minTtc: Infinity,
@@ -92,9 +92,10 @@ export class RobotBehavior {
     let worst = null;
     let emergency = false, nearMiss = false, collision = false;
     let avoidance = 0;
-    // V2.9：前方有人直挺挺挡在车道上时，机器人自己挑一侧空隙偏出去，
-    // 而不是等人让路或者原地干等（steerNeed 单位：米，带符号）。
-    let steerNeed = 0;
+    this.waitShiftNeed = 0;   // V3.1c：本帧计算的「停车让位」横向需求（米，带符号）
+    // V3.1：不再「挤缝」——人挡在车道上时机器人选择停车等待或改道，
+    // 而是横着蹭过去（那既像推人，也会左右抖）。只有人本来就站在车道边缘、
+    // 净空明确足够时才低速绕过。
 
     const consider = (obj, radius, isPerson) => {
       const rel = [obj.x * M - robotPos[0], obj.y * M - robotPos[1]];
@@ -136,20 +137,22 @@ export class RobotBehavior {
       };
       if (!worst || candidate.ttc < worst.ttc || candidate.distance < worst.distance * .8) worst = candidate;
 
-      // 侧向可绕行判断：横向净空大于机器人半宽 + 人体半径 + 0.25 m。
+      // 侧向可绕行判断：人已经在车道边缘（横向净空 > 半车宽 + 人体半径 + 0.25 m）
+      // 才算「可以绕过去」；人站在车道中间时这里不会给绕行信号，机器人会停下等待。
       const clearance = Math.abs(lateral) - (P.width / 2 + radius + .25);
       if (clearance > 0 && along > .4 && !candidate.crossing && d < S.warnDistance + .6) {
         avoidance = avoidance || (lateral > 0 ? -1 : 1);
       }
-      // V2.9：人正好压在中线上（净空不足）时，算一算「要偏多少才过得去」，
-      // 朝远离这个人的方向偏；横向最多偏 0.45 m（2 m 通道内仍留得下车身与安全间隙）。
-      if (along > 1 && along < S.warnDistance + 1.2 && !candidate.crossing) {
-        const required = P.width / 2 + radius + .20;       // 与人体中心的最小横向间距
+      // V3.1c：停车让位量——机器人停稳后向远离该行人的一侧平移（≤0.45 m），
+      // 把通道让出来给行人走。与旧的「挤缝前进」不同：这只发生在 speedFactor=0
+      // 的停车状态下（车不动、人先过），且方向带 2 s 粘滞，不会左右抖。
+      if (along > .6 && along < S.warnDistance + 1.5 && !candidate.crossing) {
+        const required = P.width / 2 + radius + .20;
         const shortfall = required - Math.abs(lateral);
         if (shortfall > .04) {
-          const side = lateral >= 0 ? -1 : 1;              // 向远离该行人的一侧偏
-          const need = side * Math.min(shortfall + .12, .45);
-          if (Math.abs(need) > Math.abs(steerNeed)) steerNeed = need;
+          const side = lateral >= 0 ? -1 : 1;
+          const need = side * Math.min(shortfall + .1, .45);
+          if (Math.abs(need) > Math.abs(this.waitShiftNeed || 0)) this.waitShiftNeed = need;
         }
       }
     };
@@ -200,6 +203,10 @@ export class RobotBehavior {
         next = 'YIELD'; speedFactor = 0; reason = '行人正在横穿，停车礼让';
       } else if (headOn && distance < S.yieldDistance + P.radius + worst.radius) {
         next = 'WAIT'; speedFactor = 0; reason = '窄通道迎面相遇，等待行人通过';
+      } else if (!avoidance && !away && distance < 1.5) {
+        // V3.1：人挡在车道上、绕行净空不足——停车等待，不挤行、不推人。
+        // 持续受阻会由 blockedTime 触发重新规划（换一条人少的路，必要时倒车换向）。
+        next = 'WAIT'; speedFactor = 0; reason = '行人挡住通道，停车等待（不挤行）';
       } else if (away) {
         if (distance < 1.1) { next = 'SLOW_DOWN'; speedFactor = .3; reason = '行人刚离开，低速确认'; }
         else {
@@ -242,20 +249,34 @@ export class RobotBehavior {
       if (this.state !== 'RESUME') this.clearTime = 0;
     }
 
-    // V2.9：把「选空隙」的横向意图做成带保持时间的平滑量，避免左右来回摆。
-    const canSteer = Math.abs(steerNeed) > .02 && speedFactor > .05 && this.state !== 'EMERGENCY_STOP';
-    if (canSteer) { this.steer = steerNeed; this.steerHold = .9; }
-    else {
-      this.steerHold = Math.max(0, this.steerHold - step);
-      if (this.steerHold === 0) this.steer += (0 - this.steer) * Math.min(1, step * 2.6);
+    // V3.1：绕行侧带保持时间（1.5 s 防抖），避免两侧都有人时左右来回摆（「抖一抖」）。
+    this.avoidHold = Math.max(0, (this.avoidHold || 0) - step);
+    if (avoidance !== 0) {
+      if (this.avoidHold <= 0 || avoidance === this.avoidSide) {
+        this.avoidSide = avoidance;
+        this.avoidHold = Math.min(1.5, this.avoidHold + step * 2);
+      }
     }
-    const steerShift = this.steer / M;   // 米 → 地图单位
+    const bypassShift = this.avoidHold > 0 && this.state !== 'EMERGENCY_STOP' ? this.avoidSide : 0;
+    // V3.1c：停车让位——只在机器人真的停住（speedFactor=0）时平移让出通道；
+    // 方向粘滞 2 s：同一批行人站着不动时，机器人不会左右换边。
+    this.shiftHold = Math.max(0, (this.shiftHold || 0) - step);
+    let waitShift = 0;
+    if (speedFactor === 0 && Math.abs(this.waitShiftNeed) > .02) {
+      if (this.shiftHold <= 0 || Math.sign(this.waitShiftNeed) === Math.sign(this.shiftSide || 0)) {
+        this.shiftSide = Math.sign(this.waitShiftNeed);
+        this.shiftHold = 2;
+      }
+    }
+    if (speedFactor === 0 && this.shiftHold > 0) waitShift = this.shiftSide * Math.min(.45, Math.abs(this.waitShiftNeed) + .1);
+    else if (speedFactor > .2) this.shiftHold = 0;
 
     this.setState(next, reason);
     return {
       state: this.state, speedFactor,
-      lateralShift: Math.abs(steerShift) > .05 ? steerShift
-        : avoidance ? avoidance * (this.state === 'AVOIDANCE' ? 1.15 : .22) : 0,
+      parkShift: waitShift,   // V3.1c：停车让位平移（app.js 在 WAIT/YIELD 状态也应用它）
+      lateralShift: waitShift || (bypassShift && (this.state === 'AVOIDANCE' || avoidance !== 0)
+        ? bypassShift * (this.state === 'AVOIDANCE' ? 1.15 : .22) : 0),
       ttc: this.last.ttc, distance: this.last.distance, reason, emergency,
       needsReplan: this.replanPending, collision, nearMiss,
       brakeDistance, targetSpeed: P.maxSpeed * speedFactor,

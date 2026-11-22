@@ -1176,10 +1176,15 @@ function buildScene(container) {
   }
   requestAnimationFrame(frame);
 
-  function placeRobot(model, point, state, distance) {
+  function placeRobot(model, point, state, distance, heading = null) {
     const next = floorPoint(point, 0);
-    const dx = next.x - model.group.position.x, dz = next.z - model.group.position.z;
-    if (Math.hypot(dx, dz) > .004) model.group.rotation.y = Math.atan2(-dx, -dz);
+    // V3.1：优先用仿真层给的「车头朝向」（原地转向/倒车时位移增量不再反映真实朝向），
+    // 没有才退回旧的「看位移方向」推断——那会在掉头时把机器人画成一个大弧。
+    if (Number.isFinite(heading)) model.group.rotation.y = -heading;
+    else {
+      const dx = next.x - model.group.position.x, dz = next.z - model.group.position.z;
+      if (Math.hypot(dx, dz) > .004) model.group.rotation.y = Math.atan2(-dx, -dz);
+    }
     model.group.position.x = next.x; model.group.position.z = next.z;
     model.group.userData.distance = distance || 0;
     if (state) setRobotState(state, model.id);
@@ -1192,7 +1197,7 @@ function buildScene(container) {
     setRobots(list = []) {
       for (const entry of list) {
         const model = robotById.get(entry.id || entry.robotId);
-        if (model) placeRobot(model, entry.position, entry.state, entry.distance || 0);
+        if (model) placeRobot(model, entry.position, entry.state, entry.distance || 0, entry.heading);
       }
     },
     setShelfStock,

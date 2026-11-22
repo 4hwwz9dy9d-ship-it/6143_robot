@@ -41,6 +41,7 @@ const state = {
   resolutions: new Map(), assistPending: null, assistedShelves: new Set(), awaitingPickup: false,
   order: null, scenario: 'normal', slot: '09', running: false, finished: false, blocked: false,
   fault: '', stage: 0, legDistance: 0, pauseLeft: 0, slowLeft: 0, elapsed: 0, lastFrame: 0,
+  heading: null, maneuver: null,
   bought: [], position: [...STORE.entrance], history: [[...STORE.entrance]], logs: [], detected: new Set(),
   plan: null, normalPlan: null, battery: 100, traveled: 0, events: new Set(), dynamicObstacles: [],
   closedEdges: new Set(), view: 'overview', mode: '3d', uiTick: 0,
@@ -142,15 +143,17 @@ function orderStats() {
 function alertProducts() { return [...productById.values()].filter(p => p.stock / p.capacity < .1); }
 const activeRobot = () => state.fleet.find(r => r.id === state.activeRobotId) || state.fleet[0];
 const robotById = id => state.fleet.find(r => r.id === id) || null;
-function syncRobotPose(position, status, orderId) {
+function syncRobotPose(position, status, orderId, heading = null) {
   const robot = activeRobot();
   robot.position = [...position];
+  // V3.1：车头朝向由仿真层显式给出（原地转向/倒车时，位移增量不再反映真实朝向）。
+  if (Number.isFinite(heading)) robot.heading = heading;
   if (status) robot.status = status;
   if (orderId !== undefined) robot.orderId = orderId;
 }
 function robotFleetSnapshot() {
   return state.fleet.map(robot => ({ id: robot.id, position: [...robot.position], state: robot.status,
-    distance: robot.distance, battery: robot.battery, orderId: robot.orderId }));
+    distance: robot.distance, battery: robot.battery, orderId: robot.orderId, heading: robot.heading }));
 }
 function syncShelfStock() {
   if (!scene3d?.setShelfStock) return;
@@ -1638,6 +1641,7 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false, opti
   const robot = activeRobot();
   const target = options.target || robot.waitSlot;
   const purpose = options.purpose || 'park';
+  state.maneuver = null;   // V3.1：新任务路段，清掉未完成的倒车机动（朝向保留，让机器人自然转过去）
   const activeLeg = state.plan?.legs[state.stage];
   const start = activeLeg && from === state.displayPosition
     ? nextNodeAhead(activeLeg, state.legDistance).point
@@ -1712,13 +1716,14 @@ function stepReturn(dt) {
     if (leg.waitLeft === 0) log('店外整备完成：机器人沿外侧通道从入口方向返回充电桩。');
     return true;
   }
-  const travelledStep = step * BASE_SPEED * (result.speedFactor ?? 1);
-  leg.distance = Math.min(leg.length, leg.distance + travelledStep);
-  state.position = positionOnLeg(leg, leg.distance);
+  // V3.1：返航同样用统一的运动模型（原地转/倒车，不画弧）。
+  const motion = advanceWithHeading(leg, leg.distance, step, result.speedFactor ?? 1, '返航中');
+  leg.distance = motion.at;
+  state.position = motion.point;
   state.displayPosition = [...state.position];
   state.inertialVelocity = [(state.position[0] - previous[0]) / step, (state.position[1] - previous[1]) / step];
   robot.distance += dist(previous, state.position);
-  syncRobotPose(state.displayPosition, 'RETURNING', null);
+  syncRobotPose(state.displayPosition, 'RETURNING', null, state.heading);
   scene3d?.setRobots(robotFleetSnapshot());
   if (++state.uiTick % 6 === 0) { drawHistory(); renderPedestrianPanel(); }
   if (leg.distance >= leg.length - .001) {
@@ -1796,6 +1801,8 @@ function resetPlayback(preserveSafety = false) {
   state.shortage = null; state.resolutions = new Map(); state.assistPending = null;
   state.assistedShelves = new Set(); state.blocked = false; state.fault = preserveSafety ? fault : '';
   state.stage = 0; state.legDistance = 0; state.pauseLeft = 0; state.slowLeft = 0;
+  // V3.1：重置运动模型——朝向未知（到首个路段再对齐）、无倒车余量。
+  state.heading = null; state.maneuver = null;
   const waitSlot = activeRobot().waitSlot;
   state.elapsed = 0; state.lastFrame = 0; state.bought = [];
   state.position = [...waitSlot]; state.displayPosition = [...waitSlot];
@@ -2226,6 +2233,63 @@ function legDirection(leg, at) {
   }
   return [1, 0];
 }
+/* V3.1 运动模型：AMR 是差速底盘，可以原地转、可以倒车——不需要「画半弧」掉头。
+ *  朝向偏差 ≤100°：边走边转（小弧线，过 90° 路口依然顺滑）；
+ *  100°–150°：原地转向（不平移），转到位再走；
+ *  >150°（掉头/改道反向）：两阶段机动——先保持车头朝向、让车尾沿新路线退约 1 米
+ *  （state.maneuver.reverse，即真实倒车姿态），再原地转向新路线（spin），全程不画大弧。 */
+const MOTION = Object.freeze({ arcTurn: 1.75, spinTurn: 2.6, spinRate: 2.4, reverseRatio: .55, reverseMax: 6 });
+const angleWrap = a => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+/** 统一的一步推进：输入当前 leg 与已走距离，返回 { at, point }；内部维护 state.heading / state.maneuver。 */
+function advanceWithHeading(leg, at, step, speedFactor, label = '') {
+  const direction = legDirection(leg, at);
+  const desiredHeading = Math.atan2(direction[0], direction[1]);
+  if (!Number.isFinite(state.heading)) state.heading = desiredHeading;
+  const err = angleWrap(desiredHeading - state.heading);
+  const base = step * BASE_SPEED * speedFactor;
+
+  if (state.maneuver) {
+    const m = state.maneuver;
+    if (m.phase === 'reverse') {
+      if (speedFactor <= .05) return { at, point: positionOnLeg(leg, at), moved: false };
+      // 倒车 = 保持原车头朝向不动，让车尾沿着新路线走（真实 AMR 的倒车姿态）。
+      // 观感：机器人先停住，车尾朝新方向退让出转身空间，再原地掉头。
+      const back = Math.min(m.left, base * MOTION.reverseRatio);
+      at = Math.min(leg.length, at + back);
+      m.left -= back;
+      if (m.left <= 1e-4) { m.phase = 'spin'; log('倒车完成：原地转向新路线后继续任务。'); }
+      return { at, point: positionOnLeg(leg, at), moved: false };
+    }
+    // spin 阶段：原地转向当前路径方向，转到位（≤100°）后交回正常控制。
+    state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+    if (Math.abs(angleWrap(desiredHeading - state.heading)) <= MOTION.arcTurn) {
+      state.heading = angleWrap(state.heading);
+      state.maneuver = null;
+    }
+    return { at, point: positionOnLeg(leg, at), moved: false };
+  }
+  if (Math.abs(err) > MOTION.spinTurn) {
+    if (speedFactor > .05) {
+      // 掉头/改道反向：像真人倒车换方向，而不是贴着通道画一个大弧。
+      log(`${label}路线接近反向：先倒车约 1 米让出转身空间，再原地转向新路线。`);
+      state.maneuver = { phase: 'reverse', left: MOTION.reverseMax };
+      return { at, point: positionOnLeg(leg, at), moved: false };
+    }
+    // 前方被人堵住刹停：不盲倒（车身后方视角外），原地转向即可。
+    state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+    return { at, point: positionOnLeg(leg, at), moved: false };
+  }
+  if (Math.abs(err) > MOTION.arcTurn) {
+    // 大角度但非掉头：停下来原地转，比斜着切过去自然，也不会扫到旁边的人。
+    state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+    return { at, point: positionOnLeg(leg, at), moved: false };
+  }
+  // 正常行驶（含 90° 路口的顺滑小弧）。
+  state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+  at = Math.min(leg.length, at + base);
+  return { at, point: positionOnLeg(leg, at), moved: base > 1e-6 };
+}
 function publishPedestrians() {
   const list = state.pedSystem?.snapshot() || [];
   scene3d?.setPedestrians(list);
@@ -2289,11 +2353,14 @@ function stepSimulation(dt) {
   }
 
   // 3) 位移真正由行为状态决定；侧向避让仅在有净空时生效。
-  const stepLength = step * BASE_SPEED * result.speedFactor;
-  state.legDistance = Math.min(leg.length, state.legDistance + stepLength);
-  state.position = positionOnLeg(leg, state.legDistance);
-  const targetShift = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state) ? 0 : result.lateralShift;
-  state.lateralOffset += (targetShift - state.lateralOffset) * Math.min(1, step * 3.2);
+  //    V3.1：推进交给 advanceWithHeading——方向突变时原地转/倒车，不再画半弧。
+  const motion = advanceWithHeading(leg, state.legDistance, step, result.speedFactor, '配送中');
+  state.legDistance = motion.at;
+  state.position = motion.point;
+  // V3.1c：WAIT/YIELD 时应用「停车让位」平移（parkShift），其余停车状态仍归零。
+  const parkShift = result.parkShift || 0;
+  const targetShift = parkShift || (['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state) ? 0 : result.lateralShift);
+  state.lateralOffset += (targetShift - state.lateralOffset) * Math.min(1, step * 2.2);
   const perpendicular = [-direction[1], direction[0]];
   state.displayPosition = [
     state.position[0] + perpendicular[0] * state.lateralOffset,
@@ -2307,7 +2374,7 @@ function stepSimulation(dt) {
   // V2.4：把全局仿真电量同步到当前机器人，使舰队面板/调度打分/3D 显示都反映真实电量。
   active.battery = state.battery;
   active.distance += travelled;
-  syncRobotPose(state.displayPosition, robotState(), state.order?.id);
+  syncRobotPose(state.displayPosition, robotState(), state.order?.id, state.heading);
   if (state.battery < 15 && !state.events.has('lowBattery')) {
     state.events.add('lowBattery'); log('仿真电量低于 15%，操作员应安排充电。', 'warn');
   }
