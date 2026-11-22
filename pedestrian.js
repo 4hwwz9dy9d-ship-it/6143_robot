@@ -16,6 +16,13 @@ const lerpAngle = (a, b, t) => {
 const queueSpot = (lane, index) => lane.slots[lane.capacity - 1 - clamp(index, 0, lane.capacity - 1)];
 // 结账离店动线：从队首先侧向让出排队通道（不穿过仍在排队的人），再汇入 y=26 主通道走向出口。
 const exitLaneX = lane => (lane.x < STORE.checkout[0] ? lane.x + 6 : lane.x - 6);
+// V3.2：行人 id → [0,1) 的稳定散列（不消耗种子随机流，同一行人永远走同一条过门车道）。
+const doorLaneHash = id => {
+  const str = String(id ?? '');
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return ((h >>> 0) % 10000) / 10000;
+};
 
 // 参考图 6 套真实服装角色（店员绿马甲 / 米色衬衫 / 绿毛衣 / 藏青风衣 / 酒红开衫 / 灰夹克）
 export const PEDESTRIAN_TYPES = Object.freeze({
@@ -403,16 +410,40 @@ export class PedestrianSystem {
     this.metrics.maxQueue = Math.max(this.metrics.maxQueue, this.totalQueued());
   }
 
-  /** 付完款从队首侧向离开排队通道，再沿前场主通道走到右出口（不穿过仍在排队的人）。 */
-  exitAfterCheckout(person, lane) {
-    const sideX = exitLaneX(lane);
-    const front = queueSpot(lane, 0);
+  /**
+   * V3.2 离店动线：结完账（或被判定离店）的行人走「自己的过门车道」出门。
+   * 旧版所有人都汇到门中点 (170,26) 再向南折 90°，高峰期七八个人在门口挤成一坨
+   * 互相顶、谁都出不去。现在过门 y 在整个开门宽度内随机摊开（26±4 单位 ≈0.7 m），
+   * 到门前 x=164 就已切到自己的车道，直着穿门而出；出门后收敛到店外消失点。
+   */
+  beginExit(person, lane = null) {
+    // V3.2：车道偏移用「行人 id 散列」而不是共享种子随机数——随机流被消耗会让
+    // 后续所有行为（顾客类型/浏览时长/排队选择）整体移位，回归测试方差变大。
+    person.exitDoorY = 26 + (doorLaneHash(person.id) - .5) * 8;   // [22, 30]，推车顾客（半径上限 4.36）也留有余量
+    const doorY = person.exitDoorY;
     person.goal = [...STORE.outsideExit];
-    person.route = [[...front], [sideX, front[1]], [sideX, 26], [STORE.exit[0], 26], [STORE.exit[0], 20], [...STORE.outsideExit]];
-    person.routeIndex = 1;
+    if (lane) {
+      // 刚结完账：先侧向让出排队通道，再沿自己的车道 straight 穿门。
+      const sideX = exitLaneX(lane);
+      const front = queueSpot(lane, 0);
+      person.route = [
+        [...front], [sideX, front[1]], [sideX, doorY],
+        [STORE.exit[0] - 12, doorY], [STORE.exit[0] + 5, doorY], [...STORE.outsideExit],
+      ];
+      person.routeIndex = 1;
+      person.heading = Math.PI / 2;
+    } else {
+      // 闲置/兜底离店：导航到门前自己的车道口，然后直行出门。
+      this.sendTo(person, [STORE.exit[0] - 12, doorY], 'EXITING');
+      person.route.push([STORE.exit[0] + 5, doorY], [...STORE.outsideExit]);
+    }
     person.state = 'EXITING';
     person.timer = 0;
-    person.heading = Math.PI / 2;
+  }
+
+  /** 付完款从队首侧向离开排队通道，再沿前场主通道走到右出口（不穿过仍在排队的人）。 */
+  exitAfterCheckout(person, lane) {
+    this.beginExit(person, lane);
   }
 
   /** 收银台状态机：每次只服务一名队首顾客，服务时长由该顾客的件数决定。 */
@@ -464,7 +495,8 @@ export class PedestrianSystem {
 
   advance(person, dt, robot) {
     const type = PEDESTRIAN_TYPES[person.type];
-    const maxSpeed = type.speed * this.speedFactor / M;
+    // V3.2：离店的人步速 +18%——结完账就往外走、不再闲逛，门口排空更快。
+    const maxSpeed = type.speed * this.speedFactor / M * (person.state === 'EXITING' ? 1.18 : 1);
     let desired = [0, 0];
 
     if (['BROWSING', 'STOPPING'].includes(person.state)) {
@@ -501,7 +533,7 @@ export class PedestrianSystem {
       // 这里仅保留兜底计时，避免手动注入或失去队列归属的路人永久卡住。
       if (!person.lane || !this.lanes.some(l => l.queue.includes(person))) {
         person.timer = (person.timer || 0) - dt;
-        if (person.timer <= 0) this.sendTo(person, STORE.outsideExit, 'EXITING');
+        if (person.timer <= 0) this.beginExit(person);
       }
       person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
       this.move(person, dt, robot);
@@ -533,7 +565,7 @@ export class PedestrianSystem {
           const back = person.detourReturn || 'WALK_TO_SECTION';
           person.detourGoal = null; person.detourReturn = null;
           this.sendTo(person, goal, back === 'DETOUR' ? 'WALK_TO_SECTION' : back);
-        } else { this.sendTo(person, STORE.outsideExit, 'EXITING'); }
+        } else { this.beginExit(person); }
         target = null; break;
       }
       target = person.route[person.routeIndex];
@@ -550,7 +582,11 @@ export class PedestrianSystem {
       const d = Math.hypot(dx, dy);
       const minD = (person.radius + other.radius) / M + .35;
       if (d < minD && d > .0001) {
-        const push = (minD - d) / minD * maxSpeed * 1.35;
+        // V3.2：门口（x>158）两个都在离店的人互斥减弱——大家目标一致往外走，
+        // 全强度互斥会让门前的密集人流互相顶成结；1.35 → 0.75 保持不重叠即可。
+        const doorStream = person.state === 'EXITING' && other.state === 'EXITING'
+          && person.position[0] > 158 && other.position[0] > 158;
+        const push = (minD - d) / minD * maxSpeed * (doorStream ? .75 : 1.35);
         desired[0] += dx / d * push; desired[1] += dy / d * push;
       }
     }
