@@ -7,7 +7,8 @@ import { PedestrianSystem, PEDESTRIAN_TYPES, PEDESTRIAN_STATES } from './pedestr
 import { RobotBehavior, ROBOT_STATES, ROBOT_STATE_CN } from './robotBehavior.js';
 import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel } from './instacart.js';
 import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js';
-import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, hydrateOrder, addRestock, listRestocks, persistenceStatus } from './systemCore.js';
+import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
+import { BRAND_ASSETS, applyBrandAssets, updateBrandRobotImage } from './branding.js';
 
 const $ = id => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -46,10 +47,11 @@ const state = {
   displayPosition: [...STORE.entrance], lateralOffset: 0, inertialVelocity: [0, 0], lastLogic: [...STORE.entrance],
   pedMode: 'shopping', pedDensity: 'low', pedSpeed: 1, pedRunning: false,
   behavior: null, pedSystem: null, robotBrain: null, safetyEvents: [], lastCollisionAt: -1,
-  // V2：多机器人舰队 / 返航任务 / 持久化订单与补货记录
-  fleet: STORE.robotWaitSlots.map((slot, i) => ({ id: `AMR-${String(i + 1).padStart(2, '0')}`,
+  // V2.1：默认一台，后台可配置最多两台；每台独立泊位，互不重叠。
+  fleet: STORE.robotWaitSlots.slice(0, getRobotCount()).map((slot, i) => ({ id: `AMR-${String(i + 1).padStart(2, '0')}`,
     position: [...slot], waitSlot: [...slot], status: 'IDLE', battery: 100, distance: 0, orderId: null })),
   activeRobotId: 'AMR-01', returnLeg: null, returnReason: '', historyFilter: 'ALL', historySort: 'desc',
+  simSpeed: 1, // 仿真倍速 1/2/3/5：只缩放仿真时间，规则、检查与决策全部保持逐帧执行
 };
 const behaviorLabels = ROBOT_STATE_CN;
 const PED_STATE_CN = { ENTER_STORE: '进店', WALK_TO_SECTION: '前往货架', WALKING: '行走中', BROWSING: '选购停留',
@@ -455,18 +457,40 @@ function drawDestinations() {
   scene3d?.setPickups(stops.map(s => s.point), Math.min(state.stage, stops.length));
 }
 function drawCrowd() {
-  clear($('crowd'));
-  const counts = crowdSamples[state.slot];
-  shelves.forEach((s, i) => {
-    svg('rect', { x: s.xMin * 10, y: (STORE.height - s.yMax) * 10, width: (s.xMax - s.xMin) * 10, height: (s.yMax - s.yMin) * 10,
-      fill: counts[i] >= 5 ? '#e2734b' : counts[i] >= 3 ? '#e8a34a' : '#71b887', opacity: counts[i] >= 5 ? .32 : .17, rx: 5 }, $('crowd'));
-  });
+  clear($('crowd')); clear($('heatLayer')); clear($('pedDirectionLayer'));
   const crowd = state.pedSystem ? state.pedSystem.snapshot() : [];
+  // 人流热力：按真实行人位置统计各货区附近人数，与 3D 共用同一快照。
+  const liveCounts = shelves.map(s => crowd.filter(p => Math.hypot(p.x - s.point[0], p.y - s.point[1]) < 16).length);
+  shelves.forEach((s, i) => {
+    const n = liveCounts[i];
+    const color = n >= 5 ? '#e2734b' : n >= 3 ? '#e8a34a' : n > 0 ? '#71b887' : '#9db3ad';
+    svg('rect', { x: s.xMin * 10, y: (STORE.height - s.yMax) * 10, width: (s.xMax - s.xMin) * 10, height: (s.yMax - s.yMin) * 10,
+      fill: color, opacity: Math.min(.42, .08 + n * .05), rx: 5 }, $('heatLayer'));
+  });
   const shown = crowd.length ? crowd : [...peopleForScenario(state.scenario, state.slot), ...state.dynamicObstacles];
   for (const p of shown) {
     const point = p.point || [p.x, p.y];
+    if (p.x !== undefined) {
+      const heading = p.faceHeading ?? p.heading ?? 0;
+      const speed = Math.hypot(p.vx || 0, p.vy || 0);
+      const length = 12 + Math.min(22, speed * 18);
+      const dx = Math.sin(heading) * length, dy = -Math.cos(heading) * length;
+      svg('line', { x1: point[0] * 10, y1: (STORE.height - point[1]) * 10,
+        x2: point[0] * 10 + dx, y2: (STORE.height - point[1]) * 10 + dy,
+        class: `ped-direction ${p.state === 'BROWSING' ? 'is-browsing' : ''}` }, $('pedDirectionLayer'));
+    }
     svg('circle', { cx: point[0] * 10, cy: (STORE.height - point[1]) * 10, r: 12, class: 'crowd-halo' }, $('crowd'));
     svg('circle', { cx: point[0] * 10, cy: (STORE.height - point[1]) * 10, r: 6, class: 'crowd-person' }, $('crowd'));
+  }
+  const gateLayer = $('gateStatusLayer');
+  if (gateLayer) {
+    clear(gateLayer);
+    const entries = crowd.filter(p => p.state === 'ENTER_STORE').length;
+    const exits = crowd.filter(p => p.state === 'EXITING').length;
+    svg('rect', { x: 8 * 10 - 30, y: (STORE.height - 26) * 10 - 54, width: 120, height: 22, rx: 8, class: 'gate-status' }, gateLayer);
+    svg('text', { x: 8 * 10 + 28, y: (STORE.height - 26) * 10 - 38, class: 'gate-status-text' }, gateLayer).textContent = `入口 · 进店 ${entries}`;
+    svg('rect', { x: 170 * 10 - 90, y: (STORE.height - 26) * 10 - 54, width: 120, height: 22, rx: 8, class: 'gate-status' }, gateLayer);
+    svg('text', { x: 170 * 10 - 28, y: (STORE.height - 26) * 10 - 38, class: 'gate-status-text' }, gateLayer).textContent = `出口 · 离店 ${exits}`;
   }
   scene3d?.setScenario(state.scenario, state.slot);
   scene3d?.setPedestrians(crowd);
@@ -492,9 +516,19 @@ function drawHistory() {
 }
 function drawRobot() {
   clear($('robotLayer'));
-  const [x, y] = state.displayPosition;
-  svg('circle', { cx: x * 10, cy: (STORE.height - y) * 10, r: (PHYSICS.robot.radius / PHYSICS.metersPerUnit) * 10, class: 'robot-body' }, $('robotLayer'));
-  scene3d?.setRobot(state.displayPosition, robotState(), state.traveled / PHYSICS.metersPerUnit);
+  clear($('robotRouteLayer'));
+  // 所有在役机器人位置来自同一舰队状态；当前执行任务者用高亮描边区分。
+  for (const robot of state.fleet) {
+    const active = robot.id === state.activeRobotId;
+    const [x, y] = active ? state.displayPosition : robot.position;
+    const radius = (PHYSICS.robot.radius / PHYSICS.metersPerUnit) * 10;
+    svg('circle', { cx: x * 10, cy: (STORE.height - y) * 10, r: radius, class: active ? 'robot-body' : 'robot-body robot-body--idle' }, $('robotLayer'));
+    svg('text', { x: x * 10, y: (STORE.height - y) * 10 - radius - 6, class: 'robot-map-label' }, $('robotLayer')).textContent = robot.id;
+  }
+  if (state.returnLeg && state.returnLeg.points.length > 1) {
+    svg('path', { d: pathData(state.returnLeg.points), class: 'return-path' }, $('robotRouteLayer'));
+  }
+  scene3d?.setRobots(robotFleetSnapshot());
   const behaviour = state.behavior;
   scene3d?.setSafety(behaviour || {});
 }
@@ -833,18 +867,30 @@ function orderProgress() {
 }
 function sampledPath() { return state.history.filter((_, i) => i % 6 === 0 || i === state.history.length - 1).slice(-400).map(p => [...p]); }
 
-function beginReturn(reason, from = state.displayPosition) {
+function beginReturn(reason, from = state.displayPosition, viaExit = false) {
   const robot = activeRobot();
   const start = nearestNode(from);
   const fresh = planLeg(start, robot.waitSlot, state.scenario, state.slot);
   if (!fresh) { log(`${reason}：无法计算返回等待区的可行路径，机器人保持当前位置并请求人工介入。`, 'danger'); return false; }
-  const points = [from, ...fresh.points.slice(1)];
-  state.returnLeg = { points, lengths: points.slice(1).map((p, i) => dist(points[i], p)), length: fresh.length, distance: 0 };
+  let points = [from, ...fresh.points.slice(1)];
+  if (viaExit) {
+    // 完成任务后必须从右墙出口离开：出口 → 墙外服务通道 → 左入口 → 初始泊位。
+    // 外侧路径是真实坐标折线（不穿墙、不瞬移）；内外两段仍由 A* 计算。
+    const o = STORE.outsideReturn;
+    const toGate = planLeg(nearestNode(from), STORE.exit, state.scenario, state.slot);
+    const toBay = planLeg(STORE.entrance, robot.waitSlot, state.scenario, state.slot);
+    if (toGate && toBay) {
+      points = [from, ...toGate.points.slice(1), o.exitOuter, o.rightSouth, o.frontSouth,
+        o.entranceOuter, STORE.entrance, ...toBay.points.slice(1)];
+    } else log('外侧返回通道规划失败：改用店内 A* 路径返回泊位。', 'warn');
+  }
+  const lengths = points.slice(1).map((p, i) => dist(points[i], p));
+  state.returnLeg = { points, lengths, length: lengths.reduce((a, b) => a + b, 0), distance: 0 };
   state.returnReason = reason;
   state.running = true; state.lastFrame = 0; state.pauseLeft = 0;
   syncRobotPose(from, 'RETURNING', null);
   status('返回等待区', `${reason}：沿 A* 路径返回 ${robot.id} 泊位。`, 'MOVING');
-  log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) 沿真实路径返回等待区。`);
+  log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) ${viaExit ? '经右出口与外侧通道' : '沿店内真实路径'}返回等待区。`);
   scene3d?.setRobots(robotFleetSnapshot());
   renderAll(); return true;
 }
@@ -1094,7 +1140,7 @@ function confirmHandoff() {
   state.order = null; state.awaitingPickup = false; state.stockoutId = '';
   syncRobotPose(state.displayPosition, 'RETURNING', null);
   setText('orderMessage', `${finished.id} 已完成，机器人正在返回等待区。`);
-  beginReturn('配送完成', state.displayPosition);
+  beginReturn('配送完成', state.displayPosition, true);
   renderAll();
 }
 function cancelOrder(id) {
@@ -1287,12 +1333,20 @@ function stepSimulation(dt) {
   }
   return true;
 }
+/** 时间缩放核心：倍速只增加每个真实帧内的仿真子步数量，物理步长始终 ≤ 1/60 s。
+ *  因此高速下导航、避障、TTC、碰撞检测、状态机与库存规则全部按同一仿真时间逐帧执行。 */
+function scaledSubsteps(realDelta) {
+  const total = Math.min(realDelta, .05) * state.simSpeed;
+  const sub = 1 / 60;
+  return { count: Math.max(1, Math.ceil(total / sub)), step: Math.min(sub, total || sub) };
+}
 function animate(now) {
   if (!state.running) return;
   if (!state.lastFrame) state.lastFrame = now;
-  const delta = Math.min((now - state.lastFrame) / 1000, .08);
+  const delta = (now - state.lastFrame) / 1000;
   state.lastFrame = now;
-  stepSimulation(delta);
+  const { count, step } = scaledSubsteps(delta);
+  for (let i = 0; i < count && state.running; i++) stepSimulation(step);
   if (state.running) requestAnimationFrame(animate);
 }
 
@@ -1306,7 +1360,8 @@ function pedestrianLoop(now) {
   if (!pedLastFrame) { pedLastFrame = now; return; }
   const dt = Math.min((now - pedLastFrame) / 1000, .05);
   pedLastFrame = now;
-  ped.update(dt, { position: state.displayPosition, velocity: [0, 0] });
+  const { count, step } = scaledSubsteps(dt);
+  for (let i = 0; i < count; i++) ped.update(step, { position: state.displayPosition, velocity: [0, 0] });
   publishPedestrians();
   if (++pedLoopTick % 6 === 0) renderPedestrianPanel();
 }
@@ -1495,6 +1550,9 @@ function bindEvents() {
   $('pedPauseBtn')?.addEventListener('click', () => { state.pedSystem.pause(); state.pedRunning = false; log('行人仿真已暂停，行人保持当前位置。'); renderPedestrianPanel(); });
   $('pedResetBtn')?.addEventListener('click', () => applyPedPreset('normal'));
   $('pedDensitySelect')?.addEventListener('change', event => { state.pedDensity = event.target.value; state.pedSystem.setDensity(state.pedDensity); renderPedestrianPanel(); });
+  document.querySelectorAll('[data-sim-speed]').forEach(btn =>
+    btn.addEventListener('click', () => setSimSpeed(btn.dataset.simSpeed)));
+  $('robotCountSelect')?.addEventListener('change', event => setRobotCount(event.target.value));
   $('pedWalkSpeedSelect')?.addEventListener('change', event => { state.pedSpeed = Number(event.target.value); state.pedSystem.setSpeedFactor(state.pedSpeed); renderPedestrianPanel(); });
   $('pedModeSelect')?.addEventListener('change', event => { state.pedMode = event.target.value; state.pedSystem.setMode(state.pedMode); renderPedestrianPanel(); });
   document.querySelectorAll('[data-ped-scenario]').forEach(button => button.addEventListener('click', () => applyPedPreset(button.dataset.pedScenario)));
@@ -1527,6 +1585,29 @@ function applyPedPreset(name) {
   log(`行人预设场景已切换为${({ normal: '正常购物', crossing: '行人横穿', narrow: '窄道会车', peak: '高峰拥堵' })[name] || name}（规则驱动仿真）。`);
   renderPedestrianPanel();
 }
+function setSimSpeed(value) {
+  const speed = [1, 2, 3, 5].includes(Number(value)) ? Number(value) : 1;
+  state.simSpeed = speed;
+  setText('simSpeedBadge', `${speed}×`);
+  document.querySelectorAll('[data-sim-speed]').forEach(btn =>
+    btn.setAttribute('aria-pressed', String(Number(btn.dataset.simSpeed) === speed)));
+  log(`演示速度已设为 ${speed}×：仅缩放仿真时间，路径规划/避障/TTC/订单与库存规则不变。`);
+}
+function setRobotCount(value) {
+  const count = Math.max(1, Math.min(2, Number(value) || 1));
+  if (state.running || state.returnLeg) { setText('robotCountStatus', '请先暂停当前履约再修改机器人数量'); return; }
+  setSetting('robotCount', count);
+  state.fleet = STORE.robotWaitSlots.slice(0, count).map((slot, i) => ({ id: `AMR-${String(i + 1).padStart(2, '0')}`,
+    position: [...slot], waitSlot: [...slot], status: 'IDLE', battery: 100, distance: 0, orderId: null }));
+  state.activeRobotId = state.fleet[0].id;
+  scene3d?.setFleetCount(count);
+  const select = $('robotCountSelect'); if (select) select.value = String(count);
+  setText('robotCountStatus', `配置已持久化 · 当前 ${count} 台`);
+  setText('fleetBadge', `仿真 ${state.fleet.map(r => r.id).join(' / ')} · ${count} 台`);
+  updateBrandRobotImage(document, 0);
+  resetPlayback();
+  log(`机器人数量已配置为 ${count} 台，泊位互不重叠；刷新页面后仍保留。`);
+}
 function setCamera(mode) {
   scene3d.setCameraMode(mode);
   const views = ['full', 'iso', 'top', 'follow', 'close'];
@@ -1537,6 +1618,7 @@ function setCamera(mode) {
 window.__NEXUS = Object.freeze({
   state,
   applyPedPreset,
+  setSimSpeed, setRobotCount,
   setPedDensity: value => state.pedSystem?.setDensity(value),
   setPedMode: value => state.pedSystem?.setMode(value),
   injectCrossing: (direction, options) => state.pedSystem?.injectCrossing(state.displayPosition, direction || [1, 0], options),
@@ -1576,7 +1658,9 @@ window.__NEXUS = Object.freeze({
 });
 
 /* --------------------------------------------------------------------- init */
+applyBrandAssets(document);
 scene3d = createStoreScene($('scene3d'), $('storeMap'));
+scene3d.setFleetCount(state.fleet.length);
 state.robotBrain = new RobotBehavior();
 state.pedSystem = new PedestrianSystem({ nodes });
 scene3d.setPickHandler(info => {
@@ -1601,6 +1685,11 @@ if ($('historySort')) $('historySort').value = state.historySort;
 drawBaseMap(); drawFixtures(); populateFilters(); renderCatalogue(); renderCart();
 renderInventory(); renderRecommendations(); renderCrowd(); resetPlayback(); bindEvents();
 initRestockControls(); renderHistory(); renderRestocks();
+if ($('robotCountSelect')) $('robotCountSelect').value = String(state.fleet.length);
+setText('robotCountStatus', `配置已持久化 · 当前 ${state.fleet.length} 台`);
+setText('fleetBadge', `仿真 ${state.fleet.map(r => r.id).join(' / ')} · ${state.fleet.length} 台`);
+setSimSpeed(1);
+applyBrandAssets(document);
 scene3d.setActive(false);
 log('NEXUS RETAIL 仿真已初始化，正在加载真实商品目录……');
 

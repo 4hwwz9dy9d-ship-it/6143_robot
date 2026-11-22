@@ -20,7 +20,7 @@
 <body>
 <div class="app-shell" id="appShell">
   <aside class="app-navigation" aria-label="工作区导航">
-    <div class="navigation-brand"><span class="brand-mark">N</span><span class="brand-title">NEXUS RETAIL<small>自主零售智能平台</small></span></div>
+    <div class="navigation-brand"><img class="brand-mark-img" data-brand="logoMark" alt="超市机器人 INT6143 第三组"><span class="brand-title">NEXUS RETAIL<small>自主零售智能平台</small></span></div>
     <p class="navigation-label">工作区 / WORKSPACE</p>
     <nav class="view-navigation" aria-label="主导航">
       <button type="button" data-view="overview" class="is-active"><span class="nav-icon">◈</span><span>总览<small>OVERVIEW</small></span></button>
@@ -68,26 +68,9 @@
             <button id="btnOverviewPresentation" class="btn btn-ghost btn-lg" type="button">演示模式</button>
           </div>
         </div>
-        <div class="hero-visual" aria-hidden="true">
-          <svg viewBox="0 0 420 290" role="img">
-            <defs><linearGradient id="heroFloor" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#17394a"/><stop offset="1" stop-color="#101c28"/></linearGradient></defs>
-            <path d="M40 210 L210 270 L390 205 L218 148 Z" fill="url(#heroFloor)" stroke="#356073" stroke-width="1.5"/>
-            <g opacity=".92">
-              <path d="M82 186 L150 211 L150 226 L82 201 Z" fill="#28B9A4" opacity=".55"/>
-              <path d="M158 211 L226 238 L226 253 L158 226 Z" fill="#E8A34A" opacity=".5"/>
-              <path d="M234 237 L306 208 L306 222 L234 251 Z" fill="#3D7BD6" opacity=".48"/>
-              <path d="M96 158 L166 184 L166 198 L96 172 Z" fill="#20A995" opacity=".48"/>
-              <path d="M174 184 L242 210 L242 224 L174 198 Z" fill="#20A995" opacity=".4"/>
-              <path d="M250 209 L318 181 L318 195 L250 224 Z" fill="#E8A34A" opacity=".38"/>
-            </g>
-            <path d="M210 258 C190 244 176 230 176 210 C176 190 192 176 212 176 C233 176 248 191 248 211 C248 232 231 247 210 258 Z" fill="#eaf3f2" opacity=".13" stroke="#28B9A4" stroke-width="1"/>
-            <path d="M204 248 L204 188 L220 188 L220 248 Z" fill="#f4f8f7"/>
-            <rect x="200" y="183" width="28" height="12" rx="4" fill="#28B9A4" opacity=".85"/>
-            <circle cx="214" cy="248" r="8" fill="#101c28" stroke="#28B9A4" stroke-width="2"/>
-            <circle cx="214" cy="248" r="16" fill="none" stroke="#28B9A4" stroke-opacity=".3"/>
-            <text x="214" y="92" text-anchor="middle" fill="#8fded0" font-size="10" font-weight="700" letter-spacing="3">实时仿真 / LIVE SIMULATION</text>
-            <text x="214" y="112" text-anchor="middle" fill="#eaf6f4" font-size="20" font-weight="800">NEXUS / AMR-01</text>
-          </svg>
+        <div class="hero-visual brand-visual" aria-hidden="true">
+          <img id="heroRobotImg" data-brand="robotFront" alt="NEXUS AMR 机器人设计渲染图">
+          <div class="brand-visual-tags"><span>自主移动机器人</span><span>数字孪生仿真</span><span>INT6143 · GROUP 3</span></div>
         </div>
       </div>
 
@@ -115,12 +98,12 @@
           <rect x="8" y="8" width="644" height="364" rx="14" fill="#f7faf8" stroke="#dfe8e3"/>
           <g id="previewZones"></g>
           <g id="previewRoute"></g>
-          <text x="28" y="352" font-size="9" fill="#84919b">示意平面图 · 140 × 90 地图单位 · 区域来自 storeData.js</text>
+          <text x="28" y="352" font-size="9" fill="#84919b">数字孪生平面图 · 176 × 141 地图单位 · 与 3D 共用 STORE 坐标</text>
         </svg>
         <div class="preview-side">
           <p class="section-kicker">3D SUPERMARKET PREVIEW</p>
           <h3>走进超市的十五分钟</h3>
-          <p>不规则货架、靠墙冷柜、果蔬展示岛与三台收银台，与导航图共用同一套坐标系统。</p>
+          <p>18 个不规则货架、靠墙冷柜、果蔬展示岛与 4 条收银通道，与 3D 和导航图共用同一套坐标系统。</p>
           <div class="zone-legend"><span><i style="background:#20A995"></i>生鲜</span><span><i style="background:#3D7BD6"></i>冷藏</span><span><i style="background:#E8A34A"></i>促销</span><span><i style="background:#84919B"></i>日用</span></div>
           <button id="btnPreviewOpen" class="btn btn-primary btn-block" type="button">打开交互场景</button>
         </div>
@@ -249,12 +232,14 @@
               <svg id="storeMap" class="fallback-map" viewBox="-28 -22 1816 1464" role="img" aria-label="含货架、障碍物与规划路径的 2D 导航地图" aria-hidden="true" preserveAspectRatio="xMidYMid meet">
                 <defs>
                   <pattern id="floorGrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#e5ece8" stroke-width="1"/></pattern>
+                  <marker id="pedArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#d98b56"/></marker>
                 </defs>
                 <rect x="0" y="0" width="1400" height="900" rx="14" class="store-floor"/>
                 <rect x="0" y="0" width="1400" height="900" rx="14" fill="url(#floorGrid)"/>
-                <g id="aisles"></g><g id="fixtures"></g><g id="shelves"></g>
+                <g id="heatLayer"></g><g id="aisles"></g><g id="fixtures"></g><g id="shelves"></g>
                 <g id="comparisonRoute"></g><g id="plannedRoute"></g><g id="traveledRoute"></g>
-                <g id="crowd"></g><g id="destinations"></g><g id="robotLayer"></g>
+                <g id="crowd"></g><g id="destinations"></g><g id="pedDirectionLayer"></g>
+                <g id="robotRouteLayer"></g><g id="robotLayer"></g><g id="gateStatusLayer"></g>
               </svg>
               <div class="scene-overlay">
                 <div class="scene-overlay-top"><div><span class="scene-chip scene-chip--teal" id="mapSituation">通道畅通 · 等待订单</span></div><div><button id="cameraResetBtn" type="button">重置视角</button></div></div>
@@ -267,6 +252,15 @@
             <div class="playbar">
               <button id="playBtn" class="btn btn-teal" type="button"><span id="playIcon">▶</span><span id="playLabel">开始履约</span></button>
               <button id="resetBtn" class="btn btn-secondary" type="button">↺ 重新开始</button>
+              <div class="speed-control" role="group" aria-label="演示速度">
+                <span class="speed-label">演示速度 <b id="simSpeedBadge">1×</b></span>
+                <div class="segmented speed-segmented">
+                  <button type="button" data-sim-speed="1" aria-pressed="true" title="正常速度">1×</button>
+                  <button type="button" data-sim-speed="2" aria-pressed="false" title="快速">2×</button>
+                  <button type="button" data-sim-speed="3" aria-pressed="false" title="加速">3×</button>
+                  <button type="button" data-sim-speed="5" aria-pressed="false" title="极速演示">5×</button>
+                </div>
+              </div>
               <div style="flex:1;min-width:160px"><div class="progress-head"><span id="progressText">等待已支付订单</span><span id="progressPercent">0%</span></div><div class="progress-track"><div id="progressFill" class="progress-fill"></div></div></div>
             </div>
           </div>
@@ -372,10 +366,15 @@
 
     <!-- ======================== 机器人控制 ======================== -->
     <section class="view-panel" id="view-robot" aria-label="机器人控制中心" hidden>
-      <div class="section-title"><div><p class="section-kicker">ROBOT CONTROL CENTER</p><h2>机器人状态与任务执行</h2></div><span class="badge">仿真 AMR-01</span></div>
+      <div class="section-title"><div><p class="section-kicker">ROBOT CONTROL CENTER</p><h2>机器人状态与任务执行</h2></div><span class="badge" id="fleetBadge">仿真 AMR-01 · 1 台</span></div>
+      <div class="card card-pad" style="margin-bottom:16px">
+        <div class="card-head"><div><p class="section-kicker">FLEET CONFIGURATION</p><h3>后台机器人数量配置</h3><p>默认 1 台；可开启第二台独立机器人，两台使用不同泊位且不会重叠。修改后将在下一单生效。</p></div></div>
+        <div class="btn-row"><label class="field" style="min-width:240px"><span class="field-label"> simult. ROBOTS / 运行数量</span><select id="robotCountSelect"><option value="1">1 台（默认）</option><option value="2">2 台</option></select></label><span class="pill pill--info" id="robotCountStatus">配置已持久化 · 当前 1 台</span></div>
+      </div>
       <div class="robot-hero">
         <div class="robot-portrait" aria-hidden="true">
-          <svg viewBox="0 0 140 140"><rect x="34" y="26" width="72" height="64" rx="15" fill="#f2f7f6" stroke="#8ed6c8" stroke-width="2"/><rect x="42" y="34" width="56" height="20" rx="6" fill="#172C40"/><rect x="48" y="39" width="44" height="10" rx="3" fill="#28B9A4" opacity=".85"/><rect x="30" y="88" width="80" height="19" rx="8" fill="#3c5364"/><circle cx="49" cy="108" r="9" fill="#172C40" stroke="#28B9A4" stroke-width="2"/><circle cx="91" cy="108" r="9" fill="#172C40" stroke="#28B9A4" stroke-width="2"/><circle cx="70" cy="22" r="5" fill="#28B9A4"/></svg>
+          <img id="robotPortraitImg" data-brand="robotFront" alt="AMR 机器人">
+          <span id="robotPortraitTag" class="robot-portrait-tag">AMR-01</span>
         </div>
         <div><p class="section-kicker" style="color:#68c8bb">AMR-01 · 自主移动机器人</p><h2 id="robotStatusText">待机 · 满电 · 等待订单</h2><p id="robotTaskText">当前无任务。请在订单管理中提交订单，然后在 3D 超市页面点击播放。</p><div class="btn-row"><span class="pill pill--dark" id="robotModeText">模式：待命</span><span class="pill pill--dark" id="robotStateBadge">状态：待机</span></div></div>
       </div>

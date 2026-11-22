@@ -5,7 +5,23 @@ const STORAGE_KEY = 'nexus-retail-v2';
 const VERSION = 2;
 
 const clone = value => JSON.parse(JSON.stringify(value));
-const empty = () => ({ version: VERSION, orderCounter: 0, orders: [], restocks: [], inventory: {} });
+const empty = () => ({ version: VERSION, orderCounter: 0, orders: [], restocks: [], inventory: {}, settings: {} });
+
+// 后台配置：机器人数量默认 1，最多 2 台。与订单/库存共用同一持久化数据源。
+const DEFAULT_SETTINGS = Object.freeze({ robotCount: 1 });
+export function getSetting(key, fallback) {
+  const value = data.settings?.[key];
+  return value === undefined ? (DEFAULT_SETTINGS[key] ?? fallback) : value;
+}
+export function setSetting(key, value) {
+  data.settings = data.settings || {};
+  data.settings[key] = value;
+  persist();
+  return value;
+}
+export function getRobotCount() {
+  return Math.max(1, Math.min(2, Number(getSetting('robotCount', 1)) || 1));
+}
 
 let storageOk = true;
 let data = empty();
@@ -112,5 +128,6 @@ export function addRestock(record) {
 export function listRestocks() { return clone(data.restocks); }
 
 export function coreSnapshot() {
-  return { version: VERSION, persistence: persistenceStatus(), orders: listOrders(), restocks: listRestocks(), inventory: { ...data.inventory }, orderCounter: data.orderCounter };
+  return { version: VERSION, persistence: persistenceStatus(), orders: listOrders(), restocks: listRestocks(),
+    inventory: { ...data.inventory }, orderCounter: data.orderCounter, settings: { ...data.settings }, robotCount: getRobotCount() };
 }

@@ -47,13 +47,20 @@ export const STORE = {
     slots: queueSlots(x), capacity: 4,
     robotWait: [x - 5, 26],
   })),
-  // 行人入口生成点（沿入口通道错开，全部在可通行区域内）
-  spawnPoints: [[8, 26], [10, 34], [8, 44], [12, 26], [16, 44], [8, 62]],
-  // 机器人等待区：入口左侧三个独立泊位，任务完成后沿 A* 返回。
-  robotWaitSlots: Object.freeze([[13, 26], [13, 44], [13, 62]]),
-  robotWait: [13, 26],
+  // V2.1：唯一入口生成点。所有行人只能从左墙开口(入口)进入，不再从店内凭空出现。
+  spawnPoints: Object.freeze([[8, 26], [10, 26], [6, 26], [12, 26], [8, 24], [8, 28]]),
+  // 机器人等待区：入口前方左下侧的独立泊位（x=24/34,y=8），完全避开入口→主通道。
+  // 默认只启用 1 台（AMR-01）；后台可配置第二台（AMR-02），两泊位相距 1.7 m 不重叠。
+  robotWaitSlots: Object.freeze([[24, 8], [34, 8]]),
+  robotWait: [24, 8],
   exitLane: [170, 20],
   outsideExit: [182, 26],
+  // 机器人从右墙出口离开后，经场景外侧服务通道返回左入口（不穿墙、不瞬移）。
+  // 外侧通道位于墙体之外，3D 场景有对应铺装地面；仅机器人使用，行人导航图不含这些边。
+  outsideReturn: Object.freeze({
+    exitOuter: [182, 26], rightSouth: [182, -8],
+    frontSouth: [-8, -8], entranceOuter: [-8, 26],
+  }),
 };
 
 export const CAMERA = Object.freeze({
@@ -67,24 +74,31 @@ export const CAMERA = Object.freeze({
 export const nodeKey = p => p.join(',');
 
 // 机器人与行人共用同一张通道图，避免两套坐标/连通性。
-export function buildNavNodes() {
+export function buildNavNodes({ includeOutside = false } = {}) {
   const nodes = new Map();
   const edge = (a, b) => {
     for (const p of [a, b]) if (!nodes.has(nodeKey(p))) nodes.set(nodeKey(p), { point: p, neighbors: [] });
     nodes.get(nodeKey(a)).neighbors.push(nodeKey(b));
     nodes.get(nodeKey(b)).neighbors.push(nodeKey(a));
   };
-  const bottomXs = [...new Set([STORE.entrance[0], STORE.robotWaitSlots[0][0], ...STORE.aisleXs,
+  const bottomXs = [...new Set([STORE.entrance[0], ...STORE.robotWaitSlots.map(s => s[0]), ...STORE.aisleXs,
     ...LANE_XS, STORE.checkout[0], STORE.exit[0]])].sort((a, b) => a - b);
   for (let i = 1; i < bottomXs.length; i++) edge([bottomXs[i - 1], CROSS_YS[0]], [bottomXs[i], CROSS_YS[0]]);
   for (const y of CROSS_YS.slice(1)) for (let i = 1; i < AISLE_XS.length; i++) edge([AISLE_XS[i - 1], y], [AISLE_XS[i], y]);
   for (const x of AISLE_XS) for (let i = 1; i < VERTICAL_YS.length; i++) edge([x, VERTICAL_YS[i - 1]], [x, VERTICAL_YS[i]]);
-  // 等待泊位支线：与相邻主通道相连；行人也可经此通行，但泊位专供机器人待命。
-  for (const slot of STORE.robotWaitSlots) edge(slot, [AISLE_XS[0], slot[1] === 26 ? 26 : slot[1]]);
+  // 等待泊位支线：泊位在前场 y=8，纵向连到 y=26 主通道，不占入口水平通道。
+  for (const slot of STORE.robotWaitSlots) edge(slot, [slot[0], CROSS_YS[0]]);
   // 收银队列接到前场主通道，保证购物 → 结账 → 右出口的连通性。
   for (const lane of STORE.checkoutLanes) edge(lane.slots[0], [lane.x, 26]);
   edge(STORE.exitLane, STORE.exit);
   edge(STORE.exit, STORE.outsideExit);
+  if (includeOutside) {
+    const o = STORE.outsideReturn;
+    edge(o.exitOuter, o.rightSouth);
+    edge(o.rightSouth, o.frontSouth);
+    edge(o.frontSouth, o.entranceOuter);
+    edge(o.entranceOuter, STORE.entrance);
+  }
   return nodes;
 }
 
@@ -155,7 +169,7 @@ export const layoutFixtures = [
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `收银台 ${String(i + 1).padStart(2, '0')}`, x: lane.x, y: 6, w: 7, h: 4, kind: 'checkout' })),
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `排队区 ${i + 1}`, x: lane.x, y: 16, w: 4, h: 15, kind: 'queue' })),
   ...STORE.robotWaitSlots.map((p, i) => ({ label: `机器人泊位 ${i + 1}`, x: p[0], y: p[1], w: 8, h: 7, kind: 'robotwait' })),
-  { label: '购物车停放区', x: 24,  y: 8,  w: 14, h: 6,  kind: 'cart' },
+  { label: '购物车停放区', x: 10,  y: 9,  w: 11, h: 7,  kind: 'cart' },
   { label: '入口', x: 8,   y: 20, w: 10, h: 6, kind: 'entrance' },
   { label: '出口', x: 170, y: 20, w: 10, h: 6, kind: 'exit' },
 ];

@@ -22,8 +22,10 @@ Teaching window: until 2026-12-31 23:59:59 Beijing time. After that the schedule
 | 3D Supermarket | 29.9 × 24.0 m store, 18 offset irregular zones (gondolas/glass-door coolers/produce islands/promo islands), 4 checkout lanes with independent queues, premium AMR, six reference-based articulated pedestrian characters, five camera modes (full/iso/top/follow/close), 2D/3D switch |
 | Pedestrian Control Center | Five pedestrian types, autonomous shopping behaviour, density/speed/mode controls, four preset scenarios, live safety telemetry |
 | Human-Aware Navigation | Behaviour state machine, time-to-collision prediction, velocity-aware safety distance, predictive yielding, local avoidance and A* replan requests |
-| Fleet & Lifecycle | 3-robot fleet with independent wait bays, distance/battery-based dispatch, full task lifecycle (accept → pick → deliver → **A* return to bay**), **cancel-in-delivery with safe re-planned return** |
-| Robot Control | AMR status, battery/load, navigation log, destination, fault drills |
+| Fleet & Lifecycle | **1 robot by default, configurable to 2** (persisted, independent bays). Distance/battery-based dispatch, full task lifecycle (accept → pick → deliver → **leave via the right exit → exterior service lane → re-enter → A* return to initial bay**), **cancel-in-delivery with safe re-planned return** |
+| Robot Control | AMR status, battery/load, navigation log, destination, fault drills, **backend fleet-size configuration** |
+| Demo Speed | **1× / 2× / 3× / 5×** simulation-time scaling with fixed ≤1/60 s physics substeps; all planning, avoidance, TTC, state machines and inventory rules unchanged |
+| Digital-Twin Map | Live heatmap, pedestrian heading arrows, full fleet positions, return path, gate status — same coordinates and snapshots as 3D |
 | Route Optimization | Held–Karp visit order, A* segment costs, original/current comparison, cost benchmark |
 | Simulation Center | Pedestrian, cart, aisle closure, overload, congestion and navigation-failure events |
 | Research | Real data / calculated / simulated / assumed classification, algorithm and methodology notes in Chinese |
@@ -33,9 +35,10 @@ Teaching window: until 2026-12-31 23:59:59 Beijing time. After that the schedule
 
 - Vanilla JavaScript ES modules, no build step for the front end.
 - Vendored Three.js + OrbitControls in `vendor/` (no paid third-party service).
-- Procedural geometry and canvas textures — no external GLTF/GLB or image assets.
+- Procedural geometry and canvas textures for the 3D scene — no external GLTF/GLB. User-supplied robot renders and logo are used only in 2D UI panels via the single replacement interface `branding.js` (`assets/brand/`).
 - `pedestrian.js` owns pedestrian behaviour; `robotBehavior.js` owns local human-aware decisions. A* in `app.js` remains the global planner.
-- `systemCore.js` is the single persisted data layer (orders / inventory / restock log) backed by `localStorage` with in-memory fallback.
+- `systemCore.js` is the single persisted data layer (orders / inventory / restock log / fleet setting) backed by `localStorage` with in-memory fallback.
+- `scaledSubsteps()` in `app.js` implements demo speed by increasing the number of fixed small physics substeps per rendered frame, never by teleporting or disabling collision checks.
 - Static JSON in `public/data/` produced by `scripts/build_data.py`.
 - GitHub Pages deployment through `.github/workflows/expire-pages.yml`.
 

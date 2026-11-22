@@ -111,6 +111,10 @@ export class PedestrianSystem {
     return {
       point: [s.point[0] + side * (1.4 + this.random() * .8), s.point[1] + (this.random() - .5) * 2.4],
       shelfId: s.id,
+      // 面向货架：取货点相对货架中心的方向（地图坐标），3D 用它旋转人物正面。
+      faceHeading: Math.atan2((s.xMin + s.xMax) / 2 - (s.point[0] + side * 1.8),
+        (s.yMin + s.yMax) / 2 - s.point[1]),
+      pickTier: Math.floor(this.random() * 3),
     };
   }
 
@@ -304,6 +308,9 @@ export class PedestrianSystem {
     if (['BROWSING', 'STOPPING'].includes(person.state)) {
       person.timer -= dt;
       person.phase += dt * .6;
+      if (person.faceHeading !== undefined) {
+        person.heading = lerpAngle(person.heading, person.faceHeading, Math.min(1, dt * 6));
+      }
       if (person.timer <= 0) {
         if (person.sections >= (this.mode === 'shopping' ? 3 : 2)) this.assignCheckout(person);
         else { person.sections++; const s = this.pickSection(); person.section = s; this.sendTo(person, s.point, 'WALK_TO_SECTION'); }
@@ -336,7 +343,12 @@ export class PedestrianSystem {
         } else if (person.state === 'ENTER_STORE' || person.state === 'WALK_TO_SECTION') {
           person.state = 'BROWSING';
           person.timer = type.browse[0] + this.random() * (type.browse[1] - type.browse[0]);
-        } else { this.sendTo(person, STORE.exitLane, 'EXITING'); }
+          // 到达货架后锁定面向货架的朝向与取货层，不再沿用行走方向。
+          if (person.section) {
+            person.faceHeading = person.section.faceHeading;
+            person.pickTier = person.section.pickTier;
+          }
+        } else { this.sendTo(person, STORE.outsideExit, 'EXITING'); }
         target = null; break;
       }
       target = person.route[person.routeIndex];
@@ -401,22 +413,24 @@ export class PedestrianSystem {
   }
 
   move(person, dt) {
-    const inOpeningY = Math.abs(person.position[1] - STORE.openings.entrance.y) <= STORE.openings.entrance.halfHeight;
-    const minX = person.state === 'EXITING' && person.position[0] > STORE.width - 10 ? 0 : inOpeningY ? 0 : 4;
-    const maxX = person.state === 'EXITING' || person.state === 'ENTER_STORE' ? STORE.width + 8 : STORE.width - 4;
+    // V2.1 硬约束：左墙只在入口开口可穿越，右墙只在出口开口可穿越。
+    const inEntryY = Math.abs(person.position[1] - STORE.openings.entrance.y) <= STORE.openings.entrance.halfHeight - (person.radius || .26) / M;
+    const inExitY = Math.abs(person.position[1] - STORE.openings.exit.y) <= STORE.openings.exit.halfHeight - (person.radius || .26) / M;
+    const atLeftWall = person.position[0] < 6, atRightWall = person.position[0] > STORE.width - 6;
+    const canUseEntry = atLeftWall && inEntryY && (person.state === 'ENTER_STORE' || person.state === 'EXITING');
+    const canUseExit = atRightWall && inExitY && person.state === 'EXITING';
+    const minX = canUseEntry ? 0 : 4;
+    const maxX = canUseExit ? STORE.width + 8 : STORE.width - 4;
     const nextX = clamp(person.position[0] + person.velocity[0] * dt, minX, maxX);
     const nextY = clamp(person.position[1] + person.velocity[1] * dt, 4, STORE.height - 4);
     if (!this.blockedByFixture(nextX, person.position[1], person)) person.position[0] = nextX; else person.velocity[0] = 0;
     if (!this.blockedByFixture(person.position[0], nextY, person)) {
-      const canExit = person.state === 'EXITING' && person.position[0] > STORE.width - 9;
       const crossingWall = person.position[0] < 4 || person.position[0] > STORE.width - 4;
-      if (!crossingWall || inOpeningY || canExit) person.position[1] = nextY; else person.velocity[1] = 0;
+      if (!crossingWall || canUseEntry || canUseExit) person.position[1] = nextY; else person.velocity[1] = 0;
     } else person.velocity[1] = 0;
-    // 墙体硬约束：除入口/出口开口外，行人不得在墙外横向移动。
+    // 墙体硬约束：除唯一入口/出口开口外，行人不得在墙外移动。
     const outsideLeft = person.position[0] < 4, outsideRight = person.position[0] > STORE.width - 4;
-    const allowedOpening = Math.abs(person.position[1] - STORE.openings.entrance.y) <= STORE.openings.entrance.halfHeight;
-    const allowedExit = person.state === 'EXITING' && person.position[0] > STORE.width - 9;
-    if ((outsideLeft || outsideRight) && !allowedOpening && !allowedExit) {
+    if ((outsideLeft && !canUseEntry) || (outsideRight && !canUseExit)) {
       person.position[0] = outsideLeft ? 4 : STORE.width - 4;
       person.velocity[0] = 0;
     }
@@ -439,6 +453,7 @@ export class PedestrianSystem {
       x: p.position[0], y: p.position[1], vx: p.velocity[0], vy: p.velocity[1],
       heading: p.heading, phase: p.phase, speed: Math.hypot(p.velocity[0], p.velocity[1]) * M,
       state: p.state, cart: p.cart, look: p.look, style: p.style, color: p.color, skin: p.skin,
+      faceHeading: p.faceHeading, pickTier: p.pickTier ?? 1, pickShelf: p.section?.shelfId || null,
       radius: p.radius, height: p.height, crossing: p.crossing,
       lane: p.lane, queueSlot: p.queueSlot,
       goal: p.goal ? [...p.goal] : null,

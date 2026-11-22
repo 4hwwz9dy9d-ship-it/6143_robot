@@ -24,3 +24,16 @@
 ## 去水印说明
 
 参考图仅作为项目内建模参考文件存放，**不作为页面展示素材**；站点页面不含任何"AI 生成"字样或水印。
+
+## V2.1 新增品牌素材（用户提供）
+
+| 文件 | 内容 | 用途 |
+|---|---|---|
+| `assets/brand/logo.png` | 用户提供的「超市机器人 / INT6143 · GROUP 3」logo（已去白底透明） | 后续可直接用于标题/演示；当前导航使用圆形图标版本 |
+| `assets/brand/logo-mark.png` | logo 左侧圆形徽标（透明底） | 左上角导航品牌图标 |
+| `assets/brand/amr-front.jpg` | 用户提供的 AMR 正面完整机身渲染图（干净裁切） | 总览右侧展示、机器人控制页头像 |
+| `assets/brand/amr-side.jpg` | AMR 带货篮侧视渲染图 | 备用展示（第二台机器人） |
+| `assets/brand/amr-back.jpg` | AMR 背面渲染图 | 备用展示 |
+| `assets/brand/amr-face.jpg` | 表情屏特写条 | 备用展示 |
+
+**替换接口**：以上路径全部集中在 `branding.js` 的 `BRAND_ASSETS`。用户后续提供正式图片时只改这一处，不需要改 `index.html` / `app.js`。界面图片是说明图，不会冒充 3D 实时渲染；3D 中的机器人仍由 `scene3d.js` 实时生成。

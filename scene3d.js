@@ -226,8 +226,13 @@ function buildScene(container) {
   floorPatch(45, 44, 18, 22, 'wood', 0xffffff);
   floorPatch(126, 116, 18, 22, 'wood', 0xffffff);
   for (const [x, y] of [[45, 12], [72, 12], [126, 12]]) floorPatch(x, y, 13, 11, 'stone', 0xffe9c8);
-  floorPatch(24, 8, 16, 8, 'tile', 0xd8e4e6);            // 购物车停放区
-  floorPatch(150, 26, 12, 6, 'stone', 0xd6ecdf);         // 机器人等待区
+  floorPatch(10, 9, 13, 8, 'tile', 0xd8e4e6);            // 购物车停放区：入口左下角，不挡入口主通道
+  for (const slot of STORE.robotWaitSlots) floorPatch(slot[0], slot[1], 7, 6, 'stone', 0xd6ecdf); // 独立机器人泊位
+  // 机器人任务完成后从右出口离开，沿场景外侧服务通道返回左入口（与世界坐标同源）。
+  const o = STORE.outsideReturn;
+  floorPatch(o.exitOuter[0], 9, 14, 38, 'stone', 0xcbd8d4);
+  floorPatch((o.rightSouth[0] + o.frontSouth[0]) / 2, o.frontSouth[1], 198, 13, 'stone', 0xcbd8d4);
+  floorPatch(o.entranceOuter[0], 9, 14, 38, 'stone', 0xcbd8d4);
   for (const lane of STORE.checkoutLanes) floorPatch(lane.x, 16, 5, 16, 'tile', 0xe4e2d2); // 排队区地面
   for (const x of STORE.aisleXs) {
     const p = floorPoint([x, 80]);
@@ -466,6 +471,15 @@ function buildScene(container) {
   const robotById = new Map(robotModels.map(model => [model.id, model]));
   const robot = robotModels[0].group;
   robotModels.forEach((model, i) => model.group.position.copy(floorPoint(STORE.robotWaitSlots[i], 0)));
+  let fleetCount = 1; // 后台配置：默认一台，最多两台；第二台模型默认隐藏。
+  function setFleetCount(count) {
+    fleetCount = Math.max(1, Math.min(robotModels.length, Number(count) || 1));
+    robotModels.forEach((model, i) => {
+      model.group.visible = i < fleetCount;
+      if (i >= fleetCount) model.group.position.copy(floorPoint(STORE.robotWaitSlots[i], 0));
+    });
+  }
+  setFleetCount(1);
 
   function setRobotState(next, id = robotModels[0].id) {
     const model = robotById.get(id) || robotModels[0];
@@ -601,10 +615,16 @@ function buildScene(container) {
         anchor.userData.hand.material = personMat(data.skin || 0xe0ae87);
       });
     } else if (browsing) {
-      arms[0].palm.visible = true;
-      const reach = Math.sin(time * 2 + data.phase) * .3;
-      arms[0].shoulder.rotation.x = -1.15 + reach; arms[1].shoulder.rotation.x = -.25;
-      arms[0].elbow.rotation.x = -.5; arms[1].elbow.rotation.x = -.12;
+      // V2.1：手臂沿模型正面 -Z 伸出。旋转符号为正（旧版为负 → 实际向后伸，动作反向）。
+      arms[0].palm.visible = true; arms[1].palm.visible = true;
+      const reach = .5 + .5 * Math.sin(time * 1.8 + (data.phase || 0)); // 0..1 周期性取货
+      const tier = (data.pickTier ?? 1);                                  // 货架层 0/1/2 → 抬手高度
+      const shoulderX = [.62, 1.04, 1.42][tier] + reach * .12;
+      arms[0].shoulder.rotation.x = shoulderX;      // 正角 = 朝正面(-Z)货架伸
+      arms[1].shoulder.rotation.x = .22;
+      arms[0].elbow.rotation.x = -.18 - reach * .14; // 前臂微屈，手掌接近商品
+      arms[1].elbow.rotation.x = -.12;
+      arms[0].shoulder.rotation.z = -.14; arms[1].shoulder.rotation.z = .1;
     } else if (queueing) {
       arms[0].palm.visible = true; arms[1].palm.visible = true;
       arms[0].shoulder.rotation.x = -.06; arms[1].shoulder.rotation.x = -.06;
@@ -633,6 +653,34 @@ function buildScene(container) {
     person.currentLook = wantLook; person.currentCart = wantCart;
   }
 
+  // 取货道具：商品短暂离开货架，随手臂移向购物篮/推车，随后入库（视觉仿真）。
+  const pickProps = [];
+  for (let i = 0; i < 8; i++) {
+    const prop = new THREE.Mesh(new THREE.BoxGeometry(.11, .16, .09),
+      mat([0xe0b05c, 0x70a86b, 0xc4675e, 0x8fb4cf][i % 4], { roughness: .7 }));
+    prop.visible = false; prop.castShadow = true; scene.add(prop);
+    pickProps.push(prop);
+  }
+  function updatePickProps(list, time) {
+    let slot = 0;
+    for (const data of list) {
+      if (data.state !== 'BROWSING' || !data.pickShelf || slot >= pickProps.length) continue;
+      const shelf = shelves.find(s => s.id === data.pickShelf); if (!shelf) continue;
+      const phase = (time * .85 + (data.phase || 0)) % 1;
+      if (phase < .35) continue;
+      const shelfCenter = [(shelf.xMin + shelf.xMax) / 2, (shelf.yMin + shelf.yMax) / 2];
+      const from = floorPoint(shelfCenter, .7 + (data.pickTier ?? 1) * .45);
+      const to = floorPoint([data.x, data.y], .86); // 手/购物篮高度，人物正前方由模型朝向决定
+      const t = Math.min(1, (phase - .35) / .55);
+      const prop = pickProps[slot++];
+      prop.visible = true;
+      prop.position.lerpVectors(from, to, t * t * (3 - 2 * t));
+      prop.rotation.y = time * .6;
+      prop.scale.setScalar(1 - t * .25);
+    }
+    for (; slot < pickProps.length; slot++) pickProps[slot].visible = false;
+  }
+
   function setPedestrians(list = []) {
     pedestrianData = list;
     people.forEach((person, i) => {
@@ -642,9 +690,13 @@ function buildScene(container) {
       ensureLook(person, data);
       const p = floorPoint([data.x, data.y], 0);
       person.model.position.set(p.x, 0, p.z);
-      person.model.rotation.y = -(data.heading || 0); // 地图朝向 → 世界前向 (-Z)
+      // 选购时真正面向货架（货架中心方向），其余状态沿移动朝向。
+      const heading = data.state === 'BROWSING' && Number.isFinite(data.faceHeading)
+        ? data.faceHeading : (data.heading || 0);
+      person.model.rotation.y = -heading; // 地图朝向 → 世界前向 (-Z)
       applyPersonRig(person, data, (performance.now() - startedAt) / 1000);
     });
+    updatePickProps(list, (performance.now() - startedAt) / 1000);
   }
 
   // ----- fixtures -----------------------------------------------------------
@@ -879,7 +931,7 @@ function buildScene(container) {
       }
     },
     setShelfStock,
-    setRobotState, setPedestrians, setSafety, setQueueStatus,
+    setRobotState, setFleetCount, setPedestrians, setSafety, setQueueStatus,
     setPickHandler(handler) { pickHandler = typeof handler === 'function' ? handler : null; },
     setScenario(scenario, slot = '09') {
       const peak = scenario === 'peak';
