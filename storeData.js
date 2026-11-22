@@ -33,6 +33,10 @@ export const STORE = {
   width: UNIT_W, height: UNIT_H,
   meters: Object.freeze({ width: +(UNIT_W * M).toFixed(2), height: +(UNIT_H * M).toFixed(2) }),
   entrance: [8, 26], checkout: [150, 26], exit: [170, 26],
+  // V2.5：订单交接区移到店内 x=153 / y=44 的纵向通道（两组货架之间），
+  // 与右墙出口开口(y=26)相距约 4.2 m。机器人在交接区等待顾客取货，
+  // 不再停在出口通道上；出口只承担「通行」，不承担任何机器人停靠/停留功能。
+  handoff: [153, 44],
   aisleXs: AISLE_XS, crossYs: CROSS_YS, verticalYs: VERTICAL_YS,
   hotCorridor: Object.freeze({ y: 62, xMin: 45, xMax: 99 }),
   frontZone: Object.freeze({ yMin: 2, yMax: 26 }),
@@ -62,12 +66,13 @@ export const STORE = {
   outsideExit: [182, 26],
   // 机器人从右墙出口离开后，经场景外侧服务通道返回左入口（不穿墙、不瞬移）。
   // 外侧通道位于墙体之外，3D 场景有对应铺装地面；仅机器人使用，行人导航图不含这些边。
-  // V2.3：新增机器人门外整备点 staging，位于出口正前方更远处（y 更小，远离行人出店通道 y=26），
-  //机器人出门后先沿外墙走到 staging 停 3 秒，彻底让开出口开口，避免堵住行人出店路线。
+  // V2.5：整备点移到前墙外侧服务通道中央 [88,-8]，与右墙出口开口相距约 100 单位（17 m）。
+  // 出门后先沿外墙南下 → 西行到整备点停 3 秒 → 继续西行 → 从左入口回归泊位。
+  // 因此出口周边（含门内、门外、行人出店动线 y=26）全程没有任何机器人停留点。
   outsideReturn: Object.freeze({
     exitOuter: [182, 26], rightSouth: [182, -8],
+    staging: [88, -8],
     frontSouth: [-8, -8], entranceOuter: [-8, 26],
-    staging: [182, 6],
   }),
 };
 
@@ -103,7 +108,8 @@ export function buildNavNodes({ includeOutside = false } = {}) {
   if (includeOutside) {
     const o = STORE.outsideReturn;
     edge(o.exitOuter, o.rightSouth);
-    edge(o.rightSouth, o.frontSouth);
+    edge(o.rightSouth, o.staging);
+    edge(o.staging, o.frontSouth);
     edge(o.frontSouth, o.entranceOuter);
     edge(o.entranceOuter, STORE.entrance);
   }
@@ -182,6 +188,8 @@ export const layoutFixtures = [
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `排队区 ${i + 1}`, x: lane.x, y: 16, w: 4, h: 15, kind: 'queue' })),
   ...STORE.robotWaitSlots.map((p, i) => ({ label: `机器人泊位 ${i + 1}`, x: p[0], y: p[1], w: 8, h: 7, kind: 'robotwait' })),
   { label: '购物车停放区', x: 10,  y: 9,  w: 11, h: 7,  kind: 'cart' },
+  // V2.5：店内取货交接区地面标线（不是实体障碍，行人可正常通行）。
+  { label: '取货交接区', x: STORE.handoff[0], y: STORE.handoff[1], w: 8, h: 7, kind: 'handoff' },
 ];
 
 // Teaching catalog: English names, mapped to real zones. Price/weight/stock

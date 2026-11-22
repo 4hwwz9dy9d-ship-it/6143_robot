@@ -35,8 +35,10 @@ export class RobotBehavior {
     this.yieldCooldown = 0;
     this.interventionCooldown = 0;
     this.emergencyTime = 0;
+    // V2.5：连续「侧向净空足够但被挡住」的时长，用于判定人机对峙僵局并主动绕行。
+    this.bypassTime = 0;
     this.metrics = {
-      collisions: 0, nearMisses: 0, yields: 0, replannings: 0,
+      collisions: 0, nearMisses: 0, yields: 0, replannings: 0, bypasses: 0,
       waitSeconds: 0, humanInterventions: 0, minDistance: Infinity, minTtc: Infinity,
     };
     this.last = { ttc: Infinity, distance: Infinity, pedestrian: null, reason: '通道畅通' };
@@ -55,6 +57,7 @@ export class RobotBehavior {
       this.metrics.yields++; this.yieldCooldown = 1.5;
     }
     if (next === 'REPLANNING') { this.metrics.replannings++; this.replanPending = true; }
+    if (next === 'AVOIDANCE') this.metrics.bypasses++;
     if (next === 'EMERGENCY_STOP' && this.interventionCooldown === 0) {
       this.metrics.humanInterventions++; this.interventionCooldown = 4;
     }
@@ -166,7 +169,17 @@ export class RobotBehavior {
     } else if (worst) {
       this.emergencyTime = Math.max(0, this.emergencyTime - step * 2);
       const { distance, ttc, crossing, headOn, away } = worst;
-      if (crossing && ttc < 3.2) {
+      // V2.5：侧向净空足够时机器人「绕过人」继续通行，而不是长时间停车等对峙。
+      // 只要不是行人横穿/迎面窄道，且已出现减速停滞，就主动进入绕行（速度不大幅下降）。
+      const canBypass = worst.isPerson && avoidance !== 0 && worst.along > .3 && !crossing && !headOn && distance > .9;
+      this.bypassTime = canBypass ? this.bypassTime + step : 0;
+      const stalled = this.blockedTime > 1.0 || ['WAIT', 'YIELD', 'SLOW_DOWN', 'REPLANNING'].includes(this.state);
+      if (canBypass && (stalled || this.bypassTime > .8)) {
+        // 低速绕行：净空足够才加速通过，人仍很近时进一步降速，避免高峰人群里高速切入造成几何侵入。
+        next = 'AVOIDANCE';
+        speedFactor = distance < 1.3 ? .32 : .55;
+        reason = '侧向净空足够，机器人低速主动绕行通过行人';
+      } else if (crossing && ttc < 3.2) {
         next = 'YIELD'; speedFactor = 0; reason = '行人正在横穿，停车礼让';
       } else if (headOn && distance < S.yieldDistance + P.radius + worst.radius) {
         next = 'WAIT'; speedFactor = 0; reason = '窄通道迎面相遇，等待行人通过';
@@ -214,7 +227,8 @@ export class RobotBehavior {
 
     this.setState(next, reason);
     return {
-      state: this.state, speedFactor, lateralShift: avoidance ? avoidance * .22 : 0,
+      state: this.state, speedFactor,
+      lateralShift: avoidance ? avoidance * (this.state === 'AVOIDANCE' ? 1.15 : .22) : 0,
       ttc: this.last.ttc, distance: this.last.distance, reason, emergency,
       needsReplan: this.replanPending, collision, nearMiss,
       brakeDistance, targetSpeed: P.maxSpeed * speedFactor,

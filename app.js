@@ -410,7 +410,7 @@ function matchedAssociations(lines) {
 function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobot().waitSlot) {
   const stops = uniqueStops(lines), n = stops.length, cache = new Map();
   const leg = (a, b) => { const k = `${key(a)}>${key(b)}`; if (!cache.has(k)) cache.set(k, planLeg(a, b, scenario, slot, mode)); return cache.get(k); };
-  const finish = leg(STORE.checkout, STORE.exit); if (!finish) return null;
+  const finish = leg(STORE.checkout, STORE.handoff); if (!finish) return null;
   const start = stops.map(s => leg(startPoint, s.point));
   const checkout = stops.map(s => leg(s.point, STORE.checkout));
   const between = stops.map((a, i) => stops.map((b, j) => i === j ? null : leg(a.point, b.point)));
@@ -517,6 +517,7 @@ function drawDestinations() {
     svg('text', { x: stop.point[0] * 10, y: (STORE.height - stop.point[1]) * 10 + 4, class: 'destination-label' }, $('destinations')).textContent = i < state.stage ? '✓' : String(i + 1);
   });
   drawGate(STORE.entrance, '入口'); drawGate(STORE.checkout, '结账'); drawGate(STORE.exit, '出口');
+  drawGate(STORE.handoff, '交接区');
   scene3d?.setPickups(stops.map(s => s.point), Math.min(state.stage, stops.length));
 }
 function drawCrowd() {
@@ -624,7 +625,7 @@ function renderLiveOps() {
     ['1 · 支付', state.order ? `${state.order.id} 已受理` : '等待顾客下单'],
     ['2 · 排序', state.plan ? state.plan.method : '等待订单商品'],
     ['3 · 导航', `已访问 ${state.stage} / ${state.plan?.stops.length ?? 0} 个货区`],
-    ['4 · 结账与交接', state.awaitingPickup ? '在出口等待交接' : '待处理'],
+    ['4 · 结账与交接', state.awaitingPickup ? '在交接区等待取货' : '待处理'],
   ];
   $('livePreviewList').innerHTML = preview.map(([label, value], i) =>
     `<li><span>${label}<small>${escapeHtml(value)}</small></span><span class="pill ${i < state.stage ? 'pill--ok' : 'pill--info'}">${i < state.stage ? '已完成' : '待处理'}</span></li>`).join('');
@@ -641,7 +642,7 @@ function renderOverviewPreview() {
       ...STORE.crossYs.map(y => `<line x1="${tx(6)}" y1="${ty(y)}" x2="${tx(W - 4)}" y2="${ty(y)}" stroke="#dbe8e1" stroke-width="1.4"/>`),
     ].join('');
     $('twinFixtures').innerHTML = layoutFixtures.map(f => {
-      const color = f.kind === 'promo' ? '#E8A34A' : f.kind === 'kiosk' ? '#20A995' : f.kind === 'checkout' ? '#7b93a8' : f.kind === 'queue' ? '#c4d2dc' : f.kind === 'robotwait' ? '#bfe3d6' : f.kind === 'cart' ? '#9fb8c4' : '#aab8bf';
+      const color = f.kind === 'promo' ? '#E8A34A' : f.kind === 'kiosk' ? '#20A995' : f.kind === 'checkout' ? '#7b93a8' : f.kind === 'queue' ? '#c4d2dc' : f.kind === 'robotwait' ? '#bfe3d6' : f.kind === 'handoff' ? '#c9a8e8' : f.kind === 'cart' ? '#9fb8c4' : '#aab8bf';
       return `<rect x="${tx(f.x - f.w / 2)}" y="${ty(f.y - f.h / 2)}" width="${f.w * SX}" height="${f.h * SY}" rx="2" fill="${color}" opacity=".45"/>`;
     }).join('');
     $('twinShelves').innerHTML = shelves.map(s => {
@@ -650,6 +651,7 @@ function renderOverviewPreview() {
     }).join('');
     $('twinGates').innerHTML = [
       [STORE.entrance, '入口', '#20A995'], [STORE.checkout, '收银', '#7b93a8'], [STORE.exit, '出口', '#E8A34A'],
+      [STORE.handoff, '交接', '#9a6fc4'],
     ].map(([p, label, c]) => `<g><rect x="${tx(p[0]) - 13}" y="${ty(p[1]) - 7}" width="26" height="14" rx="4" fill="#fff" stroke="${c}" stroke-width="1.2"/><text x="${tx(p[0])}" y="${ty(p[1]) + 3}" font-size="8" text-anchor="middle" fill="${c}">${label}</text></g>`).join('');
   }
   if (!$('twinRobot')) return;
@@ -864,7 +866,7 @@ function renderStockout() {
     $('acceptSubBtn').disabled = !alternative;
   }
   if (state.assistPending) setText('assistDetail', `货区 ${state.assistPending.stop.shelfId}：${state.assistPending.names.join('、')} 需要员工核对。`);
-  if (state.awaitingPickup) setText('handoffDetail', `订单 ${state.order.id}（取货码 ${state.order.id.slice(-4)}）已到出口。请核对 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件已取商品，最终模拟金额 ${money(actualPrice())}。`);
+  if (state.awaitingPickup) setText('handoffDetail', `订单 ${state.order.id}（取货码 ${state.order.id.slice(-4)}）已送达店内取货交接区（出口通道保持畅通）。请核对 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件已取商品，最终模拟金额 ${money(actualPrice())}。`);
 }
 function renderOrderState() {
   setText('orderListHeading', state.order ? `${state.order.id} · ${state.order.lines.reduce((n, x) => n + x.qty, 0)} 件` : '等待订单');
@@ -887,12 +889,12 @@ function renderProgress() {
   const done = state.plan?.legs.slice(0, state.stage).reduce((n, leg) => n + leg.length, 0) || 0;
   const percent = state.awaitingPickup ? 100 : state.plan ? Math.min(100, Math.round((done + state.legDistance) / state.plan.length * 100)) : 0;
   setWidth('progressFill', percent); setText('progressPercent', `${percent}%`);
-  setText('progressText', state.awaitingPickup ? '等待出口交接' : state.shortage ? '等待缺货决策' : state.running ? `前往${nextName()}` : state.order ? '就绪 / 已暂停' : '等待已支付订单');
+  setText('progressText', state.awaitingPickup ? '等待交接区取货' : state.shortage ? '等待缺货决策' : state.running ? `前往${nextName()}` : state.order ? '就绪 / 已暂停' : '等待已支付订单');
   setText('nextTarget', nextName());
   setText('fulfillPct', `${percent}%`); setWidth('fulfillFill', percent);
 }
 function nextName() {
-  if (state.awaitingPickup) return '出口交接';
+  if (state.awaitingPickup) return '交接区取货';
   if (!state.plan) return '—';
   if (state.stage < state.plan.stops.length) return `货区 ${state.plan.stops[state.stage].shelfId} · ${state.plan.stops[state.stage].lines.map(x => x.product.name).join('、')}`;
   return state.stage === state.plan.stops.length ? '收银台' : '出口';
@@ -942,7 +944,7 @@ function renderRobotCenter() {
 function renderRouteView() {
   setText('heldKarpMethod', state.plan ? `${state.plan.method} · ${state.plan.stops.length} 个不同货区` : '等待订单。');
   const stops = state.plan?.stops || [];
-  $('heldKarpFlow').innerHTML = stops.length ? [STORE.entrance, ...stops.map(s => s.point), STORE.checkout, STORE.exit]
+  $('heldKarpFlow').innerHTML = stops.length ? [STORE.entrance, ...stops.map(s => s.point), STORE.checkout, STORE.handoff]
     .map((p, i, arr) => `${i ? '<span class="route-arrow">→</span>' : ''}<span class="route-node ${i <= state.stage ? 'route-node--done' : ''}">${i === 0 ? '入口' : i === arr.length - 1 ? '出口' : i === arr.length - 2 ? '结账' : `货区${stops[i - 1].shelfId}`}</span>`).join('')
     : '<span class="muted">提交订单后计算精确访问顺序。</span>';
   $('heldKarpTable').innerHTML = stops.length ? stops.map((s, i) =>
@@ -1111,20 +1113,20 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false) {
   const fresh = planLeg(start, robot.waitSlot, state.scenario, state.slot);
   if (!fresh) { log(`${reason}：无法计算返回等待区的可行路径，机器人保持当前位置并请求人工介入。`, 'danger'); return false; }
   let points = [from, ...fresh.points.slice(1)];
-  // V2.2：完成交接后先驶出右出口，在门外整备 3 秒，再经外侧通道从入口回归泊位。
+  // V2.2：完成交接后先驶出右出口，在店外整备 3 秒，再经外侧通道从入口回归泊位。
   const o = STORE.outsideReturn;
   const toGate = viaExit ? planLeg(nearestNode(from), STORE.exit, state.scenario, state.slot) : null;
   const toBay = viaExit ? planLeg(STORE.entrance, robot.waitSlot, state.scenario, state.slot) : null;
   if (viaExit) {
     if (toGate && toBay) {
-      // V2.3：出门后先沿外墙走到 staging(远离行人出店通道 y=26) 整备，再南行绕回入口。
-      //行人出店终点 outsideExit=[182,26] 与旧整备点重合导致堵门；staging 移到 y=6 彻底让开出口。
-      points = [from, ...toGate.points.slice(1), o.exitOuter, o.staging, o.rightSouth, o.frontSouth,
+      // V2.5：交接点已移到店内 [153,44]，出门后沿外墙南下 → 前墙外侧中央 staging 停 3 秒
+      // → 继续西行 → 左入口回归泊位。出口周边(门内/门外/行人出店 y=26)没有任何机器人停留点。
+      points = [from, ...toGate.points.slice(1), o.exitOuter, o.rightSouth, o.staging, o.frontSouth,
         o.entranceOuter, STORE.entrance, ...toBay.points.slice(1)];
     } else log('外侧返回通道规划失败：改用店内 A* 路径返回泊位。', 'warn');
   }
   const lengths = points.slice(1).map((p, i) => dist(points[i], p));
-  // waitAt 为到达门外整备点 staging 的累计里程；到达后进入 3 秒等待，再继续外侧服务通道 → 入口 → 泊位。
+  // waitAt 为到达整备点 staging 的累计里程；到达后进入 3 秒等待，再继续外侧服务通道 → 入口 → 泊位。
   let waitAt = 0;
   if (toGate && toBay) {
     const stagingIndex = points.findIndex(p => p[0] === o.staging[0] && p[1] === o.staging[1]);
@@ -1153,7 +1155,7 @@ function stepReturn(dt) {
   const result = state.robotBrain.evaluate({ position: state.displayPosition, velocity: state.inertialVelocity,
     direction, pedestrians: snapshot, obstacles: state.dynamicObstacles, dt: step });
   state.behavior = result;
-  // 门外整备：到达 staging（远离出店通道的外墙南段）后停 3 秒（仿真时间，倍速下同步缩短），展示机器人离店且不挡出口。
+  // 店外整备：到达 staging（远离出口的前墙外侧服务通道中央）后停 3 秒（仿真时间，倍速下同步缩短），展示机器人离店且不挡出口。
   if (leg.waitAt > 0 && !leg.waited && leg.distance >= leg.waitAt - .01) {
     leg.waited = true; leg.waitLeft = 3;
     status('离店整备', '机器人已驶出出口并让开门口，在外侧整备 3 秒后从入口回归泊位。', 'CHARGING');
@@ -1162,7 +1164,7 @@ function stepReturn(dt) {
   if (leg.waitLeft > 0) {
     leg.waitLeft = Math.max(0, leg.waitLeft - step);
     syncRobotPose(state.displayPosition, 'RETURNING', null);
-    if (leg.waitLeft === 0) log('门外整备完成：机器人沿外侧通道从入口方向回归泊位。');
+    if (leg.waitLeft === 0) log('店外整备完成：机器人沿外侧通道从入口方向回归泊位。');
     return true;
   }
   const travelledStep = step * BASE_SPEED * (result.speedFactor ?? 1);
@@ -1298,7 +1300,7 @@ function submitOrder() {
     id, lines: lines.map(x => ({ product: x.product, qty: x.qty })), paid: cartPrice(),
     status: robot ? '待分配' : '待处理', createdAt: now, assignedAt: robot ? now : null,
     robotId: robot?.id || null, robotName: robot?.id || '待分配',
-    start: [...(robot?.waitSlot || STORE.entrance)], end: [...STORE.exit],
+    start: [...(robot?.waitSlot || STORE.entrance)], end: [...STORE.handoff],
     path: [], startedAt: null, completedAt: null, cancelledAt: null,
     progress: 0, deliverSeconds: null, cancelProgress: null,
     scenario: state.scenario, slot: state.slot, // V2.4：回放保真——记录当时客流场景/时段
@@ -1373,7 +1375,7 @@ function confirmPickupAssist() {
 }
 function arrive() {
   const index = state.stage, stops = state.plan.stops;
-  state.position = [...(index < stops.length ? stops[index].point : index === stops.length ? STORE.checkout : STORE.exit)];
+  state.position = [...(index < stops.length ? stops[index].point : index === stops.length ? STORE.checkout : STORE.handoff)];
   state.history.push([...state.position]);
   if (index < stops.length) {
     const stop = stops[index];
@@ -1388,15 +1390,15 @@ function arrive() {
     completeStop(stop);
   } else if (index === stops.length) {
     log(`结账：共 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件，最终模拟金额 ${money(actualPrice())}。`);
-    status('结账完成', '机器人前往出口交接点。', 'PICKING');
+    status('结账完成', '机器人前往店内取货交接区（出口通道保持畅通）。', 'PICKING');
     state.pauseLeft = .8; state.stage++; renderAll();
   } else {
     state.running = false; state.finished = true; state.awaitingPickup = true; state.stage++;
-    log('机器人已到达出口，等待顾客交接。');
-    status('等待出口交接', `订单 ${state.order.id} 已备好，等待取货。`, 'CHARGING');
+    log('机器人已到达店内取货交接区，等待顾客交接（出口仅供通行，不停靠）。');
+    status('等待取货交接', `订单 ${state.order.id} 已备好，等待取货。`, 'CHARGING');
     setText('playLabel', '等待交接'); setText('playIcon', '✓'); renderAll();
   }
-  if (state.order) setText('orderMessage', `${state.order.id}：${state.awaitingPickup ? '已在出口等待交接' : '机器人履约中'}；仅为模拟支付。`);
+  if (state.order) setText('orderMessage', `${state.order.id}：${state.awaitingPickup ? '已在取货交接区等待交接' : '机器人履约中'}；仅为模拟支付。`);
 }
 function decideSubstitution(accept) {
   if (!state.shortage) return;
@@ -1418,7 +1420,7 @@ function decideSubstitution(accept) {
 function confirmHandoff() {
   if (!state.awaitingPickup) return;
   const finished = state.order;
-  log(`出口交接完成：${finished.id} 已取走，最终模拟金额 ${money(actualPrice())}。`);
+  log(`取货交接完成：${finished.id} 已取走，最终模拟金额 ${money(actualPrice())}。`);
   patchOrder(finished.id, { status: '已完成', completedAt: new Date().toISOString(),
     deliverSeconds: state.elapsed, path: sampledPath(), progress: 1, robotId: activeRobot().id });
   state.completed.push({ id: finished.id, status: '已完成' });
@@ -1679,7 +1681,7 @@ function playPause() {
   if (state.shortage) { status('请先处理缺货', '请在任务面板选择接受替代品或跳过。', 'PICKING'); return; }
   if (state.assistPending) { status('请确认协助取货', '员工核对商品后机器人才能移动。', 'PICKING'); return; }
   if (state.fault || state.events.has('failure')) { status('故障安全停车', faultAdvice[state.fault || 'localization'], 'FAULT'); return; }
-  if (state.awaitingPickup) { status('请确认交接', '顾客需在出口取走订单。', 'CHARGING'); return; }
+  if (state.awaitingPickup) { status('请确认交接', '顾客需在店内取货交接区取走订单。', 'CHARGING'); return; }
   if (!state.order) { status('请先提交订单', '选择商品并模拟支付后才能启动机器人。', 'IDLE'); log('没有已支付订单，机器人停留在入口。'); return; }
   if (orderWeight() > CAPACITY) { status('无法出发 · 超载', `${kgText(orderWeight())} 超过 ${kgText(CAPACITY)}。`, 'FAULT'); log('载重检查未通过，机器人停留在入口。', 'danger'); return; }
   if (state.running) {
@@ -1989,7 +1991,7 @@ function setCamera(mode) {
 
 /* 自动化回归测试钩子：所有数值直接来自运行中的仿真状态，不另造指标。 */
 window.__NEXUS = Object.freeze({
-  state,
+  state, STORE,
   applyPedPreset,
   setSimSpeed, setRobotCount, startNextOrder, activateNext,
   viewOrderDemo, exitReplay, startReplay,
@@ -2031,6 +2033,9 @@ window.__NEXUS = Object.freeze({
       ttc: state.behavior?.ttc ?? Infinity, nearestDistance: state.behavior?.distance ?? Infinity,
       pedestrianCount: ped?.people.length || 0,
       pedestrianStates: ped?.people.map(p => p.state) || [],
+      pedestrianYields: ped?.metrics.pedestrianYields || 0,
+      detours: ped?.metrics.detours || 0,
+      bypasses: brain?.metrics.bypasses || 0,
       collisions: (brain?.metrics.collisions || 0) + state.safetyEvents.filter(e => e.type === 'collision').length,
       nearMisses: brain?.metrics.nearMisses || 0, yields: brain?.metrics.yields || 0,
       replannings: brain?.metrics.replannings || 0, waitSeconds: brain?.metrics.waitSeconds || 0,

@@ -721,11 +721,11 @@ function buildScene(container) {
   layoutFixtures.forEach((f, i) => {
     const p = floorPoint([f.x, f.y]);
     const isCheckout = f.kind === 'checkout';
-    const h = f.kind === 'wall' ? 1.92 : f.kind === 'promo' ? .94 : f.kind === 'cart' ? .12 : f.kind === 'queue' || f.kind === 'robotwait' ? .02 : .28;
+    const h = f.kind === 'wall' ? 1.92 : f.kind === 'promo' ? .94 : f.kind === 'cart' ? .12 : f.kind === 'queue' || f.kind === 'robotwait' || f.kind === 'handoff' ? .02 : .28;
     let color = f.kind === 'wall' ? 0xd9e5e4 : f.kind === 'promo' ? 0xe9cfa2 : isCheckout ? 0x9fb9c9 : 0xbcccd0;
-    if (f.kind === 'queue' || f.kind === 'robotwait') {
+    if (f.kind === 'queue' || f.kind === 'robotwait' || f.kind === 'handoff') {
       const zone = new THREE.Mesh(new THREE.PlaneGeometry(f.w * X_SCALE, f.h * X_SCALE),
-        new THREE.MeshBasicMaterial({ color: f.kind === 'queue' ? 0xe8a34a : 0x3d7bd6, transparent: true, opacity: .1, depthWrite: false, side: THREE.DoubleSide }));
+        new THREE.MeshBasicMaterial({ color: f.kind === 'queue' ? 0xe8a34a : f.kind === 'handoff' ? 0x9a6fc4 : 0x3d7bd6, transparent: true, opacity: f.kind === 'handoff' ? .18 : .1, depthWrite: false, side: THREE.DoubleSide }));
       zone.rotation.x = -Math.PI / 2; zone.position.set(p.x, .01, p.z); scene.add(zone);
       if (f.kind === 'queue') for (let k = 0; k < 4; k++) {
         const slot = addCylinder(scene, .12, .12, .008, mat(0xd8d2bb), p.x, .012, p.z + (1.5 - k) * (f.h * X_SCALE / 4), 16);

@@ -24,7 +24,7 @@ export const PEDESTRIAN_TYPES = Object.freeze({
 
 export const PEDESTRIAN_STATES = Object.freeze([
   'ENTER_STORE', 'WALK_TO_SECTION', 'WALKING', 'BROWSING', 'STOPPING',
-  'TURNING', 'QUEUEING', 'GOING_TO_CHECKOUT', 'EXITING',
+  'TURNING', 'QUEUEING', 'GOING_TO_CHECKOUT', 'EXITING', 'DETOUR',
 ]);
 
 function makeRandom(seed = 6143) {
@@ -68,7 +68,7 @@ export class PedestrianSystem {
     this.speedFactor = options.speedFactor ?? 1;
     this.running = false;
     this.spawnCooldown = 0;
-    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0 };
+    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0 };
     this.densityTarget = { low: 7, medium: 16, high: 30 }[this.density] ?? 7;
     this.lanes = STORE.checkoutLanes.map(l => ({ ...l, occupied: new Map(), served: 0 }));
   }
@@ -86,7 +86,7 @@ export class PedestrianSystem {
   reset() {
     this.people = []; this.nextId = 1; this.random = makeRandom(6143);
     this.spawnCooldown = 0;
-    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0 };
+    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0 };
     this.lanes = STORE.checkoutLanes.map(l => ({ ...l, occupied: new Map(), served: 0 }));
     if (this.running) this.fill();
   }
@@ -165,6 +165,9 @@ export class PedestrianSystem {
       route: [], routeIndex: 0, goal: null, sections: 0,
       yieldToRobot: 0, blocked: 0, crossing: !!forced.crossing,
       yieldSide: 0, yieldTimer: 0,
+      // V2.5 僵局脱离：与机器人持续近距离对峙时，行人明确换一条方向绕行，
+      // 而不是反复侧移贴着机器人「绕圈」。
+      stallTimer: 0, detourCooldown: 0, detourGoal: null, detourReturn: null,
       lane: null, queueSlot: -1,
       color: [0x2f6b4f, 0xc2a878, 0x3f5a42, 0x243b52, 0x7d3341, 0x4a4f55][type.look % 6],
       skin: [0xf0c9a8, 0xe0ae87, 0xc98d68, 0x8d5c42, 0xf5d7b8][Math.floor(this.random() * 5)],
@@ -192,6 +195,36 @@ export class PedestrianSystem {
     person.route = routeBetween(this.nodes, this.safePoint(person.position, person.radius), safeGoal);
     person.routeIndex = Math.min(1, person.route.length - 1);
     person.state = state;
+  }
+
+  /**
+   * V2.5 僵局脱离：行人与机器人持续近距离对峙（双方都在减速/侧移却谁也过不去）时，
+   * 不再原地侧移贴着机器人「绕圈」，而是明确换一个方向——绕到机器人侧后方的临时点，
+   * 到达后再重新规划回原目标。对应现实中「人完全可以换个方向走」。
+   */
+  beginDetour(person, robot) {
+    const goal = person.goal ? [...person.goal]
+      : (person.section?.point ? [...person.section.point] : [...STORE.exit]);
+    // 以「机器人 → 原目标」为前进方向，绕行点放在机器人前方、并在行人当前所在侧
+    // 拉开足够横向距离（≈1.7 m）。这样行人是真正从机器人旁边绕过去，而不是原地打转。
+    const axis = [goal[0] - robot.position[0], goal[1] - robot.position[1]];
+    const g = Math.hypot(axis[0], axis[1]) || 1;
+    const fwd = [axis[0] / g, axis[1] / g];
+    const side = [-fwd[1], fwd[0]];
+    const rel = [person.position[0] - robot.position[0], person.position[1] - robot.position[1]];
+    const sign = (rel[0] * side[0] + rel[1] * side[1]) >= 0 ? 1 : -1;
+    const raw = [
+      robot.position[0] + fwd[0] * 14 + side[0] * sign * 10,
+      robot.position[1] + fwd[1] * 14 + side[1] * sign * 10,
+    ];
+    const pt = [clamp(raw[0], 6, STORE.width - 6), clamp(raw[1], 6, STORE.height - 6)];
+    person.detourGoal = goal;
+    person.detourReturn = person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state;
+    this.sendTo(person, this.safePoint(pt, person.radius), 'DETOUR');
+    person.detourCooldown = 6.0;
+    person.stallTimer = 0;
+    person.yieldTimer = 0;
+    this.metrics.detours++;
   }
 
   injectCrossing(robotPoint, robotDirection = [1, 0], options = {}) {
@@ -313,6 +346,11 @@ export class PedestrianSystem {
     if (['BROWSING', 'STOPPING'].includes(person.state)) {
       person.timer -= dt;
       person.phase += dt * .6;
+      person.stallTimer = 0;
+      person.detourCooldown = Math.max(0, (person.detourCooldown || 0) - dt);
+      // V2.5：机器人贴到正在浏览的顾客身边时，顾客提前结束浏览、换个方向离开，
+      // 避免「人站着不动 + 机器人停车等」形成围堵僵局。
+      if (robot?.position && dist(person.position, robot.position) * M < 1.7) person.timer = Math.min(person.timer, .35);
       if (person.faceHeading !== undefined) {
         person.heading = lerpAngle(person.heading, person.faceHeading, Math.min(1, dt * 6));
       }
@@ -328,6 +366,8 @@ export class PedestrianSystem {
     if (person.state === 'QUEUEING') {
       person.timer -= dt;
       person.phase += dt * .5;
+      person.stallTimer = 0;
+      person.detourCooldown = Math.max(0, (person.detourCooldown || 0) - dt);
       if (person.timer <= 0) {
         const lane = this.lanes.find(l => l.id === person.lane) || STORE.checkoutLanes[0];
         // 结账完成 → 经前场通道步行至右侧墙体开口，从出口离店。
@@ -353,6 +393,12 @@ export class PedestrianSystem {
             person.faceHeading = person.section.faceHeading;
             person.pickTier = person.section.pickTier;
           }
+        } else if (person.state === 'DETOUR') {
+          // 已绕过机器人：回到原目标，恢复正常行走状态。
+          const goal = person.detourGoal || STORE.exit;
+          const back = person.detourReturn || 'WALK_TO_SECTION';
+          person.detourGoal = null; person.detourReturn = null;
+          this.sendTo(person, goal, back === 'DETOUR' ? 'WALK_TO_SECTION' : back);
         } else { this.sendTo(person, STORE.outsideExit, 'EXITING'); }
         target = null; break;
       }
@@ -375,20 +421,30 @@ export class PedestrianSystem {
       }
     }
 
-    // 对机器人反应：V2.2 改进——行人主动、坚定地侧移让出通道，带方向记忆避免来回摆动。
-    // 只在真正接近（前方或迎面）时触发，远离者不纠缠；让行方向锁定 1.4 秒，避免人群围住机器人打转。
-    if (robot?.position) {
+    // 对机器人反应：V2.5 —— 行人先主动侧移让出通道；若双方持续对峙（绕圈），
+    // 则明确「换个方向」绕到机器人侧后方再回原目标，而不是贴着机器人反复横跳。
+    person.detourCooldown = Math.max(0, (person.detourCooldown || 0) - dt);
+    // V2.5：进入绕行后专注沿新路线走，不再叠加侧移让行，否则又会在机器人旁边绕圈。
+    const inDetour = person.state === 'DETOUR';
+    if (!inDetour && robot?.position) {
       const dx = person.position[0] - robot.position[0], dy = person.position[1] - robot.position[1];
       const d = Math.hypot(dx, dy), dM = d * M;
       person.yieldTimer = Math.max(0, (person.yieldTimer || 0) - dt);
       if (dM < 3.0 && d > .0001) {
+        person.stallTimer = (person.stallTimer || 0) + dt;
+        // 僵局：持续近距离 >1.5 s，或已被阻挡且 >0.9 s → 行人换一条路绕过机器人。
+        if (person.state !== 'DETOUR' && person.detourCooldown <= 0 &&
+            (person.stallTimer > 1.5 || (person.blocked > 0 && person.stallTimer > .9))) {
+          this.beginDetour(person, robot);
+          return;
+        }
         const side = [-dy / d, dx / d];
         const toward = -(desired[0] * dx + desired[1] * dy) / d;
         // 锁定让行方向一次，持续朝同一侧移动直到计时结束，杜绝左右横跳。
         if (person.yieldTimer <= 0) {
           const sideDot = desired[0] * side[0] + desired[1] * side[1];
           person.yieldSide = sideDot >= 0 ? 1 : -1;
-          person.yieldTimer = 1.4;
+          person.yieldTimer = 2.2;
           if (person.yieldToRobot <= 0) this.metrics.pedestrianYields++;
         }
         const gain = clamp((3.0 - dM) / 3.0, 0, 1);
@@ -408,10 +464,27 @@ export class PedestrianSystem {
           this.metrics.blocks++;
         }
         person.yieldToRobot = 1.0;
-      }
-    }
+      } else person.stallTimer = Math.max(0, (person.stallTimer || 0) - dt * 2);
+    } else person.stallTimer = 0;
     person.yieldToRobot = Math.max(0, person.yieldToRobot - dt);
     person.blocked = Math.max(0, (person.blocked || 0) - dt);
+
+    // V2.5：绕行期间不做方向锁定的主动让行，但持续保留一个「机器人排斥场」：
+    // 抵消朝机器人走的分量 + 按距离渐强的远离分量，越近越强。
+    // 这样行人确实在换方向走，又不会沿新路线直穿（或撞上）静止的机器人。
+    if (inDetour && robot?.position) {
+      const dx = person.position[0] - robot.position[0], dy = person.position[1] - robot.position[1];
+      const d = Math.hypot(dx, dy), dM = d * M;
+      if (dM < 2.2 && d > .0001) {
+        const nx = dx / d, ny = dy / d;
+        const toward = -(desired[0] * nx + desired[1] * ny);
+        if (toward > 0) { desired[0] += nx * toward; desired[1] += ny * toward; }
+        const gain = clamp((2.2 - dM) / 2.2, 0, 1);
+        desired[0] += nx * maxSpeed * (.5 + gain * 1.6);
+        desired[1] += ny * maxSpeed * (.5 + gain * 1.6);
+        if (dM < 1.0) { desired[0] += nx * maxSpeed * 1.5; desired[1] += ny * maxSpeed * 1.5; }
+      }
+    }
 
     const magnitude = Math.hypot(desired[0], desired[1]);
     const limited = magnitude > maxSpeed ? maxSpeed / magnitude : 1;
@@ -472,6 +545,7 @@ export class PedestrianSystem {
       destination: p.goal ? [...p.goal] : (p.section?.point ? [...p.section.point] : null),
       destinationShelf: p.section?.shelfId || null,
       avoiding: p.yieldToRobot > 0,
+      detour: p.state === 'DETOUR',
       blocked: p.blocked > 0,
     }));
   }
