@@ -1319,6 +1319,10 @@ function stepSimulation(dt) {
 
   const travelled = dist(previousLogic, state.position);
   state.traveled += travelled; state.battery = Math.max(0, state.battery - travelled * .09);
+  // 3D 模型、跟随相机与舰队面板都读取舰队位姿；配送中必须逐帧同步，否则只有路径在动、机器人停在泊位。
+  const active = activeRobot();
+  active.distance += travelled;
+  syncRobotPose(state.displayPosition, robotState(), state.order?.id);
   if (state.battery < 15 && !state.events.has('lowBattery')) {
     state.events.add('lowBattery'); log('仿真电量低于 15%，操作员应安排充电。', 'warn');
   }

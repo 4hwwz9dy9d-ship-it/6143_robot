@@ -296,3 +296,20 @@ Note: the earlier display `6 / 4` for navigation stops was corrected to cap the 
 - 外侧服务通道在 3D 中为地面铺装，仅在机器人返航时使用；当前俯视角度下会看到门店外侧多一条通道地面，属于业务需求（不穿墙返航）的可见代价。
 - 行人取货动画为程序化道具位移 + 手臂动作，购物计数进入仿真指标；不扣减店铺订单库存，以免破坏订单/库存业务规则。
 - 加速只增加每帧子步数量；极低性能设备上 5× 可能掉帧，但不会瞬移或跳过碰撞检测。
+
+## 12. V2.1.1  hotfix：3D 机器人不动 & 总览主视觉替换
+日期 2026-11-22。本地无头 Chrome 实测。
+
+### 12.1 根因与修复
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 3D 场景中机器人停在泊位不动、只有规划路径可见；跟随相机不动、轮子不转 | `stepSimulation()` 每帧只更新 `state.displayPosition`，从未把位姿写回 `state.fleet[active].position`；而 `scene3d.setRobots()` 读取的是舰队快照，因此 3D 模型始终收到泊位坐标。诊断实测：T+2s 时 `displayPosition=[24,14.34]`，`fleet.position=[24,8]`，gap=6.34，机器人里程恒为 0 | 在 `stepSimulation()` 位移结算处逐帧调用 `syncRobotPose(state.displayPosition, robotState(), state.order?.id)` 并累加 `active.distance`；3D 模型、状态灯、安全环、跟随相机、轮组转动全部读取同一舰队真源 |
+| 第一页总览主视觉不是用户指定图片 | 原 `heroRobotImg` 指向 `amr-front.jpg` | 新增 `BRAND_ASSETS.heroVisual = './assets/brand/paper-logo.jpg'`；`index.html` 的 `data-brand` 改为 `heroVisual`；图片 1920×1026 已加载验证 |
+
+### 12.2 实测结果
+| 测试 | 实测数据 |
+|---|---|
+| 位姿同步（修复后） | T+0.5/1/1.5/2s 时 `displayPosition` 与 `fleet.position` 完全一致（gap=0）；机器人里程从 0 累加至 6.16 |
+| V2.1 全量回归 | 11/11 PASS；T1 完整配送+经出口返航、T5 四档倍速、T6 5×零碰撞、T7 平面图一致全部保持通过 |
+| 总览图片 | `heroRobotImg` src=`./assets/brand/paper-logo.jpg`，naturalWidth=1920，naturalHeight=1026 |
+| 运行时异常 | 0 |

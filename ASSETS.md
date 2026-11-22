@@ -35,5 +35,6 @@
 | `assets/brand/amr-side.jpg` | AMR 带货篮侧视渲染图 | 备用展示（第二台机器人） |
 | `assets/brand/amr-back.jpg` | AMR 背面渲染图 | 备用展示 |
 | `assets/brand/amr-face.jpg` | 表情屏特写条 | 备用展示 |
+| `assets/brand/paper-logo.jpg` | 用户提供的「论文 logo 设计」等轴场景图：AMR 沿虚线路径穿越三组货架 | 第一页总览主视觉（`heroVisual`） |
 
 **替换接口**：以上路径全部集中在 `branding.js` 的 `BRAND_ASSETS`。用户后续提供正式图片时只改这一处，不需要改 `index.html` / `app.js`。界面图片是说明图，不会冒充 3D 实时渲染；3D 中的机器人仍由 `scene3d.js` 实时生成。

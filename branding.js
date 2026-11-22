@@ -8,6 +8,7 @@ export const BRAND_ASSETS = Object.freeze({
   robotSide:  './assets/brand/amr-side.jpg',
   robotBack:  './assets/brand/amr-back.jpg',
   robotFace:  './assets/brand/amr-face.jpg',
+  heroVisual: './assets/brand/paper-logo.jpg',
 });
 
 /** 把所有带 data-brand 的 <img> 指向统一素材表（单一替换点）。 */
