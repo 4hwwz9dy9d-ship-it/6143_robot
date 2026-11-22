@@ -12,6 +12,7 @@
     route: '路径优化',
     simulation: '仿真中心',
     research: '研究方法',
+    ml: '监督学习',
   };
   const panels = new Map(Object.keys(titles).map(name => [name, document.getElementById(`view-${name}`)]));
   const navButtons = [...document.querySelectorAll('[data-view]')];

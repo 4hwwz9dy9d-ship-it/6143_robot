@@ -33,6 +33,7 @@
       <button type="button" data-view="route"><span class="nav-icon">◇</span><span>路径优化<small>ROUTE OPTIMIZATION</small></span></button>
       <button type="button" data-view="simulation"><span class="nav-icon">⚡</span><span>仿真中心<small>SIMULATION CENTER</small></span></button>
       <button type="button" data-view="research"><span class="nav-icon">◈</span><span>研究方法<small>RESEARCH</small></span></button>
+      <button type="button" data-view="ml"><span class="nav-icon">✦</span><span>监督学习<small>SUPERVISED LEARNING</small></span></button>
     </nav>
     <div class="navigation-foot"><b>仿真环境 / SIMULATION ENVIRONMENT</b>规则驱动的教学模型。未接入真实视觉识别、实时库存或实体机器人。</div>
   </aside>
@@ -132,8 +133,9 @@
             <label class="field"><span class="field-label">部门 / DEPARTMENT</span><select id="categoryFilter"></select></label>
             <label class="field"><span class="field-label">货区 / AISLE</span><select id="subcategoryFilter"></select></label>
           </div>
+          <p id="catalogScope" class="assumption"></p>
           <div id="catalogue" class="catalogue"></div>
-          <p class="assumption">浏览器按部门或搜索首字母分片加载 JSON，最多显示 36 件商品。</p>
+          <p class="assumption">默认视图只按真实购买频次展示高热度商品；搜索按首字母分片加载 JSON，筛选结果最多显示 36 件。</p>
         </div>
         <div class="stack">
           <div class="card card-pad">
@@ -148,6 +150,10 @@
           <div class="card card-pad">
             <div class="card-head"><div><p class="section-kicker">APRIORI · 真实共购关系</p><h3>购物篮推荐</h3></div></div>
             <div id="recommendations"></div>
+          </div>
+          <div class="card card-pad">
+            <div class="card-head"><div><p class="section-kicker">COLLABORATIVE FILTERING · 真实共现相似度</p><h3>协同过滤推荐</h3><p>Item-based CF：基于购物篮共现的余弦相似度，与左侧 Apriori 规则并列对比。</p></div></div>
+            <div id="cfRecommendations"></div>
           </div>
         </div>
       </div>
@@ -200,6 +206,10 @@
           <p id="restockMessage" class="order-message" role="status"></p>
         </div>
         <div class="card card-pad"><div class="card-head"><div><p class="section-kicker">RESTOCK LOG</p><h3>补货历史</h3><p>记录操作前后库存、方式、时间与状态。</p></div></div><div class="table-wrap" style="max-height:420px;overflow:auto"><table class="data-table"><thead><tr><th>商品</th><th class="right">补货</th><th class="right">前→后</th><th>目标货架</th><th>方式</th><th>时间</th><th>状态</th></tr></thead><tbody id="restockTable"></tbody></table></div></div>
+      </div>
+      <div class="card card-pad" style="margin-top:16px">
+        <div class="card-head"><div><p class="section-kicker">DEMAND PRIORITY · 真实历史信号</p><h3>补货优先级分析</h3><p>优先级 = 真实购买频次 × 复购率（Instacart 历史信号，非模型输出）；预测列来自"属性 → 频次"回归模型，仅作对照。历史频次 ≠ 未来需求，线上订单 ≠ 门店销量。</p></div></div>
+        <div id="restockPriorityTable"></div>
       </div>
     </section>
 
@@ -500,6 +510,12 @@
           <div id="pickupFeasibility" class="assumption"></div>
         </div>
       </div>
+    </section>
+
+    <!-- ============================ 监督学习 ============================ -->
+    <section class="view-panel" id="view-ml" aria-label="监督学习" hidden>
+      <div class="section-title"><div><p class="section-kicker">SUPERVISED LEARNING &amp; MODEL EVALUATION</p><h2>复购预测与模型评估体系</h2><p>研究问题：能否基于历史购买行为与商品特征，预测用户是否会复购某件商品？全部指标由真实模型在真实数据上运行得到，未预设结果。</p></div><span class="badge badge--live">真实模型 · 真实指标</span></div>
+      <div id="mlDashboard"></div>
     </section>
   </main>
   <footer><span>NEXUS RETAIL · INT6143 第三组 · 自主零售智能平台</span><span>真实 Instacart 数据 · 可复算算法 · 明确标注的仿真</span></footer>

@@ -53,6 +53,13 @@ export async function loadResearch() {
   ]);
   return { index, summary, rules, clusters, top, topReordered };
 }
+/** V2：监督学习 + 协同过滤 + 需求分析（独立 JSON，懒加载，失败不影响现有页面）。 */
+export async function loadMl() {
+  const [reorder, cf, demand] = await Promise.all([
+    loadJson('ml/reorder-model.json'), loadJson('ml/cf-recommendations.json'), loadJson('ml/demand-analysis.json'),
+  ]);
+  return { reorder, cf, demand };
+}
 /** 真实部门/货道 → 店内 18 个货区。convertProduct 与「区域需求热度」共用同一套映射，
  *  保证路线优化里用到的冷/热区，和商品目录里显示的货区完全一致。 */
 export function zoneOfDepartment(department, aisle = '') {
@@ -268,4 +275,174 @@ export function renderResearchDashboard(data) {
   document.getElementById('clusterCards').innerHTML = c.clusters.map(group =>
     `<div class="cluster-card"><b>第 ${group.id} 类 · ${count(group.count)} 件商品</b><small>均价 $${group.avgPriceUsd} · 平均重量 ${group.avgWeightG} g · 平均热量 ${group.avgCalories100g} 千卡 · 复购率 ${((group.avgReorderRate || 0) * 100).toFixed(1)}%</small><span>代表商品：${group.representatives.map(escapeHtml).join('、')}</span></div>`).join('');
   el.querySelectorAll('.chart:not([data-bound])').forEach(chart => { chart.dataset.bound = '1'; attachChartHover(chart); });
+}
+
+/* ------------------------------------------------- supervised learning (V2) */
+const modelLabel = { logistic_regression: '逻辑回归 LR', random_forest: '随机森林 RF', decision_tree: '决策树 DT' };
+
+function rocSvg(roc) {
+  const w = 420, h = 300, pad = 34;
+  const colors = { logistic_regression: '#3D7BD6', random_forest: '#20A995', decision_tree: '#E8A34A' };
+  const x = v => pad + v * (w - 2 * pad), y = v => h - pad - v * (h - 2 * pad);
+  const paths = Object.entries(roc).map(([name, r]) =>
+    `<path d="${r.fpr.map((f, i) => `${i ? 'L' : 'M'}${x(f).toFixed(1)},${y(r.tpr[i]).toFixed(1)}`).join(' ')}" fill="none" stroke="${colors[name]}" stroke-width="2.5"/>`).join('');
+  const legend = Object.entries(roc).map(([name, r], i) =>
+    `<g transform="translate(${pad + i * 128},${h - 8})"><rect width="10" height="10" y="-8" fill="${colors[name]}"/><text x="14" y="0" font-size="10" fill="#35505c">${modelLabel[name]} AUC ${r.auc}</text></g>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h + 6}" role="img" aria-label="ROC 曲线">
+    <line x1="${pad}" y1="${y(0)}" x2="${pad}" y2="${y(1)}" class="grid-line"/><line x1="${pad}" y1="${y(0)}" x2="${x(1)}" y2="${y(0)}" class="grid-line"/>
+    <line x1="${pad}" y1="${y(1)}" x2="${x(1)}" y2="${y(0)}" stroke="#c9d6d2" stroke-dasharray="4 4"/>
+    <text x="${pad - 6}" y="${y(1) + 4}" font-size="9" text-anchor="end" fill="#84919b">1.0</text>
+    <text x="${pad - 6}" y="${y(0) + 4}" font-size="9" text-anchor="end" fill="#84919b">0.0</text>
+    <text x="${x(1)}" y="${y(0) + 14}" font-size="9" text-anchor="middle" fill="#84919b">1.0</text>
+    <text x="${x(0)}" y="${y(0) + 14}" font-size="9" text-anchor="middle" fill="#84919b">0.0</text>
+    <text x="${(w - pad) / 2}" y="${y(0) + 26}" font-size="9" text-anchor="middle" fill="#84919b">假正率 FPR</text>
+    <text x="12" y="${(h - 2 * pad) / 2 + pad}" font-size="9" fill="#84919b" transform="rotate(-90 12 ${((h - 2 * pad) / 2 + pad).toFixed(0)})">真正率 TPR</text>
+    ${paths}${legend}</svg>`;
+}
+
+function importanceBars(items, color = 'bar') {
+  const max = Math.max(1e-9, ...items.map(i => i.value));
+  return items.map(i => `<div class="research-bar"><span title="${escapeHtml(i.feature)}">${escapeHtml(i.feature)}</span><div><i class="${color}" style="width:${Math.max(1, i.value / max * 100)}%"></i></div><b>${i.value.toFixed(3)}</b></div>`).join('');
+}
+
+function confusionTable(name, c) {
+  const total = c.tn + c.fp + c.fn + c.tp;
+  return `<table class="data-table confusion"><caption>${modelLabel[name]} · 测试集 ${count(total)} 行</caption>
+    <thead><tr><th></th><th>预测：复购</th><th>预测：不复购</th></tr></thead>
+    <tbody><tr><th>实际：复购</th><td class="ok">${count(c.tp)}</td><td>${count(c.fn)}</td></tr>
+    <tr><th>实际：不复购</th><td>${count(c.fp)}</td><td class="ok">${count(c.tn)}</td></tr></tbody></table>`;
+}
+
+export function renderMlDashboard(ml) {
+  const el = document.getElementById('mlDashboard');
+  if (!el) return;
+  const r = ml.reorder, cf = ml.cf, d = ml.demand;
+  const posRate = ((r.sampleCounts.train + '' && 0) || 0);
+  const positive = r.sampling.counts.positive, total = r.sampleCounts.total;
+  const results = r.results, cv = r.crossValidation;
+  const modelNames = Object.keys(results);
+  const comparisonRows = modelNames.map(name => {
+    const m = results[name], c = cv[name];
+    return `<tr><td><b>${modelLabel[name]}</b></td><td>${c.rocAucMean} ± ${c.rocAucStd}</td><td>${m.accuracy}</td><td>${m.precision}</td><td>${m.recall}</td><td>${m.f1}</td><td><b>${m.rocAuc}</b></td></tr>`;
+  }).join('');
+  const majority = r.baseline.majority, popularity = r.baseline.popularity;
+  const evalCf = cf.evaluation.cf, evalPop = cf.evaluation.popularityBaseline;
+  const ks = [5, 10];
+  el.innerHTML = `
+    <div class="research-hero">
+      <div><p class="section-kicker">SUPERVISED LEARNING · REAL DATA</p>
+        <h2>Predicting Customer Product Reorders</h2>
+        <p><b>研究问题：</b>能否基于历史购买行为与商品特征，预测用户是否会复购某件商品？使用 Instacart 数据集的真实 <code>reordered</code> 标签训练逻辑回归、随机森林与决策树，并用统一划分与指标公平比较。</p></div>
+      <span class="research-badge">sklearn · 5 折交叉验证 · 固定随机种子 ${r.split.seed}</span>
+    </div>
+    <p class="assumption" style="margin:10px 0"><b>数据限制（如实说明）：</b>${escapeHtml(r.dataLimitation)}</p>
+    <div class="research-stats">
+      <div><b>${count(r.sampleCounts.train)}</b><span>训练样本行</span></div>
+      <div><b>${count(r.sampleCounts.test)}</b><span>测试样本行</span></div>
+      <div><b>${(positive / total * 100).toFixed(1)}%</b><span>正样本占比（复购）</span></div>
+      <div><b>${r.candidatePool.size}</b><span>候选商品池（仅训练划分频次 Top）</span></div>
+      <div><b>${r.features.count}</b><span>输入特征数</span></div>
+      <div><b>${r.seconds}s</b><span>训练总耗时</span></div>
+    </div>
+    <article class="card card-pad">
+      <p class="section-kicker">MODEL COMPARISON · 同一划分与同一指标</p><h3>模型对比</h3>
+      <p class="lead" style="font-size:11px">交叉验证在训练集固定 ${count(cv[modelNames[0]].rows)} 行子样本上做 5 折分层采样；测试集为互不相交的 ${count(r.split.testUsers)} 名用户的订单。</p>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>模型</th><th>CV ROC-AUC（5 折）</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1</th><th>测试 ROC-AUC</th></tr></thead><tbody>${comparisonRows}</tbody></table></div>
+      <p class="assumption"><b>基线对比：</b>${escapeHtml(majority.description)} → Accuracy ${majority.accuracy}（正类占比仅 ${(majority.positiveRate * 100).toFixed(1)}%，Accuracy 高不代表模型有用）；${escapeHtml(popularity.description)} → ROC-AUC ${popularity.rocAuc}。所有模型指标均超过多数类基线； Accuracy 必须与 Precision / Recall / F1 / AUC 一起解读。</p>
+      <div class="research-grid" style="margin-top:14px">
+        <div><p class="lead" style="font-size:11px">ROC 曲线（测试集，虚线 = 随机猜测）</p>${rocSvg(r.roc)}</div>
+        <div>${modelNames.map(name => confusionTable(name, results[name].confusion)).join('')}</div>
+      </div>
+    </article>
+    <div class="research-grid">
+      <article class="card card-pad">
+        <p class="section-kicker">FEATURE IMPORTANCE</p><h3>特征重要性</h3>
+        <p class="lead" style="font-size:11px">随机森林不纯度重要性（Top 10）</p>
+        ${importanceBars(r.importance.random_forest, 'bar')}
+        <p class="lead" style="font-size:11px;margin-top:12px">逻辑回归标准化系数幅值（Top 10）</p>
+        ${importanceBars(r.importance.logistic_regression, 'bar bar--blue')}
+      </article>
+      <article class="card card-pad">
+        <p class="section-kicker">SPLIT &amp; DATA LEAKAGE CHECKS</p><h3>划分方式与防泄漏审计</h3>
+        <p class="lead" style="font-size:11px">训练 / 测试划分</p>
+        <p class="assumption">${escapeHtml(r.split.method)}抽样用户 ${count(r.split.sampled)} 人（训练 ${count(r.split.trainUsers)} / 测试 ${count(r.split.testUsers)}）。</p>
+        <p class="lead" style="font-size:11px">样本构造</p>
+        <p class="assumption">${escapeHtml(r.sampling.note)}</p>
+        <p class="lead" style="font-size:11px">特征分组</p>
+        <p class="assumption">${r.features.groups.map(g => escapeHtml(g)).join('；')}。</p>
+        <p class="lead" style="font-size:11px">泄漏检查</p>
+        <ul class="research-list">${r.leakageChecks.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>
+        <details class="quality-steps"><summary>查看完整特征列表（${r.features.count} 项）</summary><ol>${r.features.names.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ol></details>
+      </article>
+    </div>
+    <div class="research-grid">
+      <article class="card card-pad">
+        <p class="section-kicker">ITEM-BASED COLLABORATIVE FILTERING · CALCULATED</p><h3>协同过滤推荐与离线评估</h3>
+        <p class="lead" style="font-size:11px">${escapeHtml(cf.method)}</p>
+        <p class="assumption">${escapeHtml(cf.split.method)}构建购物篮 ${count(cf.split.buildBaskets)} 个 / 评估购物篮 ${count(cf.split.evalBaskets)} 个。${escapeHtml(cf.evaluation.protocol)}</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>排序器</th>${ks.map(k => `<th>P@${k}</th><th>R@${k}</th><th>NDCG@${k}</th>`).join('')}</tr></thead>
+          <tbody><tr><td><b>CF 相似度</b></td>${ks.map(k => `<td>${evalCf['precision@' + k]}</td><td>${evalCf['recall@' + k]}</td><td>${evalCf['ndcg@' + k]}</td>`).join('')}</tr>
+          <tr><td>热门基线</td>${ks.map(k => `<td>${evalPop['precision@' + k]}</td><td>${evalPop['recall@' + k]}</td><td>${evalPop['ndcg@' + k]}</td>`).join('')}</tr></tbody></table></div>
+        <p class="assumption">评估购物篮 ${count(evalCf.evaluatedBaskets)} 个（池内商品 ≥ 2 件）。${escapeHtml(cf.evaluation.note)}</p>
+      </article>
+      <article class="card card-pad">
+        <p class="section-kicker">CF QUERY · 试试看</p><h3>商品相似度查询</h3>
+        <label class="field"><span class="field-label">选择一件候选池商品</span><select id="cfQuerySelect"></select></label>
+        <div id="cfQueryResult" class="research-list" style="margin-top:10px"></div>
+      </article>
+    </div>
+    <div class="research-grid">
+      <article class="card card-pad">
+        <p class="section-kicker">DEMAND REGRESSION · MAE / RMSE / R²</p><h3>需求频次回归（对照展示）</h3>
+        <p class="lead" style="font-size:11px">${escapeHtml(d.target)}</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>模型</th><th>对数空间 R²</th><th>计数空间 MAE</th><th>计数空间 RMSE</th><th>计数空间 R²</th></tr></thead>
+          <tbody>${Object.entries(d.results).map(([name, m]) => `<tr><td><b>${name === 'ridge' ? 'Ridge 回归' : '随机森林回归'}</b></td><td>${m.logSpace.r2}</td><td>${m.countSpace.mae}</td><td>${m.countSpace.rmse}</td><td>${m.countSpace.r2}</td></tr>`).join('')}
+          <tr><td>中位数基线</td><td>—</td><td>${Object.values(d.results)[0].baselineMedianCount.mae}</td><td>${Object.values(d.results)[0].baselineMedianCount.rmse}</td><td>${Object.values(d.results)[0].baselineMedianCount.r2}</td></tr></tbody></table></div>
+        <p class="lead" style="font-size:11px;margin-top:12px">随机森林特征重要性</p>
+        ${importanceBars(d.importance.random_forest, 'bar bar--amber')}
+        <p class="assumption">${escapeHtml(d.interpretation)}</p>
+      </article>
+      <article class="card card-pad">
+        <p class="section-kicker">RESTOCK PRIORITY · 真实历史信号</p><h3>补货优先级 Top 15</h3>
+        <p class="lead" style="font-size:11px">${escapeHtml(d.restockPriority.method)}</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>商品</th><th>部门</th><th class="right">历史频次</th><th class="right">复购率</th><th class="right">优先级</th><th class="right">预测频次（对照）</th></tr></thead>
+          <tbody>${d.restockPriority.top.slice(0, 15).map(p => `<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.department)}</td><td>${count(p.frequency)}</td><td>${(p.reorderRate * 100).toFixed(1)}%</td><td><b>${p.priority}</b></td><td>${count(p.predictedFrequency)}</td></tr>`).join('')}</tbody></table></div>
+        <ul class="research-list">${d.disclaimers.map(x => `<li>${escapeHtml(x)}</li>`).join('')}</ul>
+      </article>
+    </div>`;
+  el.querySelectorAll('.chart').forEach(attachChartHover);
+  // CF 查询交互
+  const select = document.getElementById('cfQuerySelect');
+  const options = Object.keys(cf.neighbors).map(pid => {
+    const name = cf.productNames[pid] || pid;
+    return `<option value="${pid}">${escapeHtml(name)}</option>`;
+  }).sort((a, b) => a.localeCompare(b));
+  select.innerHTML = options.join('');
+  const renderCfQuery = () => {
+    const pid = select.value;
+    const nns = cf.neighbors[pid] || [];
+    document.getElementById('cfQueryResult').innerHTML = nns.length ? nns.map((n, i) => {
+      const pct = Math.round(n.similarity * 100);
+      return `<div class="research-bar"><span>${i + 1}. ${escapeHtml(n.name)}</span><div><i class="bar" style="width:${Math.max(2, pct)}%"></i></div><b>${n.similarity}</b></div>`;
+    }).join('') : '<p class="empty">该商品在候选池中没有共现近邻。</p>';
+  };
+  select.addEventListener('change', renderCfQuery);
+  renderCfQuery();
+}
+
+/** 订单页 CF 推荐面板：根据购物车内商品的 Instacart ID，并集近邻后按相似度排序。 */
+export function renderCfRecommendations(cf, cartSourceIds, addLabel = '加入') {
+  const el = document.getElementById('cfRecommendations');
+  if (!el) return;
+  const scored = new Map();
+  for (const sid of cartSourceIds) {
+    for (const n of cf.neighbors[sid] || []) {
+      const cur = scored.get(n.id);
+      if (!cur || n.similarity > cur.similarity) scored.set(n.id, n);
+    }
+  }
+  const top = [...scored.values()].sort((a, b) => b.similarity - a.similarity).slice(0, 4);
+  el.innerHTML = top.length ? top.map(n =>
+    `<div class="recommend-item"><div><b>${escapeHtml(n.name)}</b><small>与购物车商品共现相似度 ${n.similarity} · 构建集共现计算</small></div><button type="button" data-add="I${n.id}">${addLabel}</button></div>`).join('')
+    : '<p class="empty">加入候选池中的高频商品（如香蕉、草莓、牛奶），即可查看基于真实共现相似度的协同过滤推荐。</p>';
 }

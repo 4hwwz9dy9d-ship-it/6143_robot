@@ -5,7 +5,7 @@ import { createStoreScene } from './scene3d.js';
 import { STORE, PHYSICS, buildNavNodes, shelves, layoutFixtures, products, timeSlots, crowdSamples, shelfCrowd, peopleForScenario } from './storeData.js';
 import { PedestrianSystem, PEDESTRIAN_TYPES, PEDESTRIAN_STATES } from './pedestrian.js';
 import { RobotBehavior, ROBOT_STATES, ROBOT_STATE_CN } from './robotBehavior.js';
-import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel, zoneOfDepartment } from './instacart.js';
+import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel, zoneOfDepartment, loadMl, renderMlDashboard, renderCfRecommendations } from './instacart.js';
 import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js';
 import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, removeOrder, orderCounts, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
 import { BRAND_ASSETS, applyBrandAssets, updateBrandRobotImage } from './branding.js';
@@ -24,6 +24,7 @@ const productById = new Map(products.map(p => [p.id, p]));
 const clockText = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 
 let research = null, rules = [], catalogResults = [], catalogRequest = 0, catalogTimer = 0, scene3d, restocks = listRestocks().length;
+let mlData = null;
 window.INT6143_SENSOR = Object.freeze({ registerProvider: registerSensorProvider });
 
 const substituteNames = {
@@ -225,6 +226,36 @@ function renderRecommendations() {
   $('recommendations').innerHTML = found.length ? found.map(r =>
     `<div class="recommend-item"><div><b>${escapeHtml(productById.get(r.to).name)}</b><small>与 ${escapeHtml(productById.get(r.from).name)} 共同购买 · ${ruleMetrics(r)}</small></div><button type="button" data-add="${r.to}">Add</button></div>`).join('')
     : '<p class="empty">加入一件高频商品，即可查看基于真实购物篮的推荐。</p>';
+  // V2：协同过滤面板与 Apriori 并列（数据未加载时显示引导文案）。
+  const cartSourceIds = cartLines().map(x => x.product.sourceId).filter(id => id != null);
+  if (mlData) renderCfRecommendations(mlData.cf, cartSourceIds);
+  else $('cfRecommendations').innerHTML = '<p class="empty">协同过滤数据加载中……</p>';
+}
+/** V2：按需把 CF 推荐里的商品解析为可加购对象——缓存未命中时读取其部门目录分片。 */
+async function ensureProduct(id) {
+  if (productById.has(id)) return productById.get(id);
+  const sourceId = Number(String(id).replace(/^I/, ''));
+  const info = mlData?.cf?.productInfo?.[sourceId];
+  if (!info) return null;
+  try {
+    const response = await fetch(`./public/data/catalog/department-${info.departmentId}.json`);
+    if (!response.ok) return null;
+    const rows = await response.json();
+    const row = rows.find(item => item.id === sourceId);
+    if (!row) return null;
+    const product = convertProduct(row);
+    productById.set(product.id, product);
+    return product;
+  } catch (error) { console.error('CF 商品加载失败：', error); return null; }
+}
+/** V2：库存管理页的补货优先级表（真实历史频次 × 复购率，模型预测仅作对照列）。 */
+function renderRestockPriority() {
+  const el = $('restockPriorityTable');
+  if (!el || !mlData) return;
+  const top = mlData.demand.restockPriority.top.slice(0, 10);
+  el.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>排名</th><th>商品</th><th>部门 / 货区</th><th class="right">历史频次</th><th class="right">复购率</th><th class="right">优先级</th><th class="right">属性回归预测（对照）</th></tr></thead><tbody>${top.map((p, i) =>
+    `<tr><td>${i + 1}</td><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.department)} / ${escapeHtml(p.aisle)}</td><td>${p.frequency.toLocaleString()}</td><td>${(p.reorderRate * 100).toFixed(1)}%</td><td><b>${p.priority}</b></td><td>${p.predictedFrequency.toLocaleString()}</td></tr>`).join('')}</tbody></table></div>
+    <p class="assumption">优先级来自 Instacart 历史订单信号，不代表本店实时销量；补货操作仍以店内仿真库存为准。</p>`;
 }
 function renderCrowd() {
   const sample = crowdSamples[state.slot], total = sample.reduce((a, b) => a + b, 0);
@@ -2622,7 +2653,7 @@ function renderPickupFeasibility() {
 /* ------------------------------------------------------------------ binding */
 function populateFilters() {
   if (research) {
-    $('categoryFilter').innerHTML = '<option value="">全部部门</option>' + research.index.departments.map(x =>
+    $('categoryFilter').innerHTML = '<option value="">高热度商品（默认）</option>' + research.index.departments.map(x =>
       `<option value="${x.id}">${escapeHtml(x.name)} (${x.count})</option>`).join('');
     updateSubcategories();
   }
@@ -2643,8 +2674,11 @@ function scheduleCatalogSearch() {
   catalogTimer = setTimeout(async () => {
     try {
       const query = $('productSearch').value, dept = $('categoryFilter').value, aisle = $('subcategoryFilter').value;
-      const rows = !query && !dept && !aisle ? research.top.slice(0, 36) : await searchCatalog(research.index, query, dept, aisle);
+      const rows = !query && !dept && !aisle ? research.top.slice(0, 60) : await searchCatalog(research.index, query, dept, aisle);
       if (request !== catalogRequest) return;
+      setText('catalogScope', !query && !dept && !aisle
+        ? `当前展示购买频次最高的前 ${rows.length} 件高热度商品。目录共 ${research.summary.products.toLocaleString()} 件，全部逐件展示不现实；请用搜索或部门 / 货区筛选精确查找其余商品。`
+        : `当前为筛选结果，最多显示 36 件；目录共 ${research.summary.products.toLocaleString()} 件。`);
       catalogResults = rows.map(row => {
         const id = `I${row.id}`; if (!productById.has(id)) productById.set(id, convertProduct(row)); return productById.get(id);
       });
@@ -2662,6 +2696,10 @@ function bindEvents() {
   });
   $('catalogue').addEventListener('click', event => { const id = event.target.closest('[data-add]')?.dataset.add; if (id) changeQty(id, 1); });
   $('recommendations').addEventListener('click', event => { const id = event.target.closest('[data-add]')?.dataset.add; if (id) changeQty(id, 1); });
+  $('cfRecommendations').addEventListener('click', event => {
+    const id = event.target.closest('[data-add]')?.dataset.add;
+    if (id) ensureProduct(id).then(product => { if (product) changeQty(product.id, 1); });
+  });
   $('cartList').addEventListener('click', event => {
     const plus = event.target.closest('[data-plus]')?.dataset.plus, minus = event.target.closest('[data-minus]')?.dataset.minus;
     if (plus) changeQty(plus, 1); if (minus) changeQty(minus, -1);
@@ -3034,7 +3072,7 @@ applyBrandAssets(document);
 scene3d.setActive(false);
 log('NEXUS RETAIL 仿真已初始化，正在加载真实商品目录……');
 
-loadResearch().then(data => {
+loadResearch().then(async data => {
   research = data;
   for (const row of [...data.top, ...Object.values(data.rules.products)]) {
     const id = `I${row.id}`; if (!productById.has(id)) productById.set(id, convertProduct(row));
@@ -3055,6 +3093,17 @@ loadResearch().then(data => {
   renderResearchDashboard(data); renderDataAudit(); renderPickupFeasibility(); renderInventory();
   initRestockControls();
   log(`真实商品目录已加载：${data.summary.products.toLocaleString()} 件商品，${data.rules.ruleCount.toLocaleString()} 条 Apriori 规则。`);
+  // V2：监督学习 / 协同过滤 / 需求分析 JSON 懒加载——失败只禁用新页面，不影响既有功能。
+  mlData = await loadMl().catch(error => { console.error('ML 数据加载失败：', error); return null; });
+  if (mlData) {
+    renderMlDashboard(mlData);
+    renderRestockPriority();
+    renderRecommendations();
+    log(`监督学习模块已加载：复购模型（测试 AUC ${mlData.reorder.results.random_forest.rocAuc}）、CF 推荐、需求分析。`);
+  } else {
+    const mlPanel = document.getElementById('mlDashboard');
+    if (mlPanel) mlPanel.innerHTML = '<p class="empty">监督学习数据加载失败。请确认 public/data/ml/ 下的 JSON 已生成，并以 http 方式访问本站。</p>';
+  }
 }).catch(error => {
   console.error(error);
   // 目录加载失败时给出可操作的原因，而不是一句干巴巴的提示。
