@@ -4,6 +4,7 @@
   const titles = {
     overview: '总览',
     order: '订单管理',
+    history: '订单历史',
     inventory: '库存管理',
     analytics: '零售分析',
     supermarket: '3D 超市',

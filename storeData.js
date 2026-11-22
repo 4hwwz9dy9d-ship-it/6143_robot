@@ -36,6 +36,11 @@ export const STORE = {
   aisleXs: AISLE_XS, crossYs: CROSS_YS, verticalYs: VERTICAL_YS,
   hotCorridor: Object.freeze({ y: 62, xMin: 45, xMax: 99 }),
   frontZone: Object.freeze({ yMin: 2, yMax: 26 }),
+  // 墙体真实开口：行人只能从左入口进入、从右出口离开。
+  openings: Object.freeze({
+    entrance: Object.freeze({ y: 26, halfHeight: 5.2 }),
+    exit: Object.freeze({ y: 26, halfHeight: 5.2 }),
+  }),
   checkoutLanes: LANE_XS.map((x, i) => ({
     id: `LANE-${i + 1}`, x,
     counter: [x, 6], payPoint: [x, 10],
@@ -44,9 +49,11 @@ export const STORE = {
   })),
   // 行人入口生成点（沿入口通道错开，全部在可通行区域内）
   spawnPoints: [[8, 26], [10, 34], [8, 44], [12, 26], [16, 44], [8, 62]],
-  // 机器人取货后等待区（不占顾客结账位）
-  robotWait: [150, 26],
+  // 机器人等待区：入口左侧三个独立泊位，任务完成后沿 A* 返回。
+  robotWaitSlots: Object.freeze([[13, 26], [13, 44], [13, 62]]),
+  robotWait: [13, 26],
   exitLane: [170, 20],
+  outsideExit: [182, 26],
 };
 
 export const CAMERA = Object.freeze({
@@ -67,10 +74,17 @@ export function buildNavNodes() {
     nodes.get(nodeKey(a)).neighbors.push(nodeKey(b));
     nodes.get(nodeKey(b)).neighbors.push(nodeKey(a));
   };
-  const bottomXs = [...new Set([STORE.entrance[0], ...STORE.aisleXs, STORE.checkout[0], STORE.exit[0]])].sort((a, b) => a - b);
+  const bottomXs = [...new Set([STORE.entrance[0], STORE.robotWaitSlots[0][0], ...STORE.aisleXs,
+    ...LANE_XS, STORE.checkout[0], STORE.exit[0]])].sort((a, b) => a - b);
   for (let i = 1; i < bottomXs.length; i++) edge([bottomXs[i - 1], CROSS_YS[0]], [bottomXs[i], CROSS_YS[0]]);
   for (const y of CROSS_YS.slice(1)) for (let i = 1; i < AISLE_XS.length; i++) edge([AISLE_XS[i - 1], y], [AISLE_XS[i], y]);
   for (const x of AISLE_XS) for (let i = 1; i < VERTICAL_YS.length; i++) edge([x, VERTICAL_YS[i - 1]], [x, VERTICAL_YS[i]]);
+  // 等待泊位支线：与相邻主通道相连；行人也可经此通行，但泊位专供机器人待命。
+  for (const slot of STORE.robotWaitSlots) edge(slot, [AISLE_XS[0], slot[1] === 26 ? 26 : slot[1]]);
+  // 收银队列接到前场主通道，保证购物 → 结账 → 右出口的连通性。
+  for (const lane of STORE.checkoutLanes) edge(lane.slots[0], [lane.x, 26]);
+  edge(STORE.exitLane, STORE.exit);
+  edge(STORE.exit, STORE.outsideExit);
   return nodes;
 }
 
@@ -140,7 +154,7 @@ export const layoutFixtures = [
   { label: '促销岛 C',   x: 126, y: 12,  w: 10, h: 9,  kind: 'promo' },
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `收银台 ${String(i + 1).padStart(2, '0')}`, x: lane.x, y: 6, w: 7, h: 4, kind: 'checkout' })),
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `排队区 ${i + 1}`, x: lane.x, y: 16, w: 4, h: 15, kind: 'queue' })),
-  { label: '机器人等待区', x: 150, y: 26, w: 10, h: 5, kind: 'robotwait' },
+  ...STORE.robotWaitSlots.map((p, i) => ({ label: `机器人泊位 ${i + 1}`, x: p[0], y: p[1], w: 8, h: 7, kind: 'robotwait' })),
   { label: '购物车停放区', x: 24,  y: 8,  w: 14, h: 6,  kind: 'cart' },
   { label: '入口', x: 8,   y: 20, w: 10, h: 6, kind: 'entrance' },
   { label: '出口', x: 170, y: 20, w: 10, h: 6, kind: 'exit' },

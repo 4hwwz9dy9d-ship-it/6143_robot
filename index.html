@@ -25,6 +25,7 @@
     <nav class="view-navigation" aria-label="主导航">
       <button type="button" data-view="overview" class="is-active"><span class="nav-icon">◈</span><span>总览<small>OVERVIEW</small></span></button>
       <button type="button" data-view="order"><span class="nav-icon">▦</span><span>订单管理<small>ORDER MANAGEMENT</small></span></button>
+      <button type="button" data-view="history"><span class="nav-icon">▤</span><span>订单历史<small>ORDER HISTORY</small></span></button>
       <button type="button" data-view="inventory"><span class="nav-icon">▤</span><span>库存管理<small>INVENTORY</small></span></button>
       <button type="button" data-view="analytics"><span class="nav-icon">◫</span><span>零售分析<small>ANALYTICS</small></span></button>
       <button type="button" data-view="supermarket"><span class="nav-icon">◉</span><span>3D 超市<small>3D SUPERMARKET</small></span></button>
@@ -156,12 +157,25 @@
           </div>
         </div>
       </div>
-      <div class="card card-pad" style="margin-top:16px">
-        <div class="card-head"><div><p class="section-kicker">ORDER QUEUE</p><h3>履约流水线</h3><p>订单按提交顺序处理，队列状态仅保存在当前浏览器会话。</p></div></div>
+        <div class="card card-pad" style="margin-top:16px">
+        <div class="card-head"><div><p class="section-kicker">ORDER QUEUE</p><h3>履约流水线</h3><p>订单、机器人与库存数据统一持久化；配送中亦可取消并触发返航。</p></div></div>
         <div id="orderQueue" class="queue-list" aria-live="polite"></div>
         <div class="divider"></div>
         <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>件数</th><th>支付金额（模拟）</th><th>分配机器人</th><th>状态</th></tr></thead><tbody id="fulfillmentTable"></tbody></table></div>
       </div>
+    </section>
+
+    <!-- ========================== 订单历史 ============================= -->
+    <section class="view-panel" id="view-history" aria-label="订单历史" hidden>
+      <div class="section-title"><div><p class="section-kicker">ORDER HISTORY · PERSISTED</p><h2>订单档案与配送回放</h2><p>订单编号、商品、金额、机器人、路径与耗时均来自统一数据层，刷新页面后仍然保留。</p></div><span class="badge badge--live" id="historyStoreBadge">本地持久化</span></div>
+      <div class="card card-pad">
+        <div class="order-filters">
+          <label class="field"><span class="field-label">状态筛选 / STATUS</span><select id="historyStatusFilter"><option value="ALL">全部状态</option><option value="待处理">待处理</option><option value="待分配">待分配</option><option value="配送中">配送中</option><option value="返航中">返航中</option><option value="已完成">已完成</option><option value="已取消">已取消</option><option value="异常">异常</option></select></label>
+          <label class="field"><span class="field-label">排序 / SORT</span><select id="historySort"><option value="desc">时间：最新优先</option><option value="asc">时间：最早优先</option></select></label>
+        </div>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>订单编号</th><th>商品及数量</th><th class="right">金额</th><th>下单时间</th><th>机器人</th><th>起点 → 终点</th><th>状态</th><th>操作</th></tr></thead><tbody id="historyTable"></tbody></table></div>
+      </div>
+      <div class="card card-pad" id="orderDetailCard" style="margin-top:16px"><div class="card-head"><div><p class="section-kicker">ORDER DETAIL</p><h3 id="orderDetailTitle">选择一笔订单查看详情</h3></div></div><div id="orderDetail"></div></div>
     </section>
 
     <!-- ========================== 库存管理 ============================= -->
@@ -176,6 +190,22 @@
       <div class="grid grid-2">
         <div class="card card-pad"><div class="card-head"><div><h3>低库存 / 缺货预警</h3><p>库存变更须经员工确认。</p></div></div><div id="inventoryAlerts" class="alert-list" aria-live="polite"></div></div>
         <div class="card card-pad"><div class="card-head"><div><h3>库存明细</h3><p>区域、货位、可用数量与状态。</p></div></div><div class="table-wrap" style="max-height:420px;overflow:auto"><table class="data-table"><thead><tr><th>商品</th><th>区域</th><th class="right">库存</th><th>状态</th></tr></thead><tbody id="inventoryTable"></tbody></table></div></div>
+      </div>
+      <div class="grid grid-2" style="margin-top:16px">
+        <div class="card card-pad">
+          <div class="card-head"><div><p class="section-kicker">MANUAL RESTOCK</p><h3>手动补货</h3><p>补货会写入统一库存并同步更新 3D 货架陈列。</p></div></div>
+          <div class="order-filters">
+            <label class="field"><span class="field-label">商品类别</span><select id="restockCategory"></select></label>
+            <label class="field"><span class="field-label">商品名称</span><select id="restockProduct"></select></label>
+            <label class="field"><span class="field-label">当前库存</span><input id="restockCurrent" type="number" min="0" readonly /></label>
+            <label class="field"><span class="field-label">补货数量</span><input id="restockQty" type="number" min="1" max="200" value="10" /></label>
+            <label class="field"><span class="field-label">目标货架</span><select id="restockShelf"></select></label>
+            <label class="field"><span class="field-label">补货优先级</span><select id="restockPriority"><option value="normal">常规</option><option value="high">高优先 · 缺货</option><option value="low">低优先 · 备货</option></select></label>
+          </div>
+          <div class="btn-row"><button id="manualRestockBtn" class="btn btn-teal" type="button">确认手动补货</button><button id="autoRestockBtn" class="btn btn-secondary" type="button">按阈值自动补货</button></div>
+          <p id="restockMessage" class="order-message" role="status"></p>
+        </div>
+        <div class="card card-pad"><div class="card-head"><div><p class="section-kicker">RESTOCK LOG</p><h3>补货历史</h3><p>记录操作前后库存、方式、时间与状态。</p></div></div><div class="table-wrap" style="max-height:420px;overflow:auto"><table class="data-table"><thead><tr><th>商品</th><th class="right">补货</th><th class="right">前→后</th><th>目标货架</th><th>方式</th><th>时间</th><th>状态</th></tr></thead><tbody id="restockTable"></tbody></table></div></div>
       </div>
     </section>
 
@@ -241,6 +271,7 @@
             </div>
           </div>
           <aside class="control-side" aria-label="机器人任务面板">
+            <details class="control-group" open><summary>场景状态与当前任务</summary>
             <div class="control-panel">
               <p class="section-kicker">CURRENT TASK</p>
               <div class="control-hero"><span class="robot-glyph">◉</span><div><h3 id="currentAction">在入口待命</h3><span class="pill pill--dark" id="motionStatus">状态：待机</span></div></div>
@@ -260,6 +291,8 @@
               <div id="assistPanel" class="decision-panel" hidden><h4>员工协助</h4><p id="assistDetail"></p><button id="confirmAssistBtn" class="btn btn-teal btn-sm" type="button">确认已协助取货</button></div>
               <div id="handoffPanel" class="decision-panel" hidden><h4>出口交接</h4><p id="handoffDetail"></p><button id="handoffBtn" class="btn btn-teal btn-sm" type="button">顾客已取走订单</button></div>
             </div>
+            </details>
+            <details class="control-group" open><summary>机器人导航</summary>
             <div class="control-panel">
               <p class="section-kicker">NAVIGATION</p>
               <div class="control-stat"><span>目的地</span><b id="destinationText">入口</b></div>
@@ -268,6 +301,8 @@
               <div class="control-stat"><span>已完成站点</span><b id="navStops">0 / 0</b></div>
               <ol id="timeline" class="timeline-dark"></ol>
             </div>
+            </details>
+            <details class="control-group" open><summary>行人状态与控制</summary>
             <div class="control-panel ped-control-panel">
               <p class="section-kicker">PEDESTRIAN CONTROL CENTER</p>
               <div class="ped-state-row">
@@ -275,10 +310,16 @@
                 <span class="pill pill--info" id="pedSafetyStatus">安全</span>
               </div>
               <div class="ped-metrics">
-                <div><span>当前速度 / SPEED</span><b id="pedSpeed">0.00 m/s</b></div>
-                <div><span>行人距离 / DISTANCE</span><b id="pedDistance">—</b></div>
-                <div><span>预计碰撞时间 / TTC</span><b id="pedTtc">—</b></div>
-                <div><span>当前目的地 / DESTINATION</span><b id="pedDestination">—</b></div>
+                <div><span>行人总数 / COUNT</span><b id="pedLiveCount">0</b></div>
+                <div><span>行人速度 / SPEED</span><b id="pedLiveSpeed">0.00 m/s</b></div>
+                <div><span>行人位置 / POSITION</span><b id="pedLivePosition">—</b></div>
+                <div><span>行人状态 / STATE</span><b id="pedLiveState">—</b></div>
+                <div><span>目的地 / DESTINATION</span><b id="pedLiveDestination">—</b></div>
+                <div><span>避障中 / AVOIDING</span><b id="pedLiveAvoid">否</b></div>
+                <div><span>距机器人 / DISTANCE</span><b id="pedDistance">—</b></div>
+                <div><span>预计碰撞 / TTC</span><b id="pedTtc">—</b></div>
+                <div><span>机器人速度 / ROBOT</span><b id="pedSpeed">0.00 m/s</b></div>
+                <div><span>任务目标 / TARGET</span><b id="pedDestination">—</b></div>
               </div>
               <div class="ped-actions">
                 <button id="pedStartBtn" class="btn btn-teal btn-sm" type="button">▶ 启动行人</button>
@@ -302,6 +343,8 @@
               <div class="ped-counters" id="pedQueues"></div>
               <p class="assumption">行人与避障为规则驱动的仿真，不代表真实视觉识别或安全认证。密度与渲染质量可独立调节；所有碰撞事件均如实计数。</p>
             </div>
+            </details>
+            <details class="control-group"><summary>仿真事件（次要）</summary>
             <div class="control-panel">
               <p class="section-kicker">SIMULATION EVENTS</p>
               <p>触发规则驱动的仿真事件，观察机器人减速、停车或重新规划。</p>
@@ -315,10 +358,13 @@
               </div>
               <p class="assumption">事件仅改变仿真状态，不涉及真实视觉分类或物理安全系统。</p>
             </div>
+            </details>
+            <details class="control-group"><summary>事件日志（次要）</summary>
             <div class="control-panel">
               <p class="section-kicker">EVENT LOG</p>
               <ul id="sceneLog" class="log-list" style="max-height:150px"></ul>
             </div>
+            </details>
           </aside>
         </div>
       </div>

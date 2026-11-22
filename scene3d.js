@@ -148,9 +148,10 @@ export function createStoreScene(container, fallback) {
     container.parentElement?.classList.add('is-fallback');
     fallback?.removeAttribute('aria-hidden');
     const noop = () => {};
-    return { setRobot: noop, setRobotState: noop, setScenario: noop, setRoutes: noop, setHistory: noop,
+    return { setRobot: noop, setRobots: noop, setRobotState: noop, setScenario: noop, setRoutes: noop, setHistory: noop,
       setPickups: noop, setObstacles: noop, setRestricted: noop, setCameraMode: noop, resetCamera: noop,
-      setActive: noop, resize: noop, setPresentation: noop, setPedestrians: noop, setSafety: noop, setPickHandler: noop, setQueueStatus: noop };
+      setActive: noop, resize: noop, setPresentation: noop, setPedestrians: noop, setSafety: noop, setPickHandler: noop,
+      setQueueStatus: noop, setShelfStock: noop };
   }
 }
 
@@ -195,19 +196,27 @@ function buildScene(container) {
   floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
   const wallMat = mat(0xe9efec, { roughness: .9 });
   addBox(scene, floorW, 3.6, .14, wallMat, 0, 1.8, -floorD / 2, true);   // 后墙（有冷柜）
-  addBox(scene, .14, 3.6, floorD, wallMat, -floorW / 2, 1.8, 0, true);
-  addBox(scene, .14, 3.6, floorD, wallMat, floorW / 2, 1.8, 0, true);
-  for (const side of [-1, 1]) addBox(scene, .16, .16, floorD, mat(0x9db4ae), side * (floorW / 2 - .1), .12, 0);
-  // 天花板灯带：覆盖整个大超市
-  const lightPanelMat = new THREE.MeshBasicMaterial({ color: 0xf5fcf7 });
-  const railMat = mat(0x8da29b);
-  for (let i = -3; i <= 3; i++) {
-    addBox(scene, floorW - .6, .07, .1, railMat, 0, 3.44, i * 3.4);
-    for (let j = -2; j <= 2; j++) {
-      const panel = addBox(scene, 2.6, .015, .3, lightPanelMat, j * 6, 3.36, i * 3.4);
-      panel.castShadow = false;
+  // 左右墙为真实分段墙体：左侧行人入口、右侧行人出口均为穿过墙体的开口。
+  const openingZ = floorPoint([0, STORE.openings.entrance.y]).z;
+  const halfGap = STORE.openings.entrance.halfHeight * X_SCALE;
+  const wallSegments = [[-floorD / 2, openingZ - halfGap], [openingZ + halfGap, floorD / 2]];
+  for (const side of [-1, 1]) {
+    for (const [from, to] of wallSegments) {
+      if (to - from <= .05) continue;
+      addBox(scene, .14, 3.6, to - from, wallMat, side * floorW / 2, 1.8, (from + to) / 2, true);
     }
+    // 门框立柱 + 门楣（门楣下净高 2.5 m，行人可从开口真实穿过）。
+    for (const z of [openingZ - halfGap, openingZ + halfGap]) {
+      addBox(scene, .18, 3.6, .14, mat(0x8daca5), side * floorW / 2, 1.8, z, true);
+    }
+    addBox(scene, .18, 1.0, halfGap * 2, mat(0x8daca5), side * floorW / 2, 3.1, openingZ, true);
+    addBox(scene, .2, .09, halfGap * 2, materials.tealEmissive, side * floorW / 2, 2.56, openingZ);
   }
+  // 环境照明由 HemisphereLight / DirectionalLight / PointLight 提供，不再悬挂装饰灯带。
+  const signIn = makeLabel('入口 · ENTRY', '#172C40', '#9ee8d9', .9);
+  signIn.position.set(-floorW / 2 + .2, 2.92, openingZ); scene.add(signIn);
+  const signOut = makeLabel('出口 · EXIT', '#172C40', '#9ee8d9', .9);
+  signOut.position.set(floorW / 2 - .2, 2.92, openingZ); scene.add(signOut);
   function floorPatch(x, y, w, h, kind, color) {
     const p = floorPoint([x, y], .012);
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w * X_SCALE, h * X_SCALE),
@@ -234,7 +243,9 @@ function buildScene(container) {
   }
 
   // ----- instanced products -------------------------------------------------
-  const buckets = new Map();
+  // 商品实例带 shelfId；补货后按库存比例重建实例，3D 货架与库存数据始终一致。
+  const productItems = [], productMeshes = [], shelfCounters = new Map();
+  const stockRatio = new Map();
   const shapeGeometries = {
     box: new THREE.BoxGeometry(.23, .26, .18),
     tallBox: new THREE.BoxGeometry(.16, .36, .15),
@@ -245,24 +256,39 @@ function buildScene(container) {
     jar: new THREE.CylinderGeometry(.075, .075, .19, 12),
     carton: new THREE.BoxGeometry(.14, .30, .14),
   };
-  function addProduct(shape, position, scale, color, rotation = 0) {
-    if (!buckets.has(shape)) buckets.set(shape, []);
+  function addProduct(shape, position, scale, color, rotation = 0, shelfId = null) {
     const m = new THREE.Matrix4();
     m.compose(position, new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rotation, 0)),
       new THREE.Vector3(scale[0], scale[1], scale[2]));
-    buckets.get(shape).push({ matrix: m, color });
+    const shelfIndex = shelfId ? (shelfCounters.get(shelfId) || 0) : 0;
+    if (shelfId) shelfCounters.set(shelfId, shelfIndex + 1);
+    productItems.push({ shape, matrix: m, color, shelfId, shelfIndex });
   }
   function flushProducts() {
+    for (const mesh of productMeshes) { scene.remove(mesh); mesh.material?.dispose(); }
+    productMeshes.length = 0;
+    const totals = new Map();
+    for (const item of productItems) if (item.shelfId) totals.set(item.shelfId, (totals.get(item.shelfId) || 0) + 1);
+    const buckets = new Map();
+    for (const item of productItems) {
+      const ratio = item.shelfId ? (stockRatio.get(item.shelfId) ?? 1) : 1;
+      const total = item.shelfId ? (totals.get(item.shelfId) || 1) : 1;
+      if (item.shelfIndex / total >= ratio) continue;
+      if (!buckets.has(item.shape)) buckets.set(item.shape, []);
+      buckets.get(item.shape).push(item);
+    }
     for (const [shape, list] of buckets) {
-      if (!list.length) continue;
       const mesh = new THREE.InstancedMesh(shapeGeometries[shape], mat(0xffffff, { roughness: .74 }), list.length);
       list.forEach((item, i) => { mesh.setMatrixAt(i, item.matrix); mesh.setColorAt(i, new THREE.Color(item.color)); });
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       mesh.frustumCulled = false;
-      scene.add(mesh);
+      scene.add(mesh); productMeshes.push(mesh);
     }
-    buckets.clear();
+  }
+  function setShelfStock(shelfId, ratio) {
+    stockRatio.set(shelfId, Math.max(0, Math.min(1, Number(ratio) || 0)));
+    flushProducts();
   }
 
   const heatTiles = [], pickTargets = [];
@@ -280,9 +306,13 @@ function buildScene(container) {
     addBox(group, w, .12, d, mat(0x38584e), 0, .1, 0, true);
     const levels = shelf.kind === 'produce' ? [.42, .78] : shelf.kind === 'cooler' ? [.48, .98, 1.48, 1.94] : [.48, .9, 1.32, 1.72].filter(h => h < shelf.shelfHeight - .1);
     if (shelf.kind === 'cooler') {
-      // 靠墙冷柜：金属外壳 + 玻璃门 + 门框 + 内部冷光 + 分层商品
-      addBox(group, w, shelf.shelfHeight, d, frame, 0, shelf.shelfHeight / 2, 0, true);
-      addBox(group, w - .12, shelf.shelfHeight - .16, .02, materials.coldGlow, 0, shelf.shelfHeight / 2, -d / 2 - .01);
+      // 靠墙冷柜：背/侧板 + 实体层板 + 玻璃门，内部商品具有真实体积且可见。
+      addBox(group, w, shelf.shelfHeight, .07, frame, 0, shelf.shelfHeight / 2, d / 2 - .035, true);
+      for (const ex of [-w / 2 + .05, w / 2 - .05]) addBox(group, .10, shelf.shelfHeight, d, frame, ex, shelf.shelfHeight / 2, 0, true);
+      addBox(group, w, .08, d, frame, 0, .04, 0, true);
+      addBox(group, w, .08, d, frame, 0, shelf.shelfHeight - .04, 0, true);
+      for (const h of levels) addBox(group, w - .16, .035, d - .10, materials.aluminum, 0, h - .02, 0, true);
+      addBox(group, w - .12, shelf.shelfHeight - .16, .02, materials.coldGlow, 0, shelf.shelfHeight / 2, d / 2 - .08);
       addBox(group, w - .08, shelf.shelfHeight - .1, .012, materials.glass, 0, shelf.shelfHeight / 2, -d / 2 - .03);
       for (let i = 0; i <= Math.max(2, Math.floor(w / .55)); i++) {
         const gx = -w / 2 + i * w / Math.max(2, Math.floor(w / .55));
@@ -326,7 +356,7 @@ function buildScene(container) {
           else shape = pick < .16 ? 'bag' : pick < .3 ? 'can' : pick < .44 ? 'bottle' : pick < .58 ? 'tallBox' : pick < .72 ? 'jar' : 'box';
           const scale = shape === 'produce' ? [.8 + pick * .45, .75 + pick * .35, .8 + pick * .45]
             : shape === 'bottle' ? [1, .88 + pick * .3, 1] : [.88 + pick * .2, .82 + pick * .38, 1];
-          addProduct(shape, position, scale, color, rnd(n + index * 5) * .5);
+          addProduct(shape, position, scale, color, rnd(n + index * 5) * .5, shelf.id);
         }
       }
     }
@@ -372,76 +402,81 @@ function buildScene(container) {
     return cart;
   }
 
-  // ----- 机器人：0.62 × 0.82 × 0.92 m --------------------------------------
-  const robot = tagGroup(new THREE.Group(), 'robot', { id: 'AMR-01', name: 'NEXUS AMR-01' });
-  scene.add(robot); pickTargets.push(robot);
-  addRounded(robot, .60, .15, .78, .055, materials.graphite, 0, .13, 0, true);
-  addRounded(robot, .62, .07, .80, .03, mat(0x1d2b35, { metalness: .45 }), 0, .075, 0, true);
-  addRounded(robot, .54, .38, .60, .09, materials.white, 0, .40, 0, true);
-  addBox(robot, .55, .025, .61, materials.aluminum, 0, .235, 0);
-  addBox(robot, .50, .035, .60, materials.aluminum, 0, .645, 0);
-  for (const side of [-1, 1]) addBox(robot, .022, .055, .58, materials.aluminum, side * .25, .685, 0);
-  addBox(robot, .46, .02, .035, materials.aluminum, 0, .685, -.29);
-  for (const side of [-1, 1]) addBox(robot, .02, .11, .50, mat(0x8fded0, { emissive: 0x1a8e80, emissiveIntensity: .35 }), side * .275, .48, 0);
-  // 数字表情屏（参考图要求）
-  const faceScreen = addBox(robot, .27, .20, .022, materials.screen, 0, .47, -.306);
-  faceScreen.rotation.x = -.13;
-  const facePixels = [];
-  for (let i = 0; i < 7; i++) for (let j = 0; j < 4; j++) {
-    const px = addBox(robot, .026, .026, .006, materials.tealEmissive, -.1 + i * .033, .53 - j * .033, -.32);
-    facePixels.push(px);
-  }
-  for (const x of [-.085, .085]) {
-    const lens = addCylinder(robot, .024, .024, .02, materials.dark, x, .6, -.302, 12);
-    lens.rotation.x = Math.PI / 2;
-  }
-  addBox(robot, .58, .08, .055, materials.rubber, 0, .14, -.405);
-  const statusBar = addBox(robot, .42, .022, .02, materials.tealEmissive, 0, .105, -.425);
-  const wheelMeshes = [];
-  for (const side of [-1, 1]) {
-    const wheel = addCylinder(robot, .135, .135, .095, materials.rubber, side * .31, .135, -.04, 20);
-    wheel.rotation.z = Math.PI / 2;
-    const hub = addCylinder(robot, .068, .068, .10, materials.aluminum, side * .325, .135, -.04, 16);
-    hub.rotation.z = Math.PI / 2;
-    for (let k = 0; k < 5; k++) {
-      const spoke = addBox(robot, .105, .012, .018, materials.graphite, side * .325, .135, -.04);
-      spoke.rotation.x = k * Math.PI / 5;
-    }
-    wheelMeshes.push(wheel, hub);
-  }
-  for (const z of [-.30, .30]) for (const side of [-1, 1]) {
-    const caster = addCylinder(robot, .055, .055, .045, materials.rubber, side * .21, .052, z, 12);
-    caster.rotation.z = Math.PI / 2;
-  }
-  addCylinder(robot, .045, .045, .075, materials.graphite, 0, .685, 0, 16);
-  const lidar = addCylinder(robot, .082, .082, .065, mat(0x26343d, { metalness: .55 }), 0, .755, 0, 24);
-  const lidarRing = new THREE.Mesh(new THREE.TorusGeometry(.086, .011, 6, 24), materials.tealEmissive);
-  lidarRing.rotation.x = Math.PI / 2; lidarRing.position.set(0, .792, 0); robot.add(lidarRing);
-  const statusRing = new THREE.Mesh(new THREE.RingGeometry(.43, .48, 42),
-    new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .65, side: THREE.DoubleSide, depthWrite: false }));
-  statusRing.rotation.x = -Math.PI / 2; statusRing.position.y = .011; robot.add(statusRing);
-  const safetyRing = new THREE.Mesh(new THREE.RingGeometry(.77, .80, 48),
-    new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .2, side: THREE.DoubleSide, depthWrite: false }));
-  safetyRing.rotation.x = -Math.PI / 2; safetyRing.position.y = .009; robot.add(safetyRing);
-  const robotTag = makeLabel('AMR-01', '#172C40', '#8ce5d5', .42);
-  robotTag.position.y = 1.02; robot.add(robotTag);
-
-  robot.position.copy(floorPoint(STORE.entrance, 0));
-  let robotState = 'idle';
+  // ----- 机器人舰队：0.62 × 0.82 × 0.92 m × 3 台，独立泊位与状态 -------------
   const stateColor = { idle: 0x28B9A4, moving: 0x28B9A4, turning: 0x3D7BD6, avoiding: 0xE8A34A,
     picking: 0xE8A34A, blocked: 0xE8A34A, charging: 0x3D7BD6, error: 0xD96C68,
     NORMAL_NAVIGATION: 0x28B9A4, SLOW_DOWN: 0xE8A34A, YIELD: 0xE8A34A, WAIT: 0xE8A34A,
     AVOIDANCE: 0x3D7BD6, REPLANNING: 0x8E6FB0, RESUME: 0x28B9A4, EMERGENCY_STOP: 0xD96C68 };
-  function setRobotState(next) {
-    robotState = stateColor[next] ? next : 'idle';
-    const color = stateColor[robotState];
-    statusBar.material = new THREE.MeshBasicMaterial({ color });
-    statusRing.material.color.setHex(color);
-    safetyRing.material.color.setHex(color);
-    lidarRing.material = new THREE.MeshBasicMaterial({ color });
-    // 表情屏：行驶=笑脸、礼让=横眼、故障=叉
-    const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP'].includes(robotState);
-    facePixels.forEach((p, i) => { p.visible = urgent ? (Math.floor(i / 7) === 1) : (i % 7 !== 0 && i % 7 !== 6 || Math.floor(i / 7) !== 1); });
+
+  function createRobotModel(id) {
+    const robot = tagGroup(new THREE.Group(), 'robot', { id, name: `NEXUS ${id}` });
+    scene.add(robot); pickTargets.push(robot);
+    addRounded(robot, .60, .15, .78, .055, materials.graphite, 0, .13, 0, true);
+    addRounded(robot, .62, .07, .80, .03, mat(0x1d2b35, { metalness: .45 }), 0, .075, 0, true);
+    addRounded(robot, .54, .38, .60, .09, materials.white, 0, .40, 0, true);
+    addBox(robot, .55, .025, .61, materials.aluminum, 0, .235, 0);
+    addBox(robot, .50, .035, .60, materials.aluminum, 0, .645, 0);
+    for (const side of [-1, 1]) addBox(robot, .022, .055, .58, materials.aluminum, side * .25, .685, 0);
+    addBox(robot, .46, .02, .035, materials.aluminum, 0, .685, -.29);
+    for (const side of [-1, 1]) addBox(robot, .02, .11, .50, mat(0x8fded0, { emissive: 0x1a8e80, emissiveIntensity: .35 }), side * .275, .48, 0);
+    const faceScreen = addBox(robot, .27, .20, .022, materials.screen, 0, .47, -.306);
+    faceScreen.rotation.x = -.13;
+    const facePixels = [];
+    for (let i = 0; i < 7; i++) for (let j = 0; j < 4; j++) {
+      facePixels.push(addBox(robot, .026, .026, .006, materials.tealEmissive, -.1 + i * .033, .53 - j * .033, -.32));
+    }
+    for (const x of [-.085, .085]) {
+      const lens = addCylinder(robot, .024, .024, .02, materials.dark, x, .6, -.302, 12);
+      lens.rotation.x = Math.PI / 2;
+    }
+    addBox(robot, .58, .08, .055, materials.rubber, 0, .14, -.405);
+    const statusBar = addBox(robot, .42, .022, .02, materials.tealEmissive, 0, .105, -.425);
+    const wheelMeshes = [];
+    for (const side of [-1, 1]) {
+      const wheel = addCylinder(robot, .135, .135, .095, materials.rubber, side * .31, .135, -.04, 20);
+      wheel.rotation.z = Math.PI / 2;
+      const hub = addCylinder(robot, .068, .068, .10, materials.aluminum, side * .325, .135, -.04, 16);
+      hub.rotation.z = Math.PI / 2;
+      for (let k = 0; k < 5; k++) {
+        const spoke = addBox(robot, .105, .012, .018, materials.graphite, side * .325, .135, -.04);
+        spoke.rotation.x = k * Math.PI / 5;
+      }
+      wheelMeshes.push(wheel, hub);
+    }
+    for (const z of [-.30, .30]) for (const side of [-1, 1]) {
+      const caster = addCylinder(robot, .055, .055, .045, materials.rubber, side * .21, .052, z, 12);
+      caster.rotation.z = Math.PI / 2;
+    }
+    addCylinder(robot, .045, .045, .075, materials.graphite, 0, .685, 0, 16);
+    addCylinder(robot, .082, .082, .065, mat(0x26343d, { metalness: .55 }), 0, .755, 0, 24);
+    const lidarRing = new THREE.Mesh(new THREE.TorusGeometry(.086, .011, 6, 24), materials.tealEmissive);
+    lidarRing.rotation.x = Math.PI / 2; lidarRing.position.set(0, .792, 0); robot.add(lidarRing);
+    const statusRing = new THREE.Mesh(new THREE.RingGeometry(.43, .48, 42),
+      new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .65, side: THREE.DoubleSide, depthWrite: false }));
+    statusRing.rotation.x = -Math.PI / 2; statusRing.position.y = .011; robot.add(statusRing);
+    const safetyRing = new THREE.Mesh(new THREE.RingGeometry(.77, .80, 48),
+      new THREE.MeshBasicMaterial({ color: 0x28B9A4, transparent: true, opacity: .2, side: THREE.DoubleSide, depthWrite: false }));
+    safetyRing.rotation.x = -Math.PI / 2; safetyRing.position.y = .009; robot.add(safetyRing);
+    const robotTag = makeLabel(id, '#172C40', '#8ce5d5', .42);
+    robotTag.position.y = 1.02; robot.add(robotTag);
+    return { id, group: robot, statusBar, statusRing, safetyRing, lidarRing, facePixels, wheelMeshes, robotState: 'idle' };
+  }
+
+  const robotModels = STORE.robotWaitSlots.map((slot, i) => createRobotModel(`AMR-${String(i + 1).padStart(2, '0')}`));
+  const robotById = new Map(robotModels.map(model => [model.id, model]));
+  const robot = robotModels[0].group;
+  robotModels.forEach((model, i) => model.group.position.copy(floorPoint(STORE.robotWaitSlots[i], 0)));
+
+  function setRobotState(next, id = robotModels[0].id) {
+    const model = robotById.get(id) || robotModels[0];
+    model.robotState = stateColor[next] ? next : 'idle';
+    const color = stateColor[model.robotState];
+    model.statusBar.material = new THREE.MeshBasicMaterial({ color });
+    model.statusRing.material.color.setHex(color);
+    model.safetyRing.material.color.setHex(color);
+    model.lidarRing.material = new THREE.MeshBasicMaterial({ color });
+    const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP'].includes(model.robotState);
+    model.facePixels.forEach((p, i) => { p.visible = urgent ? (Math.floor(i / 7) === 1) : (i % 7 !== 0 && i % 7 !== 6 || Math.floor(i / 7) !== 1); });
   }
 
   // ----- 层级关节行人：6 套参考图角色 + 正确的推车把手绑定 -------------------
@@ -526,7 +561,7 @@ function buildScene(container) {
     return [group, { arms, legs, cart, handAnchors, look, baseScale: scale }];
   }
 
-  const MAX_PEOPLE = 26;
+  const MAX_PEOPLE = 36;
   const people = [];
   for (let i = 0; i < MAX_PEOPLE; i++) {
     const [model, rig] = makePerson(i % 6, 0xe0ae87, i % 5 === 0);
@@ -635,6 +670,27 @@ function buildScene(container) {
         addBox(scene, f.w * X_SCALE - .12, h - .16, .01, materials.glass, p.x, h / 2, p.z + f.h * X_SCALE / 2 + .025);
         for (let k = 0; k < Math.floor(f.w / 7); k++) addBox(scene, .02, h - .18, .03, materials.aluminum, p.x - f.w * X_SCALE / 2 + (k + 1) * f.w * X_SCALE / Math.floor(f.w / 7), h / 2, p.z + f.h * X_SCALE / 2 + .032);
         for (let k = 0; k < 3; k++) addBox(scene, f.w * X_SCALE * .7, .03, .02, materials.tealEmissive, p.x, .5 + k * .5, p.z + f.h * X_SCALE / 2 + .04);
+        // 靠墙柜实体陈列：三层板 + 多层不同包装/颜色的 3D 商品，不再只贴冷光面。
+        const faceZ = p.z + f.h * X_SCALE / 2 + .09;
+        const wallW = f.w * X_SCALE;
+        const longSide = f.h * X_SCALE > wallW;
+        const insideX = p.x < 0 ? p.x + wallW / 2 + .09 : p.x - wallW / 2 - .09;
+        const span = longSide ? f.h * X_SCALE - .3 : wallW - .3;
+        for (let level = 0; level < 3; level++) {
+          const shelfY = .42 + level * .52;
+          addBox(scene, longSide ? .28 : span, .035, longSide ? span : .28, materials.aluminum,
+            longSide ? insideX : p.x, shelfY, longSide ? p.z : faceZ);
+          const count = Math.max(5, Math.floor(span / .34));
+          for (let n = 0; n < count; n++) {
+            const t = (n + .5) / count - .5;
+            const px = longSide ? insideX : p.x + t * span;
+            const pz = longSide ? p.z + t * span : faceZ;
+            const pick = rnd(i * 53 + level * 17 + n);
+            const shape = pick < .3 ? 'box' : pick < .5 ? 'bottle' : pick < .68 ? 'can' : pick < .84 ? 'carton' : 'jar';
+            const color = palette[(i + level * 2 + n) % palette.length];
+            addProduct(shape, new THREE.Vector3(px, shelfY + .17, pz), [1, .88 + pick * .2, 1], color, 0, `wall-${i}`);
+          }
+        }
       }
       if (isCheckout) {
         // 收银台：传送带 + 扫码区 + 显示屏 + 商品扫描台
@@ -735,8 +791,11 @@ function buildScene(container) {
     const state = info.state || 'NORMAL_NAVIGATION';
     const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(state);
     const color = urgent ? 0xE8A34A : state === 'SLOW_DOWN' || state === 'AVOIDANCE' ? 0xE8A34A : 0x28B9A4;
-    safetyRing.material.color.setHex(color);
-    safetyRing.material.opacity = urgent ? .42 : state === 'SLOW_DOWN' ? .3 : .16;
+    // 安全环属于每个机器人模型；对全部模型同步安全状态色。
+    for (const model of robotModels) {
+      model.safetyRing.material.color.setHex(color);
+      model.safetyRing.material.opacity = urgent ? .42 : state === 'SLOW_DOWN' ? .3 : .16;
+    }
   }
   function setQueueStatus(list = []) {
     // 队列占用可视化：排队位圆环颜色随占用变化。
@@ -768,8 +827,10 @@ function buildScene(container) {
     fps = fps ? fps * .92 + (1 / Math.max(.001, dt)) * .08 : 1 / Math.max(.001, dt);
     if (!active || document.hidden || !container.offsetParent) return;
     const time = (now - startedAt) / 1000;
-    lidarRing.rotation.z = time * 2.4;
-    for (const wheel of wheelMeshes) wheel.rotation.x = (robot.userData.distance || 0) / .135;
+    for (const model of robotModels) {
+      model.lidarRing.rotation.z = time * 2.4;
+      for (const wheel of model.wheelMeshes) wheel.rotation.x = (model.group.userData.distance || 0) / .135;
+    }
     if (cameraMode === 'follow' || cameraMode === 'close') {
       const robotPos = robot.position, angle = robot.rotation.y;
       const offset = cameraMode === 'close' ? new THREE.Vector3(2.4, 1.9, 3.2) : new THREE.Vector3(0, 4.2, 6.5);
@@ -785,26 +846,39 @@ function buildScene(container) {
     renderFaceTimer += dt;
     if (renderFaceTimer > .5) {
       renderFaceTimer = 0;
-      const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP'].includes(robotState);
-      facePixels.forEach((p, i) => {
-        const row = Math.floor(i / 7), col = i % 7;
-        p.visible = urgent ? (row === 1) : (row === 0 ? col === 1 || col === 5 : row === 2 ? col > 0 && col < 6 : true);
-      });
+      for (const model of robotModels) {
+        const urgent = ['YIELD', 'WAIT', 'EMERGENCY_STOP'].includes(model.robotState);
+        model.facePixels.forEach((p, i) => {
+          const row = Math.floor(i / 7), col = i % 7;
+          p.visible = urgent ? (row === 1) : (row === 0 ? col === 1 || col === 5 : row === 2 ? col > 0 && col < 6 : true);
+        });
+      }
     }
     // 购物车与人同步：把手锚点属于人物 group，天然随整体位移/转向/停止。
     renderer.render(scene, camera);
   }
   requestAnimationFrame(frame);
 
+  function placeRobot(model, point, state, distance) {
+    const next = floorPoint(point, 0);
+    const dx = next.x - model.group.position.x, dz = next.z - model.group.position.z;
+    if (Math.hypot(dx, dz) > .004) model.group.rotation.y = Math.atan2(-dx, -dz);
+    model.group.position.x = next.x; model.group.position.z = next.z;
+    model.group.userData.distance = distance || 0;
+    if (state) setRobotState(state, model.id);
+  }
+
   return {
-    setRobot(point, state, distance = 0) {
-      const next = floorPoint(point, 0);
-      const dx = next.x - robot.position.x, dz = next.z - robot.position.z;
-      if (Math.hypot(dx, dz) > .004) robot.rotation.y = Math.atan2(-dx, -dz);
-      robot.position.x = next.x; robot.position.z = next.z;
-      robot.userData.distance = distance;
-      if (state) setRobotState(state);
+    setRobot(point, state, distance = 0, id = robotModels[0].id) {
+      placeRobot(robotById.get(id) || robotModels[0], point, state, distance);
     },
+    setRobots(list = []) {
+      for (const entry of list) {
+        const model = robotById.get(entry.id || entry.robotId);
+        if (model) placeRobot(model, entry.position, entry.state, entry.distance || 0);
+      }
+    },
+    setShelfStock,
     setRobotState, setPedestrians, setSafety, setQueueStatus,
     setPickHandler(handler) { pickHandler = typeof handler === 'function' ? handler : null; },
     setScenario(scenario, slot = '09') {

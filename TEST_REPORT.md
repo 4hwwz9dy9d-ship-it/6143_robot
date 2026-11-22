@@ -204,3 +204,50 @@ Note: the earlier display `6 / 4` for navigation stops was corrected to cap the 
 - 程序化模型非照片级写实；人物为层级关节动画（无蒙皮骨骼 GLB），复杂手指未建模，手掌以椭球+拇指表示。
 - 近景相机在入口处可能被门柱/标牌遮挡（场景真实遮挡，非渲染错误）。
 - 无头浏览器数据不代表真实设备帧率。
+
+---
+
+## 10. V2.0 系统级升级（订单闭环 / 统一数据层 / 真实仿真）
+
+日期 2026-11-22。目标：在保留既有功能下，补齐业务闭环、持久化、多机器人调度与 3D 同步。以下均为本地无头 Chrome 实测结果（脚本 `cdp-v2-tests.mjs`、`cdp-v2-tests-ped.mjs`、`cdp-v2-demo-jump.mjs`，日志 `v2-tests-logic.json`、`v2-tests-ped.json`）。
+
+### 10.1 本轮修复的实际缺陷（非表面功能）
+
+| 缺陷 | 根因 | 修复 |
+|---|---|---|
+| 刷新后订单/补货丢失 | 订单只存内存 | 新增 `systemCore.js`，统一 `localStorage` 持久化（订单/库存/补货记录/编号，`version=2`，无存储时降级内存） |
+| 手动补货下拉框为空 | `initRestockControls()` 定义但从未调用 | 初始化及 `loadResearch()` 后均调用，且保留已选项 |
+| 行人面板数据全为 0 / — | `renderPedestrianPanel` 中 `reduce` 返回 `{p,d}`，却读 `nearest.speed`（应为 `nearest.p.speed`），抛 `undefined.toFixed` 并中断后续初始化 | 展开行人字段 `current={...p,d}`，面板值全部来自真实仿真对象 |
+| 真实商品目录加载不出来 | 上述 `setSafety` 异常在初始化链中抛出，中断 `loadResearch` 之后流程 | 见下一行 |
+| 3D `setSafety` 抛 `ReferenceError` | 多机器人重构后仍引用已删除的裸变量 `safetyRing` | 改为遍历 `robotModels` 同步每个模型的安全环 |
+| HTML 手动补货区块错位 | 多出一个 `</section>`，表单落在 `view-inventory` 外 | 修正标签结构 |
+| 完成订单 KPI 恒为 0 | 只统计英文 `Completed`，实际 push 中文 `已完成` | 两种状态值都计入 |
+| 部署站点缺新模块 | Pages 工作流 cp 列表未含 `systemCore.js` | 加入工作流复制清单 |
+
+### 10.2 六项必测场景实测结果
+
+| # | 场景 | 实测结果 |
+|---|---|---|
+| 1 | 完整订单配送 | **PASS**。下单 `NX-0001` → 分配 `AMR-03` → Held–Karp 精确顺序（4 货区）+ A* 6 段 → 取货扣减库存 → 配送 → 交接完成后 `returnReason=配送完成`，机器人沿真实路径返航至泊位 `13,62` 并恢复 `IDLE`（非瞬移、非停留配送点） |
+| 2 | 配送中取消 | **PASS**。配送中（stage=2，位置 `45,94.2`）取消 → 订单状态 `已取消`、记录取消时间与进度 → 从真实位置 `28.7,98` 渐进退到 `24,90.1` 返航（非瞬移）→ 回泊位 `IDLE`，取消记录数 1 |
+| 3 | 人工补货 | **PASS**。库存从 3 件补 7 件至 10 件 → 记录 `before=3, after=10, mode=手动, shelfId=1-4` → `saveInventory` + `syncShelfStock` 同步 3D；自动补货共用同一库存与记录表 |
+| 4 | 行人高峰 | **PASS**。渐进补至 30 人；5000 帧（约 3 分钟仿真）内穿墙 0、穿货架 0；重叠采样 98/多帧（占比极低）；行为覆盖 `ENTER_STORE / BROWSING / WALK_TO_SECTION / GOING_TO_CHECKOUT / QUEUEING / EXITING`；**22 名行人经收银队列从右侧出口离店**，最大排队 14 人 |
+| 5 | 人机交互 | **PASS**。机器人行为序列 `NORMAL_NAVIGATION → SLOW_DOWN → YIELD → RESUME …`；最小 TTC 0（安全停车）、最小距离 1.09 m；碰撞 0、碰撞事件 0；礼让计数 1，全程订单继续推进 |
+| 6 | 数据持久化 | **PASS**。刷新前 `orders=2, restocks=1, persistence=localStorage`，刷新后数值完全一致；库存从统一数据层回填到商品对象 |
+
+补充：**查看配送演示**入口（下单提示条 + 订单队列 + 历史「3D 回放」）实测均跳转 3D 超市、定位到订单机器人 `AMR-03`、路径已重建；0 运行时错误。
+
+### 10.3 数据结构与算法变更
+
+- **新统一数据层** `systemCore.js`：`hydrateInventory / saveInventory / nextOrderId / saveOrder / patchOrder / getOrderRecord / hydrateOrder / addRestock / listRestocks / persistenceStatus`；订单记录快照含商品、数量、金额、下单/开始/完成/取消时间、机器人、起终点、采样路径、取消前进度、配送耗时。
+- **机器人舰队** `state.fleet`（3 台，独立泊位 `STORE.robotWaitSlots`）；`assignRobot` 按等待区到首个货区的 A* 距离 + 电量分配；新增 `beginReturn / stepReturn` 返航状态机（与订单配送共用行人、行为层与真实路径）。
+- **订单状态流转**：待处理 → 待分配 → 配送中 →（已完成 / 已取消 / 异常），返航中作为机器人侧状态；`cancelOrderById` 同时处理排队中、执行中、取货中订单的安全中止。
+- **3D 多机器人在途实例** `robotModels`（`setRobots` / `setShelfStock`），安全环与表情按模型同步。
+
+### 10.4 仍未完成 / 已知限制
+
+- 无后端与真实支付：全部为浏览器内仿真 + `localStorage`，跨设备/跨浏览器不同步；清除站点数据会清空历史。
+- 「3D 回放」重建的是订单当时的路径规划与泊位，不逐帧重放历史行人位置（历史仅保存机器人采样路径点，未存行人轨迹）。
+- 返航路径基于取消瞬间的静态障碍重算；返航途中新出现的行人不触发二次全局重规划（安全层仍会减速/停车让行）。
+- 自动补货按库存阈值（<20%）触发，未接入真实销量预测模型；优先级字段为记录值，不参与调度排序。
+- 人物仍为程序化层级关节模型，非 GLB 蒙皮骨骼；无逐指动作。

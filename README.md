@@ -15,12 +15,14 @@ Teaching window: until 2026-12-31 23:59:59 Beijing time. After that the schedule
 | Area | Contents |
 |---|---|
 | Overview | Hero, real-session KPIs, system status, order pipeline, zone preview |
-| Order Management | Instacart English catalog search, cart, simulated payment, order queue, fulfillment table, Apriori recommendations |
-| Inventory | Simulated stock, low/out-of-stock alerts, employee restock confirmation |
+| Order Management | Instacart English catalog search, cart, simulated payment, order queue with **one-click "View Delivery Demo"**, fulfillment table, Apriori recommendations |
+| Order History | Persisted order archive with status filter / time sort, detail view, robot / route / timing records and **3D replay** |
+| Inventory | Simulated stock, low/out-of-stock alerts, **manual + threshold-based auto restock** with a persistent restock log and 3D shelf sync |
 | Retail Analytics | Real Instacart statistics, order-hour chart, Apriori support/confidence/lift, K-means clusters, simulated crowd samples |
 | 3D Supermarket | 29.9 × 24.0 m store, 18 offset irregular zones (gondolas/glass-door coolers/produce islands/promo islands), 4 checkout lanes with independent queues, premium AMR, six reference-based articulated pedestrian characters, five camera modes (full/iso/top/follow/close), 2D/3D switch |
 | Pedestrian Control Center | Five pedestrian types, autonomous shopping behaviour, density/speed/mode controls, four preset scenarios, live safety telemetry |
 | Human-Aware Navigation | Behaviour state machine, time-to-collision prediction, velocity-aware safety distance, predictive yielding, local avoidance and A* replan requests |
+| Fleet & Lifecycle | 3-robot fleet with independent wait bays, distance/battery-based dispatch, full task lifecycle (accept → pick → deliver → **A* return to bay**), **cancel-in-delivery with safe re-planned return** |
 | Robot Control | AMR status, battery/load, navigation log, destination, fault drills |
 | Route Optimization | Held–Karp visit order, A* segment costs, original/current comparison, cost benchmark |
 | Simulation Center | Pedestrian, cart, aisle closure, overload, congestion and navigation-failure events |
@@ -33,6 +35,7 @@ Teaching window: until 2026-12-31 23:59:59 Beijing time. After that the schedule
 - Vendored Three.js + OrbitControls in `vendor/` (no paid third-party service).
 - Procedural geometry and canvas textures — no external GLTF/GLB or image assets.
 - `pedestrian.js` owns pedestrian behaviour; `robotBehavior.js` owns local human-aware decisions. A* in `app.js` remains the global planner.
+- `systemCore.js` is the single persisted data layer (orders / inventory / restock log) backed by `localStorage` with in-memory fallback.
 - Static JSON in `public/data/` produced by `scripts/build_data.py`.
 - GitHub Pages deployment through `.github/workflows/expire-pages.yml`.
 
