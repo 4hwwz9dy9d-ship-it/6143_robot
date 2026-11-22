@@ -2873,13 +2873,24 @@ loadResearch().then(data => {
   buildZoneHeat(data.rules);
   // 回填待配送队列后必须重渲染一次：否则总览 KPI 还停在上一次「0 单进行中」的快照上，
   // 直到用户点开某个视图或下一帧事件才更新——这正是「数字不更新」的另一条路径。
-  if (restorePendingOrders()) renderAll();
+  // V3.0b：恢复/重渲染包在 try 里——本地存的旧订单数据再脏，也不允许它把
+  // 商品目录、规则、推荐这些后续初始化一起拖死（目录加载是用户的第一感知）。
+  try {
+    if (restorePendingOrders()) renderAll();
+  } catch (error) {
+    console.error('恢复待配送订单失败（已跳过，不影响目录加载）：', error);
+    log('本地订单数据恢复失败，已跳过（可在订单历史中查看原始记录）。', 'warn');
+  }
   populateFilters(); scheduleCatalogSearch(); renderRules(); renderRecommendations();
   renderResearchDashboard(data); renderDataAudit(); renderPickupFeasibility(); renderInventory();
   initRestockControls();
   log(`真实商品目录已加载：${data.summary.products.toLocaleString()} 件商品，${data.rules.ruleCount.toLocaleString()} 条 Apriori 规则。`);
 }).catch(error => {
-  $('catalogue').textContent = `真实数据加载失败：${error.message}`;
-  setText('miningMethod', '真实分析数据不可用，请检查 public/data 目录。');
   console.error(error);
+  // 目录加载失败时给出可操作的原因，而不是一句干巴巴的提示。
+  const reason = location.protocol === 'file:'
+    ? '当前是直接双击打开的 file:// 页面，ES 模块与 JSON 数据无法加载。请用本地服务器访问：python -m http.server 8099 后打开 http://127.0.0.1:8099/'
+    : `数据请求失败（${error.message}）。若本地预览请确认服务器仍在运行（python -m http.server 8099），再刷新一次。`;
+  $('catalogue').textContent = `真实数据加载失败：${reason}`;
+  setText('miningMethod', '真实分析数据不可用，请检查 public/data 目录。');
 });

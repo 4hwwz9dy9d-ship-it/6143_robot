@@ -35,6 +35,19 @@ try {
   storageOk = false;
   console.warn('持久化存储不可用，本次运行仅保存在内存中：', error.message);
 }
+// V3.0b：加载即体检——形状不对的历史订单（lines 不是数组、缺 id 等）直接丢弃，
+// 不让它进内存后到处炸 renderQueue/hydrateOrder（炸一次就会把整个初始化链拖死，
+// 表现为「商品目录加载不出来」）。坏订单本来也无法重建演示，保留没有意义。
+if (Array.isArray(data.orders)) {
+  const before = data.orders.length;
+  data.orders = data.orders.filter(order =>
+    order && typeof order.id === 'string' && Array.isArray(order.lines)
+    && order.lines.every(line => line && typeof line.productId === 'string'));
+  if (data.orders.length !== before) console.warn(`已丢弃 ${before - data.orders.length} 条损坏的历史订单记录。`);
+} else {
+  data.orders = [];
+}
+if (!Array.isArray(data.restocks)) data.restocks = [];
 
 export const persistenceStatus = () => storageOk ? 'localStorage' : 'memory-only';
 
