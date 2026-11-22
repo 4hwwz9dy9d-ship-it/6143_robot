@@ -495,7 +495,9 @@ function drawBaseMap() {
   for (const y of STORE.crossYs) svg('line', { x1: 50, y1: (STORE.height - y) * 10, x2: (STORE.width - 2) * 10, y2: (STORE.height - y) * 10, class: 'aisle-line' }, $('aisles'));
   for (const f of layoutFixtures) {
     svg('rect', { x: (f.x - f.w / 2) * 10, y: (STORE.height - f.y - f.h / 2) * 10, width: f.w * 10, height: f.h * 10, rx: 6, class: `fixture-${f.kind}` }, $('fixtures'));
-    svg('text', { x: f.x * 10, y: (STORE.height - f.y) * 10 + 4, class: 'fixture-label' }, $('fixtures')).textContent = f.label;
+    // 机器人泊位标签上移，避免被停在泊位上的机器人圆点盖住。
+    const labelY = (STORE.height - f.y) * 10 + (f.kind === 'robotwait' ? -24 : 4);
+    svg('text', { x: f.x * 10, y: labelY, class: 'fixture-label' }, $('fixtures')).textContent = f.label;
   }
   for (const s of shelves) {
     const left = s.xMin * 10, top = (STORE.height - s.yMax) * 10, width = (s.xMax - s.xMin) * 10, height = (s.yMax - s.yMin) * 10;
@@ -555,6 +557,20 @@ function drawCrowd() {
     svg('text', { x: 8 * 10 + 28, y: (STORE.height - 26) * 10 - 38, class: 'gate-status-text' }, gateLayer).textContent = `入口 · 进店 ${entries}`;
     svg('rect', { x: 170 * 10 - 90, y: (STORE.height - 26) * 10 - 54, width: 120, height: 22, rx: 8, class: 'gate-status' }, gateLayer);
     svg('text', { x: 170 * 10 - 28, y: (STORE.height - 26) * 10 - 38, class: 'gate-status-text' }, gateLayer).textContent = `出口 · 离店 ${exits}`;
+  }
+  // 收银台实时排队徽标：n/4 表示该通道正在排队的人数（满员转红），地图上一眼看出高峰排队。
+  if (state.pedSystem) {
+    for (const q of state.pedSystem.queueStatus()) {
+      const lane = STORE.checkoutLanes.find(l => l.id === q.id);
+      if (!lane) continue;
+      const color = q.size >= q.capacity ? '#e2734b' : q.size > 0 ? '#e8a34a' : '#9db3ad';
+      // 4 号通道紧挨出口标识，徽标向左错开一格，避免与「出口」标牌重叠。
+      const bx = Math.abs(lane.x - STORE.exit[0]) < 6 ? lane.x - 6 : lane.x;
+      svg('rect', { x: bx * 10 - 21, y: (STORE.height - 23.2) * 10 - 16, width: 42, height: 16, rx: 5,
+        fill: '#ffffff', 'fill-opacity': .94, stroke: color, 'stroke-width': 1.3 }, $('crowd'));
+      svg('text', { x: bx * 10, y: (STORE.height - 23.2) * 10 - 4.5, 'text-anchor': 'middle',
+        'font-size': 9, 'font-weight': 700, fill: color }, $('crowd')).textContent = `${q.size}/${q.capacity}`;
+    }
   }
   scene3d?.setScenario(state.scenario, state.slot);
   scene3d?.setPedestrians(crowd);
@@ -662,7 +678,11 @@ function renderOverviewPreview() {
     + (traveled ? `<path d="${traveled}" fill="none" stroke="#159e86" stroke-width="2.6" opacity=".9"/>` : '');
   const people = state.pedSystem?.snapshot() || [];
   $('twinHeat').innerHTML = people.map(p => `<circle cx="${tx(p.x)}" cy="${ty(p.y)}" r="9" fill="#ffb347" opacity=".10"/>`).join('');
-  $('twinCrowd').innerHTML = people.map(p => `<circle cx="${tx(p.x)}" cy="${ty(p.y)}" r="2.2" fill="${p.cart ? '#E8A34A' : '#5b7f92'}" opacity=".9"/>`).join('');
+  $('twinCrowd').innerHTML = people.map(p => {
+    // 结账中=青色、排队中=红橙，其余按是否推车着色：高峰排队在总览图上也能一眼看到。
+    const fill = p.serving ? '#20A995' : p.state === 'QUEUEING' ? '#e2734b' : p.cart ? '#E8A34A' : '#5b7f92';
+    return `<circle cx="${tx(p.x)}" cy="${ty(p.y)}" r="${p.serving ? 2.8 : 2.2}" fill="${fill}" opacity=".92"/>`;
+  }).join('');
   $('twinRobot').innerHTML = state.fleet.map(robot => {
     const pos = robot.id === state.activeRobotId ? state.displayPosition : robot.position;
     const c = state.charging?.active ? '#E8A34A' : state.replay ? '#7b6cf0' : '#0f6f5e';
@@ -1063,16 +1083,29 @@ function renderPedestrianPanel() {
   setText('pedTtc', Number.isFinite(result.ttc) ? `${result.ttc.toFixed(2)} s` : '—');
   setText('pedDestination', nextName());
   const m = brain.metrics, pm = ped.metrics;
+  const checkout = ped.checkoutSummary ? ped.checkoutSummary() : null;
   const counters = $('pedCounters');
   if (counters) counters.innerHTML = [
     ['行人数量', ped.people.length], ['活动路线', new Set(ped.people.map(p => p.state)).size],
     ['Yield 次数', m.yields], ['Replan 次数', m.replannings],
     ['Near Miss', m.nearMisses], ['Collision', m.collisions + state.safetyEvents.filter(e => e.type === 'collision').length],
     ['平均等待', `${m.waitSeconds.toFixed(1)} s`], ['人工介入', m.humanInterventions],
+    ['结账完成', pm.checkoutServed ?? 0], ['平均排队', checkout ? `${checkout.avgWait} s` : '—'],
   ].map(([label, value]) => `<span>${label}<b>${typeof value === 'number' ? value : escapeHtml(String(value))}</b></span>`).join('');
   const queues = $('pedQueues');
-  if (queues) queues.innerHTML = ped.queueStatus().map(q =>
-    `<span>${q.id} · 已服务 ${q.served}<b>${q.size}/${q.capacity}</b></span>`).join('');
+  if (queues) {
+    // 每条收银通道：排队人数/容量 + 队首正在结账的剩余时间 + 本通道平均等待，全部来自真实队列状态。
+    queues.innerHTML = ped.queueStatus().map(q => {
+      const label = q.id.replace('LANE-', '收银台 ');
+      const lead = q.serving ? `结账中 ${q.serveLeft}s` : `已结 ${q.served}`;
+      const tip = q.serving ? `顾客 ${q.serving} 正在结账，剩余 ${q.serveLeft}s`
+        : q.size ? '队首顾客走向扫码台' : '空闲';
+      return `<span title="${tip}${q.wait ? ` · 平均排队 ${q.wait}s` : ''}">${label} · ${lead}<b>${q.size}/${q.capacity}</b></span>`;
+    }).join('') + (checkout
+      ? `<span style="grid-column:1/-1">合计 · 已结账 ${checkout.served} 人<b>排队 ${checkout.queued} 人</b></span>`
+      : '');
+    scene3d?.setCheckoutStatus?.(ped.queueStatus());
+  }
   const stateNode = $('pedBehaviorState');
   if (stateNode) stateNode.title = result.reason || '';
 }
@@ -1107,20 +1140,27 @@ function orderProgress() {
 }
 function sampledPath() { return state.history.filter((_, i) => i % 6 === 0 || i === state.history.length - 1).slice(-400).map(p => [...p]); }
 
-function beginReturn(reason, from = state.displayPosition, viaExit = false) {
+/**
+ * 返航/回坞：沿真实 A* 路径驶向目标点（默认为机器人泊位）。
+ * options.target 可指定充电桩等其它合法站点；options.purpose === 'charge' 时
+ * 抵达后直接对接充电，而不是进入待命。
+ */
+function beginReturn(reason, from = state.displayPosition, viaExit = false, options = {}) {
   const robot = activeRobot();
+  const target = options.target || robot.waitSlot;
+  const purpose = options.purpose || 'park';
   const start = nearestNode(from);
-  const fresh = planLeg(start, robot.waitSlot, state.scenario, state.slot);
+  const fresh = planLeg(start, target, state.scenario, state.slot);
   if (!fresh) { log(`${reason}：无法计算返回等待区的可行路径，机器人保持当前位置并请求人工介入。`, 'danger'); return false; }
   let points = [from, ...fresh.points.slice(1)];
   // V2.2：完成交接后先驶出右出口，在店外整备 3 秒，再经外侧通道从入口回归泊位。
   const o = STORE.outsideReturn;
   const toGate = viaExit ? planLeg(nearestNode(from), STORE.exit, state.scenario, state.slot) : null;
-  const toBay = viaExit ? planLeg(STORE.entrance, robot.waitSlot, state.scenario, state.slot) : null;
+  const toBay = viaExit ? planLeg(STORE.entrance, target, state.scenario, state.slot) : null;
   if (viaExit) {
     if (toGate && toBay) {
       // V2.5：交接点已移到店内 [153,44]，出门后沿外墙南下 → 前墙外侧中央 staging 停 3 秒
-      // → 继续西行 → 左入口回归泊位。出口周边(门内/门外/行人出店 y=26)没有任何机器人停留点。
+      // → 继续西行 → 左入口回归泊位。出口周边(门内/门外、行人出店 y=26)没有任何机器人停留点。
       points = [from, ...toGate.points.slice(1), o.exitOuter, o.rightSouth, o.staging, o.frontSouth,
         o.entranceOuter, STORE.entrance, ...toBay.points.slice(1)];
     } else log('外侧返回通道规划失败：改用店内 A* 路径返回泊位。', 'warn');
@@ -1132,14 +1172,22 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false) {
     const stagingIndex = points.findIndex(p => p[0] === o.staging[0] && p[1] === o.staging[1]);
     if (stagingIndex > 0) waitAt = lengths.slice(0, stagingIndex).reduce((a, b) => a + b, 0);
   }
+  const wasRunning = state.running;
   state.returnLeg = { points, lengths, length: lengths.reduce((a, b) => a + b, 0), distance: 0,
-    waitAt, waited: false, waitLeft: 0 };
+    waitAt, waited: false, waitLeft: 0, target: [...target], purpose };
   state.returnReason = reason;
   state.running = true; state.lastFrame = 0; state.pauseLeft = 0;
   syncRobotPose(from, 'RETURNING', null);
-  status('返回等待区', `${reason}：沿 A* 路径返回 ${robot.id} 泊位。`, 'MOVING');
-  log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) ${viaExit ? '经右出口与外侧通道' : '沿店内真实路径'}返回等待区。`);
+  if (purpose === 'charge') {
+    status('回坞充电', `${reason}：沿 A* 路径驶向 ${STORE.chargingDocks[0]?.id || '充电桩'}。`, 'MOVING');
+    log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) 沿导航图驶向充电桩 (${target.map(n => n.toFixed(0)).join(', ')})，抵达后开始补电。`);
+  } else {
+    status('返回等待区', `${reason}：沿 A* 路径返回 ${target.map(n => n.toFixed(0)).join(', ')} 泊位。`, 'MOVING');
+    log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) ${viaExit ? '经右出口与外侧通道' : '沿店内真实路径'}返回泊位。`);
+  }
   scene3d?.setRobots(robotFleetSnapshot());
+  // 从空闲状态发起回坞时没有正在运行的动画循环，需要自己启动一次（配送中则由原循环接管）。
+  if (!wasRunning) requestAnimationFrame(animate);
   renderAll(); return true;
 }
 
@@ -1177,11 +1225,17 @@ function stepReturn(dt) {
   scene3d?.setRobots(robotFleetSnapshot());
   if (++state.uiTick % 6 === 0) { drawHistory(); renderPedestrianPanel(); }
   if (leg.distance >= leg.length - .001) {
-    state.displayPosition = [...robot.waitSlot]; state.position = [...robot.waitSlot];
-    syncRobotPose(robot.waitSlot, 'IDLE', null);
+    const target = leg.target || robot.waitSlot;
+    state.displayPosition = [...target]; state.position = [...target];
+    syncRobotPose(target, 'IDLE', null);
     state.returnLeg = null; state.running = false; state.finished = false;
-    state.history = [[...robot.waitSlot]]; state.legDistance = 0; state.behavior = null;
+    state.history = [[...target]]; state.legDistance = 0; state.behavior = null;
     scene3d?.setRobots(robotFleetSnapshot());
+    if (leg.purpose === 'charge') {
+      log(`${robot.id} 已抵达充电桩，开始补电。`);
+      attachCharger();
+      return false;
+    }
     log(`${robot.id} 已返回等待区并恢复待命状态。`);
     // V2.2：返航后不自动开始下一单，交由用户在订单页/3D 页手动点击「继续下一单」。
     state.nextAvailable = state.queue.length > 0;
@@ -1317,9 +1371,36 @@ function submitOrder() {
   }
   log(`${id} 已创建（${money(order.paid)}），${robot ? `已分配给 ${robot.id}` : `排队第 ${state.queue.length} 位`}；数据已持久化。`);
 }
+/**
+ * 「平常客流 / 工作日高峰」不只改路径代价，还同步驱动行人密度：
+ * 高峰 30 人 + 小篮快买（结账队列会真的排长），平常低密度 7 人。
+ * 只调整密度与行为模式，不重置队伍，避免正在结账的顾客凭空消失。
+ */
+function syncCrowdToScenario() {
+  const ped = state.pedSystem;
+  if (!ped) return { peak: false, count: 0 };
+  const peak = state.scenario === 'peak';
+  ped.configure({ density: peak ? 'high' : 'low', mode: peak ? 'crowded' : 'shopping', running: true });
+  state.pedRunning = true;
+  state.pedDensity = ped.density;
+  state.pedMode = ped.mode;
+  const density = $('pedDensitySelect'); if (density) density.value = state.pedDensity;
+  const mode = $('pedModeSelect'); if (mode) mode.value = state.pedMode;
+  document.querySelectorAll('[data-ped-scenario]')
+    .forEach(b => b.classList.toggle('is-active', b.dataset.pedScenario === (peak ? 'peak' : 'normal')));
+  publishPedestrians();
+  const queue = ped.queueStatus();
+  return { peak, count: ped.people.length, queued: queue.size };
+}
 function updateScenario(source = 'manual') {
   if (state.order && !state.awaitingPickup) resetPlayback(true);
-  if (source === 'manual') log(`场景已切换为${state.scenario === 'peak' ? '工作日高峰' : '平常客流'}（${state.slot}）：候选路径已重新计算。`);
+  const crowd = syncCrowdToScenario();
+  scene3d.setScenario?.(state.scenario, state.slot);
+  if (source === 'manual') {
+    const label = state.scenario === 'peak' ? '工作日高峰' : '平常客流';
+    const flow = crowd.peak ? `门店人流已加密至 ${crowd.count} 位顾客，收银台按先进先出排队结账。` : '门店恢复低密度客流，队列逐步缩短。';
+    log(`场景已切换为${label}（${state.slot}）：候选路径已重新计算；${flow}`);
+  }
   renderAll();
 }
 function positionOnLeg(leg, at) {
@@ -1657,6 +1738,8 @@ function pedestrianLoop(now) {
   for (let i = 0; i < count; i++) ped.update(step, { position: state.displayPosition, velocity: [0, 0] });
   publishPedestrians();
   if (++pedLoopTick % 6 === 0) renderPedestrianPanel();
+  // 数字孪生平面图 / 2D 导航地图保持「实时」：行人走动、排队人数变化时同步刷新（约 5 Hz）。
+  if (pedLoopTick % 12 === 0) { renderOverviewPreview(); drawCrowd(); }
 }
 function startPedestrianLoop() { requestAnimationFrame(pedestrianLoop); }
 function playPause() {
@@ -1927,7 +2010,26 @@ function syncBattery(robot) {
   if (target) target.battery = state.battery;
   scene3d?.setRobots(robotFleetSnapshot());
 }
-/** 开始充电：机器人回充电桩（若正在配送则拒绝），电量按仿真时间恢复，指示灯变忙。 */
+/** 对接充电桩：机器人已停在桩位后开始补电（指示灯脉冲，电量按仿真时间恢复）。 */
+function attachCharger() {
+  const robot = activeRobot();
+  const dock = STORE.chargingDocks[0];
+  if (!dock) return false;
+  robot.position = [...dock.position]; state.position = [...dock.position]; state.displayPosition = [...dock.position];
+  state.inertialVelocity = [0, 0];
+  syncRobotPose(state.displayPosition, 'CHARGING', null);
+  state.running = false;
+  state.charging = { active: true, robotId: robot.id, lastFrame: 0, rate: 6 }; // 每秒 +6%（仿真时间）
+  scene3d?.setCharging?.(true);
+  setText('playLabel', '暂停充电'); setText('playIcon', 'Ⅱ');
+  status('充电中', `${robot.id} 已在 ${dock.id} 补电：${state.battery.toFixed(0)}% → 100%。`, 'CHARGING');
+  log(`${robot.id} 已对接 ${dock.id}，开始补电（当前 ${state.battery.toFixed(0)}%）。`, 'ok');
+  requestAnimationFrame(chargeLoop);
+  renderAll();
+  return true;
+}
+
+/** 开始充电：机器人先沿 A* 导航图真实行驶到充电桩，再对接补电（不再瞬移）。 */
 function startCharging() {
   if (state.replay) { status('回放中不可充电', '请先退出回放。', 'CHARGING'); return false; }
   if (state.running) { status('请先暂停履约', '机器人配送途中无法回坞，请先暂停或等待配送完成。', 'FAULT'); return false; }
@@ -1935,17 +2037,9 @@ function startCharging() {
   const dock = STORE.chargingDocks[0];
   if (!dock) { log('未配置充电桩，无法充电。', 'warn'); return false; }
   if (state.battery >= 99.5) { status('电量已充满', `当前电量 ${state.battery.toFixed(0)}%，无需充电。`, 'IDLE'); return false; }
-  robot.position = [...dock.position]; state.position = [...dock.position]; state.displayPosition = [...dock.position];
-  state.inertialVelocity = [0, 0];
-  syncRobotPose(state.displayPosition, 'CHARGING', null);
-  state.charging = { active: true, robotId: robot.id, lastFrame: 0, rate: 6 }; // 每秒 +6%（仿真时间）
-  scene3d?.setCharging?.(true);
-  setText('playLabel', '暂停充电'); setText('playIcon', 'Ⅱ');
-  status('充电中', `${robot.id} 已在 ${dock.id} 补电：${state.battery.toFixed(0)}% → 100%。`, 'CHARGING');
-  log(`${robot.id} 回坞充电，电量 ${state.battery.toFixed(0)}%。`, 'ok');
-  requestAnimationFrame(chargeLoop);
-  renderAll();
-  return true;
+  if (dist(state.displayPosition, dock.position) < 2.6) return attachCharger();
+  log(`${robot.id} 从 ${state.displayPosition.map(n => n.toFixed(0)).join(', ')} 回坞充电，沿导航图驶向 ${dock.id}。`);
+  return beginReturn('回坞充电', state.displayPosition, false, { target: dock.position, purpose: 'charge' });
 }
 function stopCharging(reason = '手动停止') {
   if (!state.charging) return;
@@ -1954,7 +2048,14 @@ function stopCharging(reason = '手动停止') {
   setText('playLabel', '开始履约'); setText('playIcon', '▶');
   status('充电结束', `${reason}，当前电量 ${state.battery.toFixed(0)}%。`, 'IDLE');
   log(`充电结束（${reason}），电量 ${state.battery.toFixed(0)}%。`, 'ok');
-  syncBattery(); renderAll();
+  syncBattery();
+  // 充满/暂停后驶回自己的泊位（短距离），保持「充电桩—泊位」两处来回的真实动线。
+  const robot = activeRobot();
+  if (dist(state.displayPosition, robot.waitSlot) > 1.5) {
+    beginReturn('充电结束', state.displayPosition, false, { target: robot.waitSlot, purpose: 'park' });
+    return;
+  }
+  renderAll();
 }
 function chargeLoop(now) {
   const c = state.charging;
@@ -1993,6 +2094,7 @@ function setCamera(mode) {
 window.__NEXUS = Object.freeze({
   state, STORE,
   applyPedPreset,
+  setScenario: value => { state.scenario = value === 'peak' ? 'peak' : 'normal'; updateScenario('test'); return syncCrowdToScenario(); },
   setSimSpeed, setRobotCount, startNextOrder, activateNext,
   viewOrderDemo, exitReplay, startReplay,
   startCharging, stopCharging, associationWeight, matchedAssociations,

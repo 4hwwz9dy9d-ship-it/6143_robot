@@ -708,9 +708,10 @@ function buildScene(container) {
       ensureLook(person, data);
       const p = floorPoint([data.x, data.y], 0);
       person.model.position.set(p.x, 0, p.z);
-      // 选购时真正面向货架（货架中心方向），其余状态沿移动朝向。
-      const heading = data.state === 'BROWSING' && Number.isFinite(data.faceHeading)
-        ? data.faceHeading : (data.heading || 0);
+      // 选购时真正面向货架（货架中心方向），排队时面向收银台，其余状态沿移动朝向。
+      const facingFixed = (data.state === 'BROWSING' || data.state === 'QUEUEING')
+        && Number.isFinite(data.faceHeading);
+      const heading = facingFixed ? data.faceHeading : (data.heading || 0);
       person.model.rotation.y = -heading; // 地图朝向 → 世界前向 (-Z)
       applyPersonRig(person, data, (performance.now() - startedAt) / 1000);
     });
@@ -718,6 +719,8 @@ function buildScene(container) {
   }
 
   // ----- fixtures -----------------------------------------------------------
+  // 排队位地标灯：每个收银通道 4 个，按真实队列占用点亮（占用=琥珀、结账中=青色）。
+  const queueSlotMeshes = [];
   layoutFixtures.forEach((f, i) => {
     const p = floorPoint([f.x, f.y]);
     const isCheckout = f.kind === 'checkout';
@@ -727,9 +730,14 @@ function buildScene(container) {
       const zone = new THREE.Mesh(new THREE.PlaneGeometry(f.w * X_SCALE, f.h * X_SCALE),
         new THREE.MeshBasicMaterial({ color: f.kind === 'queue' ? 0xe8a34a : f.kind === 'handoff' ? 0x9a6fc4 : 0x3d7bd6, transparent: true, opacity: f.kind === 'handoff' ? .18 : .1, depthWrite: false, side: THREE.DoubleSide }));
       zone.rotation.x = -Math.PI / 2; zone.position.set(p.x, .01, p.z); scene.add(zone);
-      if (f.kind === 'queue') for (let k = 0; k < 4; k++) {
-        const slot = addCylinder(scene, .12, .12, .008, mat(0xd8d2bb), p.x, .012, p.z + (1.5 - k) * (f.h * X_SCALE / 4), 16);
-        slot.castShadow = false;
+      if (f.kind === 'queue') {
+        const laneIndex = Math.max(0, (Number(String(f.label).replace(/\D+/g, '')) || 1) - 1);
+        queueSlotMeshes[laneIndex] = [];
+        for (let k = 0; k < 4; k++) {
+          const slot = addCylinder(scene, .12, .12, .008, mat(0xd8d2bb), p.x, .012, p.z + (1.5 - k) * (f.h * X_SCALE / 4), 16);
+          slot.castShadow = false;
+          queueSlotMeshes[laneIndex].push(slot);
+        }
       }
     } else {
       const base = addBox(scene, f.w * X_SCALE, h, f.h * X_SCALE, mat(color), p.x, h / 2, p.z, true);
@@ -840,10 +848,20 @@ function buildScene(container) {
     rig.legs.forEach(leg => { leg.hip.rotation.x = 0; leg.knee.rotation.x = .02; });
     if (body.userData.pick) body.userData.pick = { kind: 'cashier', id: `CASHIER-${idx + 1}` };
     scene.add(body);
-    cashiers.push({ body, rig, phase: idx * 1.7 });
+    cashiers.push({ body, rig, phase: idx * 1.7, index: idx });
     return body;
   }
   STORE.checkoutLanes.forEach((lane, i) => makeCashier(lane.x, 3.4, i));
+  // 每台收银机上的状态灯：空闲灰、有人在排队琥珀、正在扫码结账青色常亮。
+  const checkoutLamps = [];
+  STORE.checkoutLanes.forEach(lane => {
+    const p = floorPoint([lane.x, 6], 0);
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0x8fa7a2, transparent: true, opacity: .38 });
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(.055, .055, .055), lampMat);
+    lamp.position.set(p.x - .44, .34, p.z);
+    scene.add(lamp);
+    checkoutLamps.push({ mesh: lamp, mat: lampMat });
+  });
 
   // 区域招牌（入口上方与后墙）
   const zoneSign = makeLabel('NEXUS RETAIL · 智能超市与机器人履约中心', '#172C40', '#9fe6d8', 1.8);
@@ -920,11 +938,33 @@ function buildScene(container) {
     }
   }
   function setQueueStatus(list = []) {
-    // 队列占用可视化：排队位圆环颜色随占用变化。
-    layoutFixtures.forEach((f, i) => {
-      if (f.kind !== 'queue') return;
-      const status = list.find(q => f.label.includes(q.id.replace('LANE-', '')));
-      // 当前实现以人群数据中的 lane 字段更新，见 setPedestrians。
+    setCheckoutStatus(list);
+  }
+
+  /**
+   * 收银台实时状态（来自 pedestrian.js 的真实队列）：
+   * 排队位地标按占用点亮、队首服务中等宽节奏闪灯，收银员做扫码动作。
+   */
+  let checkoutState = [];
+  function setCheckoutStatus(list = []) {
+    checkoutState = Array.isArray(list) ? list : [];
+    checkoutState.forEach((q, i) => {
+      const dots = queueSlotMeshes[i];
+      if (dots) dots.forEach((dot, k) => {
+        const occupied = k < (q.size || 0);
+        const serving = k === 0 && !!q.serving;
+        const hex = serving ? 0x28B9A4 : occupied ? 0xE8A34A : 0xd8d2bb;
+        dot.material.color.setHex(hex);
+        dot.material.opacity = occupied ? .95 : .5;
+        dot.scale.y = serving ? 3 : 1;
+      });
+      const lamp = checkoutLamps[i];
+      if (lamp) {
+        const serving = !!q.serving;
+        lamp.mat.color.setHex(serving ? 0x28B9A4 : (q.size || 0) > 0 ? 0xE8A34A : 0x8fa7a2);
+        lamp.mat.opacity = serving ? 1 : .38;
+        lamp.mesh.visible = true;
+      }
     });
   }
 
@@ -949,11 +989,28 @@ function buildScene(container) {
     fps = fps ? fps * .92 + (1 / Math.max(.001, dt)) * .08 : 1 / Math.max(.001, dt);
     if (!active || document.hidden || !container.offsetParent) return;
     const time = (now - startedAt) / 1000;
-    // 收银员微动画：轻微呼吸起伏 + 缓慢左右扫视，避免静态雕像感（与行人系统解耦）。
+    // 收银员微动画：空闲时呼吸起伏 + 缓慢扫视；有顾客在结账时抬起双臂做扫码动作，
+    // 「结账」这件事在 3D 里真的能看见（服务时长来自 pedestrian.js 的真实队列）。
     for (const c of cashiers) {
+      const serving = !!checkoutState[c.index]?.serving;
       const breath = Math.sin(time * 1.4 + c.phase) * .008;
       c.body.position.y = breath;
-      c.body.rotation.y = Math.sin(time * .45 + c.phase) * .10;
+      const scan = serving ? Math.sin(time * 7.2 + c.phase) * .5 + .5 : 0;
+      const arms = c.rig.arms;
+      if (arms?.[0]) {
+        arms[0].shoulder.rotation.x = serving ? -.58 : -.16;
+        arms[0].elbow.rotation.x = serving ? -.72 : -.34;
+      }
+      if (arms?.[1]) {
+        arms[1].shoulder.rotation.x = serving ? -.62 - scan * .42 : -.16;
+        arms[1].elbow.rotation.x = serving ? -.40 - scan * .26 : -.34;
+      }
+      c.body.rotation.y = Math.sin(time * (serving ? .9 : .45) + c.phase) * (serving ? .035 : .10);
+    }
+    // 收银机状态灯：结账中做呼吸式脉冲，让「正在收银」在远处也看得见。
+    for (let i = 0; i < checkoutLamps.length; i++) {
+      const serving = !!checkoutState[i]?.serving;
+      checkoutLamps[i].mat.opacity = serving ? .55 + .45 * Math.abs(Math.sin(time * 5)) : checkoutLamps[i].mat.opacity;
     }
     // 充电桩指示灯：待机青色常亮，充电中蓝色脉冲。
     for (const dock of chargingDocks) {
@@ -1023,7 +1080,7 @@ function buildScene(container) {
       }
     },
     setShelfStock,
-    setRobotState, setFleetCount, setPedestrians, setSafety, setQueueStatus,
+    setRobotState, setFleetCount, setPedestrians, setSafety, setQueueStatus, setCheckoutStatus,
     // V2.4：充电桩指示——charging=true 时灯变忙绿脉冲，否则常亮青色待机。
     setCharging(active) { chargingActive = !!active; },
     // 调试：读取/设置机器人机械臂姿态（供自动化视觉核对，不影响正常仿真）。

@@ -12,6 +12,10 @@ const lerpAngle = (a, b, t) => {
   const d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI;
   return a + d * t;
 };
+// 队列站位：index 0 = 队首（正对收银台），index 越大越靠后。
+const queueSpot = (lane, index) => lane.slots[lane.capacity - 1 - clamp(index, 0, lane.capacity - 1)];
+// 结账离店动线：从队首先侧向让出排队通道（不穿过仍在排队的人），再汇入 y=26 主通道走向出口。
+const exitLaneX = lane => (lane.x < STORE.checkout[0] ? lane.x + 6 : lane.x - 6);
 
 // 参考图 6 套真实服装角色（店员绿马甲 / 米色衬衫 / 绿毛衣 / 藏青风衣 / 酒红开衫 / 灰夹克）
 export const PEDESTRIAN_TYPES = Object.freeze({
@@ -68,9 +72,16 @@ export class PedestrianSystem {
     this.speedFactor = options.speedFactor ?? 1;
     this.running = false;
     this.spawnCooldown = 0;
-    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0 };
+    this.clock = 0;
+    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0,
+      checkoutServed: 0, checkoutWaitSum: 0 };
     this.densityTarget = { low: 7, medium: 16, high: 30 }[this.density] ?? 7;
-    this.lanes = STORE.checkoutLanes.map(l => ({ ...l, occupied: new Map(), served: 0 }));
+    this.lanes = this.makeLanes();
+  }
+
+  /** 收银台运行态：队列表 + 正在结账的计时 + 服务人次，全部按真实排队顺序维护。 */
+  makeLanes() {
+    return STORE.checkoutLanes.map(l => ({ ...l, queue: [], served: 0, serveLeft: 0, waitSum: 0, waitCount: 0 }));
   }
 
   get targetCount() { return this.mode === 'crowded' ? Math.max(24, this.densityTarget) : this.densityTarget; }
@@ -85,9 +96,10 @@ export class PedestrianSystem {
 
   reset() {
     this.people = []; this.nextId = 1; this.random = makeRandom(6143);
-    this.spawnCooldown = 0;
-    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0 };
-    this.lanes = STORE.checkoutLanes.map(l => ({ ...l, occupied: new Map(), served: 0 }));
+    this.spawnCooldown = 0; this.clock = 0;
+    this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0,
+      checkoutServed: 0, checkoutWaitSum: 0 };
+    this.lanes = this.makeLanes();
     if (this.running) this.fill();
   }
 
@@ -116,6 +128,25 @@ export class PedestrianSystem {
         (s.yMin + s.yMax) / 2 - s.point[1]),
       pickTier: Math.floor(this.random() * 3),
     };
+  }
+
+  /**
+   * 购物篮规模（= 要逛几个货区）：
+   * 「买得少、买得快」的顾客只逛 1 个货区就直奔收银台，买得多的逛 2–3 个。
+   * 高峰时段( crowded ) 小篮顾客比例更高，收银台才会真的排起队。
+   */
+  pickBasket(typeKey) {
+    const r = this.random();
+    if (this.mode === 'crowded') return r < .42 ? 1 : r < .78 ? 2 : 3;
+    if (typeKey === 'fast') return r < .72 ? 1 : 2;
+    if (typeKey === 'cart') return r < .28 ? 1 : r < .72 ? 2 : 3;
+    return r < .38 ? 1 : r < .74 ? 2 : 3;
+  }
+
+  /** 结账服务时长（仿真秒）：件数越多扫得越久，服务结束顾客立即离店。 */
+  serviceSeconds(items, basket = 2) {
+    const cfg = STORE.checkoutService || { base: 2.2, perItem: .5, min: 2.2, max: 6.5 };
+    return clamp(cfg.base + items * cfg.perItem + basket * .12, cfg.min, cfg.max);
   }
 
   /** 在货架/设备/墙体内则拒绝生成；左右墙仅入口/出口高度允许进出。 */
@@ -153,6 +184,8 @@ export class PedestrianSystem {
       if (this.isFree(candidate, type.radius, robotPoint)) { position = candidate; break; }
     }
     if (!position) return null;
+    const basket = this.pickBasket(typeKey);
+    const items = 2 + basket * 3 + Math.floor(this.random() * 4);
     const person = {
       id: `PED-${String(this.nextId++).padStart(2, '0')}`,
       type: typeKey, typeName: type.name, cn: type.cn,
@@ -162,13 +195,14 @@ export class PedestrianSystem {
       radius: type.radius, height: type.height, cart: type.cart,
       look: type.look, style: Math.floor(this.random() * 6),
       state: 'ENTER_STORE', timer: 0, phase: this.random() * TAU,
-      route: [], routeIndex: 0, goal: null, sections: 0,
+      route: [], routeIndex: 0, goal: null, sections: 1, basket, items,
+      serviceSeconds: this.serviceSeconds(items, basket),
       yieldToRobot: 0, blocked: 0, crossing: !!forced.crossing,
       yieldSide: 0, yieldTimer: 0,
       // V2.5 僵局脱离：与机器人持续近距离对峙时，行人明确换一条方向绕行，
       // 而不是反复侧移贴着机器人「绕圈」。
       stallTimer: 0, detourCooldown: 0, detourGoal: null, detourReturn: null,
-      lane: null, queueSlot: -1,
+      lane: null, queueSlot: -1, queueIndex: -1, queueJoinAt: 0, queueArrivedAt: 0, serving: false,
       color: [0x2f6b4f, 0xc2a878, 0x3f5a42, 0x243b52, 0x7d3341, 0x4a4f55][type.look % 6],
       skin: [0xf0c9a8, 0xe0ae87, 0xc98d68, 0x8d5c42, 0xf5d7b8][Math.floor(this.random() * 5)],
     };
@@ -191,7 +225,9 @@ export class PedestrianSystem {
 
   sendTo(person, goal, state = 'WALK_TO_SECTION') {
     person.goal = [...goal];
-    const safeGoal = state === 'EXITING' ? [...goal] : this.safePoint(goal, person.radius);
+    // 排队位与出口都是「别人站过/正在让出的合法位置」，不做安全点吸附，
+    // 否则队伍前进时每个人都会被挤偏，队列会散开。
+    const safeGoal = (state === 'EXITING' || state === 'GOING_TO_CHECKOUT') ? [...goal] : this.safePoint(goal, person.radius);
     person.route = routeBetween(this.nodes, this.safePoint(person.position, person.radius), safeGoal);
     person.routeIndex = Math.min(1, person.route.length - 1);
     person.state = state;
@@ -285,40 +321,113 @@ export class PedestrianSystem {
     return this.snapshot();
   }
 
-  /** 收银台队列：按当前占用数选择最短队列，容量满则继续购物或等待。 */
+  /**
+   * 收银台队列（真实先进先出）：
+   * 顾客排到队尾 → 队首顾客由店员扫码结账（固定服务时长）→ 结账完成立即离店 →
+   * 后面每位顾客整体前移一格。买得少的顾客更早到达收银台，高峰时队列会明显变长。
+   */
   assignCheckout(person) {
-    const available = this.lanes
-      .map(l => ({ lane: l, size: l.occupied.size }))
-      .filter(x => x.size < x.lane.capacity)
-      .sort((a, b) => a.size - b.size);
-    if (!available.length) {
-      // 队列全满：先浏览等待，不涌向收银台。
+    const open = this.lanes.filter(l => l.queue.length < l.capacity);
+    if (!open.length) {
+      // 所有收银台都排满：顾客继续逛一会儿再回来排队，不涌向同一坐标。
       person.state = 'BROWSING';
-      person.timer = 2.5 + this.random() * 3;
+      person.timer = 2.2 + this.random() * 2.8;
       this.metrics.queueWaits++;
       return false;
     }
-    const { lane } = available[0];
-    let slotIndex = 0;
-    while (slotIndex < lane.capacity && lane.occupied.has(slotIndex)) slotIndex++;
-    lane.occupied.set(slotIndex, person.id);
-    person.lane = lane.id; person.queueSlot = slotIndex;
+    open.sort((a, b) => (a.queue.length - b.queue.length)
+      || (dist(person.position, a.slots[0]) - dist(person.position, b.slots[0])));
+    const lane = open[0];
+    person.lane = lane.id;
+    person.queueJoinAt = this.clock;
     person.sections = 99;
-    this.sendTo(person, lane.slots[slotIndex], 'GOING_TO_CHECKOUT');
-    this.metrics.maxQueue = Math.max(this.metrics.maxQueue, this.lanes.reduce((n, l) => n + l.occupied.size, 0));
+    person.serving = false;
+    lane.queue.push(person);
+    person.queueIndex = lane.queue.length - 1;
+    person.queueSlot = lane.capacity - 1 - person.queueIndex;
+    this.reindex(lane);
+    this.sendTo(person, queueSpot(lane, person.queueIndex), 'GOING_TO_CHECKOUT');
+    this.metrics.maxQueue = Math.max(this.metrics.maxQueue, this.totalQueued());
     return true;
   }
 
+  /** 队列位置一变就重算每人的站位序号（3D 与 2D 都读这个值）。 */
+  reindex(lane) {
+    lane.queue.forEach((p, i) => { p.queueIndex = i; p.queueSlot = lane.capacity - 1 - i; });
+  }
+
+  totalQueued() { return this.lanes.reduce((n, l) => n + l.queue.length, 0); }
+
+  /** 结构性离队（离店 / 重置 / 被移除），不计入服务人次。 */
   releaseLane(person) {
-    if (!person.lane) return;
-    const lane = this.lanes.find(l => l.id === person.lane);
-    if (lane) { lane.occupied.delete(person.queueSlot); lane.served++; }
-    person.lane = null; person.queueSlot = -1;
+    let removed = null;
+    for (const lane of this.lanes) {
+      const index = lane.queue.indexOf(person);
+      if (index < 0) continue;
+      lane.queue.splice(index, 1);
+      this.reindex(lane);
+      removed = lane;
+      break;
+    }
+    person.lane = null; person.queueIndex = -1; person.queueSlot = -1; person.serving = false;
+    return removed;
+  }
+
+  /** 队首结账完成：结算等待时间、释放队列，并把后队整体前移一格。 */
+  finishCheckout(lane, head) {
+    const index = lane.queue.indexOf(head);
+    if (index >= 0) lane.queue.splice(index, 1);
+    const waited = Math.max(0, this.clock - (head.queueArrivedAt || head.queueJoinAt || this.clock));
+    lane.served++; lane.waitSum += waited; lane.waitCount++;
+    this.metrics.checkoutServed++;
+    this.metrics.checkoutWaitSum += waited;
+    head.serving = false; head.lane = null; head.queueIndex = -1; head.queueSlot = -1;
+    this.exitAfterCheckout(head, lane);
+    this.reindex(lane);
+    lane.queue.forEach((p, i) => {
+      if (dist(p.position, queueSpot(lane, i)) > .6) this.sendTo(p, queueSpot(lane, i), 'GOING_TO_CHECKOUT');
+    });
+    this.metrics.maxQueue = Math.max(this.metrics.maxQueue, this.totalQueued());
+  }
+
+  /** 付完款从队首侧向离开排队通道，再沿前场主通道走到右出口（不穿过仍在排队的人）。 */
+  exitAfterCheckout(person, lane) {
+    const sideX = exitLaneX(lane);
+    const front = queueSpot(lane, 0);
+    person.goal = [...STORE.outsideExit];
+    person.route = [[...front], [sideX, front[1]], [sideX, 26], [STORE.exit[0], 26], [STORE.exit[0], 20], [...STORE.outsideExit]];
+    person.routeIndex = 1;
+    person.state = 'EXITING';
+    person.timer = 0;
+    person.heading = Math.PI / 2;
+  }
+
+  /** 收银台状态机：每次只服务一名队首顾客，服务时长由该顾客的件数决定。 */
+  serviceLanes(dt) {
+    for (const lane of this.lanes) {
+      if (lane.queue.some(p => !this.people.includes(p))) {
+        lane.queue = lane.queue.filter(p => this.people.includes(p));
+        this.reindex(lane);
+      }
+      const head = lane.queue[0];
+      if (!head) { lane.serveLeft = 0; continue; }
+      const front = queueSpot(lane, 0);
+      const atFront = head.state === 'QUEUEING' && dist(head.position, front) < 1.6;
+      if (!atFront) { lane.serveLeft = 0; head.serving = false; continue; }
+      if (lane.serveLeft <= 0) {
+        lane.serveLeft = head.serviceSeconds || this.serviceSeconds(head.items || 8, head.basket || 2);
+        head.serving = true;
+      }
+      lane.serveLeft = Math.max(0, lane.serveLeft - dt);
+      head.serving = lane.serveLeft > 0;
+      if (lane.serveLeft <= 1e-6) this.finishCheckout(lane, head);
+    }
   }
 
   update(dt, robot = null) {
     if (!this.running || dt <= 0) return;
     const step = Math.min(dt, .08);
+    this.clock += step;
     // 渐进入场：每 1.1 秒最多补 1 人，全部从生成点进入。
     this.spawnCooldown = Math.max(0, this.spawnCooldown - step);
     if (this.people.length < this.targetCount && this.spawnCooldown <= 0) {
@@ -336,6 +445,8 @@ export class PedestrianSystem {
         this.people.splice(i, 1); this.metrics.exits++;
       }
     }
+    // 收银台按真实队列顺序服务队首，服务结束后后队整体前移。
+    this.serviceLanes(step);
   }
 
   advance(person, dt, robot) {
@@ -355,7 +466,8 @@ export class PedestrianSystem {
         person.heading = lerpAngle(person.heading, person.faceHeading, Math.min(1, dt * 6));
       }
       if (person.timer <= 0) {
-        if (person.sections >= (this.mode === 'shopping' ? 3 : 2)) this.assignCheckout(person);
+        // 买得少（购物篮小）的顾客逛完 1 个货区就直奔收银台；买得多的继续逛。
+        if (person.sections >= (person.basket ?? 3)) this.assignCheckout(person);
         else { person.sections++; const s = this.pickSection(); person.section = s; this.sendTo(person, s.point, 'WALK_TO_SECTION'); }
       }
       person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
@@ -364,15 +476,16 @@ export class PedestrianSystem {
     }
 
     if (person.state === 'QUEUEING') {
-      person.timer -= dt;
       person.phase += dt * .5;
       person.stallTimer = 0;
       person.detourCooldown = Math.max(0, (person.detourCooldown || 0) - dt);
-      if (person.timer <= 0) {
-        const lane = this.lanes.find(l => l.id === person.lane) || STORE.checkoutLanes[0];
-        // 结账完成 → 经前场通道步行至右侧墙体开口，从出口离店。
-        this.releaseLane(person);
-        this.sendTo(person, STORE.outsideExit, 'EXITING');
+      // 站在队首/队列中：面向收银台（地图 y 减小方向），不再自由行走。
+      person.faceHeading = Math.PI;
+      // 结账与离队由 serviceLanes() 真实驱动（队首服务计时 → 后队前移）。
+      // 这里仅保留兜底计时，避免手动注入或失去队列归属的路人永久卡住。
+      if (!person.lane || !this.lanes.some(l => l.queue.includes(person))) {
+        person.timer = (person.timer || 0) - dt;
+        if (person.timer <= 0) this.sendTo(person, STORE.outsideExit, 'EXITING');
       }
       person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
       this.move(person, dt);
@@ -384,7 +497,12 @@ export class PedestrianSystem {
       person.routeIndex++;
       if (person.routeIndex >= person.route.length) {
         if (person.state === 'GOING_TO_CHECKOUT') {
-          person.state = 'QUEUEING'; person.timer = 2 + this.random() * 3;
+          // 到位即进入队列等待：真正开始结账由收银台服务计时决定，不再各自随机等待。
+          // 等待时间从「站进队伍」开始算，不含此前走向收银台的步行时间。
+          person.state = 'QUEUEING'; person.timer = 0;
+          person.queueArrivedAt = this.clock;
+          person.faceHeading = Math.PI; person.heading = Math.PI;
+          person.velocity = [0, 0];
         } else if (person.state === 'ENTER_STORE' || person.state === 'WALK_TO_SECTION') {
           person.state = 'BROWSING';
           person.timer = type.browse[0] + this.random() * (type.browse[1] - type.browse[0]);
@@ -433,7 +551,10 @@ export class PedestrianSystem {
       if (dM < 3.0 && d > .0001) {
         person.stallTimer = (person.stallTimer || 0) + dt;
         // 僵局：持续近距离 >1.5 s，或已被阻挡且 >0.9 s → 行人换一条路绕过机器人。
-        if (person.state !== 'DETOUR' && person.detourCooldown <= 0 &&
+        // 但「正在去收银台 / 已在队列里」的顾客只做侧向让行，不放弃队列绕远路，
+        // 否则队伍会被一个绕远的人卡住，收银台长时间空转。
+        const queueBound = person.state === 'GOING_TO_CHECKOUT' || person.state === 'QUEUEING';
+        if (!queueBound && person.state !== 'DETOUR' && person.detourCooldown <= 0 &&
             (person.stallTimer > 1.5 || (person.blocked > 0 && person.stallTimer > .9))) {
           this.beginDetour(person, robot);
           return;
@@ -540,7 +661,9 @@ export class PedestrianSystem {
       state: p.state, cart: p.cart, look: p.look, style: p.style, color: p.color, skin: p.skin,
       faceHeading: p.faceHeading, pickTier: p.pickTier ?? 1, pickShelf: p.section?.shelfId || null,
       radius: p.radius, height: p.height, crossing: p.crossing,
-      lane: p.lane, queueSlot: p.queueSlot,
+      lane: p.lane, queueSlot: p.queueSlot, queueIndex: p.queueIndex,
+      basket: p.basket, items: p.items, serving: !!p.serving,
+      serviceSeconds: p.serviceSeconds,
       goal: p.goal ? [...p.goal] : null,
       destination: p.goal ? [...p.goal] : (p.section?.point ? [...p.section.point] : null),
       destinationShelf: p.section?.shelfId || null,
@@ -550,9 +673,26 @@ export class PedestrianSystem {
     }));
   }
 
-  /** 测试/面板用：队列长度与容量。 */
+  /** 测试/面板用：每个收银台的排队人数、容量、正在结账的顾客、服务人次与平均等待。 */
   queueStatus() {
-    return this.lanes.map(l => ({ id: l.id, size: l.occupied.size, capacity: l.capacity, served: l.served }));
+    return this.lanes.map(l => ({
+      id: l.id, size: l.queue.length, capacity: l.capacity, served: l.served,
+      serving: l.queue[0] && l.serveLeft > 0 ? l.queue[0].id : null,
+      serveLeft: +Math.max(0, l.serveLeft).toFixed(1),
+      wait: l.waitCount ? +(l.waitSum / l.waitCount).toFixed(1) : 0,
+    }));
+  }
+
+  /** 收银汇总（面板/测试共用）：已结账人次、仍在排队人数、平均等待、最大排队。 */
+  checkoutSummary() {
+    const total = this.totalQueued();
+    const avgWait = this.metrics.checkoutServed
+      ? +(this.metrics.checkoutWaitSum / this.metrics.checkoutServed).toFixed(1) : 0;
+    return {
+      served: this.metrics.checkoutServed, queued: total, avgWait,
+      maxQueue: this.metrics.maxQueue, lanes: this.lanes.length,
+      busyLanes: this.lanes.filter(l => l.queue.length > 0).length,
+    };
   }
 }
 

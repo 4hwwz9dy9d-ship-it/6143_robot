@@ -26,6 +26,7 @@ const colCenter = c => (c < AISLE_XS.length - 1 ? (AISLE_XS[c] + AISLE_XS[c + 1]
 
 // 收银台队列：顾客排队区在前场 y<26，与机器人 y=26 主通道分离。
 // 每个收银台有独立队列位与容量上限，避免所有人涌向同一坐标。
+// slots 从队尾(y=22)排到队首(y=10)：队首正对收银台，顾客在此完成结账。
 const LANE_XS = [132, 144, 156, 168];
 const queueSlots = x => [22, 18, 14, 10].map(y => [x, y]);
 
@@ -52,15 +53,20 @@ export const STORE = {
     slots: queueSlots(x), capacity: 4,
     robotWait: [x - 5, 26],
   })),
+  // V2.6：收银服务时间（仿真秒）。顾客走到队首后由该收银台的店员完成扫码收款，
+  // 服务的时长由购物篮件数决定（件数多 = 买得多 = 结账慢），服务结束立即离店。
+  checkoutService: Object.freeze({ base: 2.0, perItem: .34, min: 2.0, max: 5.2 }),
   // V2.1：唯一入口生成点。所有行人只能从左墙开口(入口)进入，不再从店内凭空出现。
   spawnPoints: Object.freeze([[8, 26], [10, 26], [6, 26], [12, 26], [8, 24], [8, 28]]),
-  // 机器人等待区：入口前方左下侧的独立泊位（x=24/34,y=8），完全避开入口→主通道。
-  // 默认只启用 1 台（AMR-01）；后台可配置第二台（AMR-02），两泊位相距 1.7 m 不重叠。
-  robotWaitSlots: Object.freeze([[24, 8], [34, 8]]),
-  robotWait: [24, 8],
-  // V2.4 充电桩：位于入口左下侧、机器人泊位旁的空地，不占主通道 y=26，也不与购物车区(x=10)重叠。
+  // V2.6：机器人最终停靠位 = 收银台一排（x=132/144/156/168）里「从右往左第 4 台」收银员
+  // （x=132）的左侧，即 x=122。这里紧邻收银区但不占排队位（x≥130）、不在排队长龙与
+  // 结账动线上，也不在出口通道上，所以顾客进队、排队、结账离店都不会被机器人挡住。
+  // 第二台泊位在其左侧 x=110（两泊位相距 12 单位 ≈ 2.0 m，不重叠）。
+  robotWaitSlots: Object.freeze([[122, 8], [110, 8]]),
+  robotWait: [122, 8],
+  // V2.6 充电桩：位于两个泊位之间（x=116），机器人回坞只需短距离行驶，不必横穿前场。
   chargingDocks: Object.freeze([
-    Object.freeze({ id: 'CHG-1', position: [46, 8], waitSlot: [46, 8] }),
+    Object.freeze({ id: 'CHG-1', position: [116, 8], waitSlot: [116, 8] }),
   ]),
   exitLane: [170, 20],
   outsideExit: [182, 26],
@@ -95,14 +101,28 @@ export function buildNavNodes({ includeOutside = false } = {}) {
     nodes.get(nodeKey(b)).neighbors.push(nodeKey(a));
   };
   const bottomXs = [...new Set([STORE.entrance[0], ...STORE.robotWaitSlots.map(s => s[0]), ...STORE.aisleXs,
-    ...LANE_XS, STORE.checkout[0], STORE.exit[0]])].sort((a, b) => a - b);
+    ...LANE_XS, STORE.checkout[0], STORE.exit[0],
+    ...STORE.chargingDocks.map(d => d.position[0])])].sort((a, b) => a - b);
   for (let i = 1; i < bottomXs.length; i++) edge([bottomXs[i - 1], CROSS_YS[0]], [bottomXs[i], CROSS_YS[0]]);
   for (const y of CROSS_YS.slice(1)) for (let i = 1; i < AISLE_XS.length; i++) edge([AISLE_XS[i - 1], y], [AISLE_XS[i], y]);
   for (const x of AISLE_XS) for (let i = 1; i < VERTICAL_YS.length; i++) edge([x, VERTICAL_YS[i - 1]], [x, VERTICAL_YS[i]]);
   // 等待泊位支线：泊位在前场 y=8，纵向连到 y=26 主通道，不占入口水平通道。
   for (const slot of STORE.robotWaitSlots) edge(slot, [slot[0], CROSS_YS[0]]);
-  // 收银队列接到前场主通道，保证购物 → 结账 → 右出口的连通性。
-  for (const lane of STORE.checkoutLanes) edge(lane.slots[0], [lane.x, 26]);
+  // 充电桩接入同一张图；泊位与充电桩之间建立短边，回坞不必绕行主通道。
+  for (const dock of STORE.chargingDocks) {
+    edge(dock.position, [dock.position[0], CROSS_YS[0]]);
+    for (const slot of STORE.robotWaitSlots) {
+      const gap = Math.hypot(slot[0] - dock.position[0], slot[1] - dock.position[1]);
+      if (gap <= 14) edge(dock.position, slot);
+    }
+  }
+  // 收银队列接到前场主通道，并沿排队通道逐位连通：顾客从队尾进入、向前走到自己的站位。
+  // 这一组队内纵向边很关键——否则离队首最近的导航点会变成机器人泊位，
+  // 顾客去结账时会被导航「带进」机器人停靠位。
+  for (const lane of STORE.checkoutLanes) {
+    edge(lane.slots[0], [lane.x, 26]);
+    for (let i = 1; i < lane.slots.length; i++) edge(lane.slots[i - 1], lane.slots[i]);
+  }
   edge(STORE.exitLane, STORE.exit);
   edge(STORE.exit, STORE.outsideExit);
   if (includeOutside) {
