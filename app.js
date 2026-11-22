@@ -897,16 +897,18 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false) {
   const toBay = viaExit ? planLeg(STORE.entrance, robot.waitSlot, state.scenario, state.slot) : null;
   if (viaExit) {
     if (toGate && toBay) {
-      points = [from, ...toGate.points.slice(1), o.exitOuter, o.rightSouth, o.frontSouth,
+      // V2.3：出门后先沿外墙走到 staging(远离行人出店通道 y=26) 整备，再南行绕回入口。
+      //行人出店终点 outsideExit=[182,26] 与旧整备点重合导致堵门；staging 移到 y=6 彻底让开出口。
+      points = [from, ...toGate.points.slice(1), o.exitOuter, o.staging, o.rightSouth, o.frontSouth,
         o.entranceOuter, STORE.entrance, ...toBay.points.slice(1)];
     } else log('外侧返回通道规划失败：改用店内 A* 路径返回泊位。', 'warn');
   }
   const lengths = points.slice(1).map((p, i) => dist(points[i], p));
-  // waitAt 为到达门外点 exitOuter 的累计里程；到达后进入 3 秒等待，再继续外侧服务通道 → 入口 → 泊位。
+  // waitAt 为到达门外整备点 staging 的累计里程；到达后进入 3 秒等待，再继续外侧服务通道 → 入口 → 泊位。
   let waitAt = 0;
   if (toGate && toBay) {
-    const exitOuterIndex = points.findIndex(p => p[0] === o.exitOuter[0] && p[1] === o.exitOuter[1]);
-    if (exitOuterIndex > 0) waitAt = lengths.slice(0, exitOuterIndex).reduce((a, b) => a + b, 0);
+    const stagingIndex = points.findIndex(p => p[0] === o.staging[0] && p[1] === o.staging[1]);
+    if (stagingIndex > 0) waitAt = lengths.slice(0, stagingIndex).reduce((a, b) => a + b, 0);
   }
   state.returnLeg = { points, lengths, length: lengths.reduce((a, b) => a + b, 0), distance: 0,
     waitAt, waited: false, waitLeft: 0 };
@@ -931,11 +933,11 @@ function stepReturn(dt) {
   const result = state.robotBrain.evaluate({ position: state.displayPosition, velocity: state.inertialVelocity,
     direction, pedestrians: snapshot, obstacles: state.dynamicObstacles, dt: step });
   state.behavior = result;
-  // 门外整备：到达 exitOuter 后停 3 秒（仿真时间，倍速下同步缩短），展示机器人离店。
+  // 门外整备：到达 staging（远离出店通道的外墙南段）后停 3 秒（仿真时间，倍速下同步缩短），展示机器人离店且不挡出口。
   if (leg.waitAt > 0 && !leg.waited && leg.distance >= leg.waitAt - .01) {
     leg.waited = true; leg.waitLeft = 3;
-    status('离店整备', '机器人已驶出出口，在门外整备 3 秒后从入口回归泊位。', 'CHARGING');
-    log('机器人已驶出右出口，在门外整备 3 秒（随后从入口方向回归）。');
+    status('离店整备', '机器人已驶出出口并让开门口，在外侧整备 3 秒后从入口回归泊位。', 'CHARGING');
+    log('机器人已驶出右出口，在外侧远离出口处整备 3 秒（不再堵住出店口，随后从入口方向回归）。');
   }
   if (leg.waitLeft > 0) {
     leg.waitLeft = Math.max(0, leg.waitLeft - step);

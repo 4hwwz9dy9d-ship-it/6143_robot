@@ -344,3 +344,23 @@ Note: the earlier display `6 / 4` for navigation stops was corrected to cap the 
 | T7 运行时异常 | 0 |
 | 机械臂专项 | 待机 reach=0；picking 状态 reach≈1、肩 -1.15 rad、肘 0.55 rad |
 | V2.1 回归 | 11/11 PASS，5× 加速零碰撞（最小距离 3.0 m） |
+
+## 14. V2.3 机器人堵门修复：整备点远离出口 + 开口加宽
+日期 2026-11-22。本地无头 Chrome 实测，脚本 `cdp-v23-tests.mjs`（6/6 PASS）+ V2.2 回归 9/9 + V2.1 回归 11/11。
+
+### 14.1 根因与修复
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| 机器人配送完成后堵住出口、行人围观像"故意围住" | 机器人门外整备点 `exitOuter=[182,26]` 与行人出店终点 `outsideExit=[182,26]` 完全重合，机器人停 3 秒正好堵在出店口正前方 | 新增独立整备点 `outsideReturn.staging=[182,6]`（外墙南段，距出店口 20 单位≈3.4m）；返航路径改为 出口→exitOuter→staging(停3秒)→rightSouth→frontSouth→entranceOuter→入口→泊位；`waitAt` 改指向 staging 里程 |
+| 高峰出入拥挤 | 墙上开口半高 5.2（≈1.77m）偏窄 | entrance/exit 开口 halfHeight 5.2→6.6（≈2.24m），3D 门楣/2D 门框按同源常量自动更新 |
+
+### 14.2 实测结果（V2.3 6/6 PASS）
+| 测试 | 实测数据 |
+|---|---|
+| T0 配置 | entranceHalf=exitHalf=6.6，staging=[182,6]，与出口 y=26 相距 20 |
+| T1 返航路径 | 配送→交接后 returnLeg 含 staging[182,6]/出口[170,26]/入口[8,26]，waitAt=32 |
+| T2 整备位置 | 触发整备时机器人 pos=[182,6]，waitLeft=2.98→0，距出店口 20 单位 |
+| T3 门口畅通 | 整备 3 秒期间 doorDist=20（>10 阈值），门口无机器人占位 |
+| T4 归位 | 整备结束沿外侧通道从入口回归泊位 [24,8]，状态 IDLE |
+| T5 异常 | 0 |
+| 回归 | V2.2 9/9、V2.1 11/11 全 PASS |

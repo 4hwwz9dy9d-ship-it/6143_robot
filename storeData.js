@@ -37,9 +37,10 @@ export const STORE = {
   hotCorridor: Object.freeze({ y: 62, xMin: 45, xMax: 99 }),
   frontZone: Object.freeze({ yMin: 2, yMax: 26 }),
   // 墙体真实开口：行人只能从左入口进入、从右出口离开。
+  // V2.3：开口加宽（5.2→6.6，约 1.77m→2.24m），高峰时段行人出入更宽松、不与门框拥挤。
   openings: Object.freeze({
-    entrance: Object.freeze({ y: 26, halfHeight: 5.2 }),
-    exit: Object.freeze({ y: 26, halfHeight: 5.2 }),
+    entrance: Object.freeze({ y: 26, halfHeight: 6.6 }),
+    exit: Object.freeze({ y: 26, halfHeight: 6.6 }),
   }),
   checkoutLanes: LANE_XS.map((x, i) => ({
     id: `LANE-${i + 1}`, x,
@@ -57,9 +58,12 @@ export const STORE = {
   outsideExit: [182, 26],
   // 机器人从右墙出口离开后，经场景外侧服务通道返回左入口（不穿墙、不瞬移）。
   // 外侧通道位于墙体之外，3D 场景有对应铺装地面；仅机器人使用，行人导航图不含这些边。
+  // V2.3：新增机器人门外整备点 staging，位于出口正前方更远处（y 更小，远离行人出店通道 y=26），
+  //机器人出门后先沿外墙走到 staging 停 3 秒，彻底让开出口开口，避免堵住行人出店路线。
   outsideReturn: Object.freeze({
     exitOuter: [182, 26], rightSouth: [182, -8],
     frontSouth: [-8, -8], entranceOuter: [-8, 26],
+    staging: [182, 6],
   }),
 };
 
