@@ -722,6 +722,8 @@ function buildScene(container) {
   // 排队位地标灯：每个收银通道 4 个，按真实队列占用点亮（占用=琥珀、结账中=青色）。
   const queueSlotMeshes = [];
   layoutFixtures.forEach((f, i) => {
+    // V2.7：充电桩由下方专用模型绘制（底座+立柱+充电枪），这里跳过，避免与实体块重叠。
+    if (f.kind === 'charger') return;
     const p = floorPoint([f.x, f.y]);
     const isCheckout = f.kind === 'checkout';
     const h = f.kind === 'wall' ? 1.92 : f.kind === 'promo' ? .94 : f.kind === 'cart' ? .12 : f.kind === 'queue' || f.kind === 'robotwait' || f.kind === 'handoff' ? .02 : .28;

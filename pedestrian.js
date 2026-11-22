@@ -647,7 +647,7 @@ export class PedestrianSystem {
     const r = (person.radius || .26) / M;
     for (const s of shelves) if (x > s.xMin - r && x < s.xMax + r && y > s.yMin - r && y < s.yMax + r) return true;
     for (const f of layoutFixtures) {
-      if (!['wall', 'promo', 'checkout', 'kiosk'].includes(f.kind)) continue;
+      if (!['wall', 'promo', 'checkout', 'kiosk', 'charger'].includes(f.kind)) continue;
       if (x > f.x - f.w / 2 - r && x < f.x + f.w / 2 + r && y > f.y - f.h / 2 - r && y < f.y + f.h / 2 + r) return true;
     }
     return false;

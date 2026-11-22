@@ -58,16 +58,17 @@ export const STORE = {
   checkoutService: Object.freeze({ base: 2.0, perItem: .34, min: 2.0, max: 5.2 }),
   // V2.1：唯一入口生成点。所有行人只能从左墙开口(入口)进入，不再从店内凭空出现。
   spawnPoints: Object.freeze([[8, 26], [10, 26], [6, 26], [12, 26], [8, 24], [8, 28]]),
-  // V2.6：机器人最终停靠位 = 收银台一排（x=132/144/156/168）里「从右往左第 4 台」收银员
-  // （x=132）的左侧，即 x=122。这里紧邻收银区但不占排队位（x≥130）、不在排队长龙与
-  // 结账动线上，也不在出口通道上，所以顾客进队、排队、结账离店都不会被机器人挡住。
-  // 第二台泊位在其左侧 x=110（两泊位相距 12 单位 ≈ 2.0 m，不重叠）。
-  robotWaitSlots: Object.freeze([[122, 8], [110, 8]]),
-  robotWait: [122, 8],
-  // V2.6 充电桩：位于两个泊位之间（x=116），机器人回坞只需短距离行驶，不必横穿前场。
+  // V2.7：机器人最终停靠点 = 充电桩（收银区左侧前场空地，不占顾客动线）。
+  // 桩体中心 position=[116,8]；机器人对接位 dockSlot=[116,13.4] 在桩体正前方 5.4 单位
+  // （≈0.92 m）处，车体（半深 2.35 单位）与桩体底座（半宽 2.06 单位）之间留 1.0 单位
+  // （≈0.17 m）净空，机器人正面朝向桩体、机械臂在车尾朝外，停靠/取货都不会与桩体穿模。
   chargingDocks: Object.freeze([
-    Object.freeze({ id: 'CHG-1', position: [116, 8], waitSlot: [116, 8] }),
+    Object.freeze({ id: 'CHG-1', position: [116, 8], dockSlot: [116, 13.4] }),
   ]),
+  // V2.7：1 号位就是充电桩对接位（机器人默认在桩上待命，下一单从桩上出发）；
+  // 2 号位是备用泊位，两处都不在排队区、不在主通道上。
+  robotWaitSlots: Object.freeze([[116, 13.4], [110, 8]]),
+  robotWait: [116, 13.4],
   exitLane: [170, 20],
   outsideExit: [182, 26],
   // 机器人从右墙出口离开后，经场景外侧服务通道返回左入口（不穿墙、不瞬移）。
@@ -106,14 +107,15 @@ export function buildNavNodes({ includeOutside = false } = {}) {
   for (let i = 1; i < bottomXs.length; i++) edge([bottomXs[i - 1], CROSS_YS[0]], [bottomXs[i], CROSS_YS[0]]);
   for (const y of CROSS_YS.slice(1)) for (let i = 1; i < AISLE_XS.length; i++) edge([AISLE_XS[i - 1], y], [AISLE_XS[i], y]);
   for (const x of AISLE_XS) for (let i = 1; i < VERTICAL_YS.length; i++) edge([x, VERTICAL_YS[i - 1]], [x, VERTICAL_YS[i]]);
-  // 等待泊位支线：泊位在前场 y=8，纵向连到 y=26 主通道，不占入口水平通道。
+  // 等待泊位支线：泊位在前场 y=8~13，纵向连到 y=26 主通道，不占入口水平通道。
   for (const slot of STORE.robotWaitSlots) edge(slot, [slot[0], CROSS_YS[0]]);
-  // 充电桩接入同一张图；泊位与充电桩之间建立短边，回坞不必绕行主通道。
+  // V2.7：充电桩桩体是实体（行人也不能穿过），不进入导航图；只把「对接位」当作节点。
+  // 对接位与备用泊位之间建立短边，回坞/换位不必绕走主通道。
   for (const dock of STORE.chargingDocks) {
-    edge(dock.position, [dock.position[0], CROSS_YS[0]]);
-    for (const slot of STORE.robotWaitSlots) {
-      const gap = Math.hypot(slot[0] - dock.position[0], slot[1] - dock.position[1]);
-      if (gap <= 14) edge(dock.position, slot);
+    const slot = dock.dockSlot || dock.position;
+    for (const other of STORE.robotWaitSlots) {
+      if (other[0] === slot[0] && other[1] === slot[1]) continue;
+      if (Math.hypot(other[0] - slot[0], other[1] - slot[1]) <= 14) edge(slot, other);
     }
   }
   // 收银队列接到前场主通道，并沿排队通道逐位连通：顾客从队尾进入、向前走到自己的站位。
@@ -206,7 +208,10 @@ export const layoutFixtures = [
   { label: '自助结账 2', x: 84,  y: 6,   w: 7,  h: 4,  kind: 'kiosk' },
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `收银台 ${String(i + 1).padStart(2, '0')}`, x: lane.x, y: 6, w: 7, h: 4, kind: 'checkout' })),
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `排队区 ${i + 1}`, x: lane.x, y: 16, w: 4, h: 15, kind: 'queue' })),
-  ...STORE.robotWaitSlots.map((p, i) => ({ label: `机器人泊位 ${i + 1}`, x: p[0], y: p[1], w: 8, h: 7, kind: 'robotwait' })),
+  // V2.7：机器人停靠位（1 号位=充电桩对接位）标线收窄到 5×6，避免与桩体底座/邻位标线重叠。
+  ...STORE.robotWaitSlots.map((p, i) => ({ label: `机器人停靠位 ${i + 1}`, x: p[0], y: p[1], w: 5, h: 6, kind: 'robotwait' })),
+  // V2.7：充电桩是实体装置（行人/机器人都不穿模），单独标记，供 2D 绘制与行人避障共用。
+  ...STORE.chargingDocks.map(d => ({ label: `${d.id} 充电桩`, x: d.position[0], y: d.position[1], w: 5, h: 5, kind: 'charger' })),
   { label: '购物车停放区', x: 10,  y: 9,  w: 11, h: 7,  kind: 'cart' },
   // V2.5：店内取货交接区地面标线（不是实体障碍，行人可正常通行）。
   { label: '取货交接区', x: STORE.handoff[0], y: STORE.handoff[1], w: 8, h: 7, kind: 'handoff' },

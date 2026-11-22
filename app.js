@@ -886,7 +886,7 @@ function renderStockout() {
     $('acceptSubBtn').disabled = !alternative;
   }
   if (state.assistPending) setText('assistDetail', `货区 ${state.assistPending.stop.shelfId}：${state.assistPending.names.join('、')} 需要员工核对。`);
-  if (state.awaitingPickup) setText('handoffDetail', `订单 ${state.order.id}（取货码 ${state.order.id.slice(-4)}）已送达店内取货交接区（出口通道保持畅通）。请核对 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件已取商品，最终模拟金额 ${money(actualPrice())}。`);
+  if (state.awaitingPickup) setText('handoffDetail', `订单 ${state.order.id}（取货码 ${state.order.id.slice(-4)}）已在收银台完成结账，平台已收到「结账完成」消息。请核对 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件商品、最终模拟金额 ${money(actualPrice())}，然后点击「确认取货」——机器人随即返回充电桩补电，下一单从充电桩出发。`);
 }
 function renderOrderState() {
   setText('orderListHeading', state.order ? `${state.order.id} · ${state.order.lines.reduce((n, x) => n + x.qty, 0)} 件` : '等待订单');
@@ -1141,32 +1141,36 @@ function orderProgress() {
 function sampledPath() { return state.history.filter((_, i) => i % 6 === 0 || i === state.history.length - 1).slice(-400).map(p => [...p]); }
 
 /**
- * 返航/回坞：沿真实 A* 路径驶向目标点（默认为机器人泊位）。
- * options.target 可指定充电桩等其它合法站点；options.purpose === 'charge' 时
+ * 返航/回坞：沿真实 A* 路径驶向目标点（默认为机器人的充电桩对接位）。
+ * options.target 可指定其它合法站点；options.purpose === 'charge' 时
  * 抵达后直接对接充电，而不是进入待命。
  */
+const dockSlotPoint = () => {
+  const dock = STORE.chargingDocks?.[0];
+  return dock ? [...(dock.dockSlot || dock.position)] : [...STORE.robotWait];
+};
 function beginReturn(reason, from = state.displayPosition, viaExit = false, options = {}) {
   const robot = activeRobot();
   const target = options.target || robot.waitSlot;
   const purpose = options.purpose || 'park';
   const start = nearestNode(from);
   const fresh = planLeg(start, target, state.scenario, state.slot);
-  if (!fresh) { log(`${reason}：无法计算返回等待区的可行路径，机器人保持当前位置并请求人工介入。`, 'danger'); return false; }
+  if (!fresh) { log(`${reason}：无法计算返回充电桩的可行路径，机器人保持当前位置并请求人工介入。`, 'danger'); return false; }
   let points = [from, ...fresh.points.slice(1)];
-  // V2.2：完成交接后先驶出右出口，在店外整备 3 秒，再经外侧通道从入口回归泊位。
+  // V2.2：完成交接后先驶出右出口，在店外整备 3 秒，再经外侧通道从入口回归（V2.7 终点为充电桩对接位）。
   const o = STORE.outsideReturn;
   const toGate = viaExit ? planLeg(nearestNode(from), STORE.exit, state.scenario, state.slot) : null;
   const toBay = viaExit ? planLeg(STORE.entrance, target, state.scenario, state.slot) : null;
   if (viaExit) {
     if (toGate && toBay) {
       // V2.5：交接点已移到店内 [153,44]，出门后沿外墙南下 → 前墙外侧中央 staging 停 3 秒
-      // → 继续西行 → 左入口回归泊位。出口周边(门内/门外、行人出店 y=26)没有任何机器人停留点。
+      // → 继续西行 → 左入口回归。出口周边(门内/门外、行人出店 y=26)没有任何机器人停留点。
       points = [from, ...toGate.points.slice(1), o.exitOuter, o.rightSouth, o.staging, o.frontSouth,
         o.entranceOuter, STORE.entrance, ...toBay.points.slice(1)];
-    } else log('外侧返回通道规划失败：改用店内 A* 路径返回泊位。', 'warn');
+    } else log('外侧返回通道规划失败：改用店内 A* 路径返回充电桩。', 'warn');
   }
   const lengths = points.slice(1).map((p, i) => dist(points[i], p));
-  // waitAt 为到达整备点 staging 的累计里程；到达后进入 3 秒等待，再继续外侧服务通道 → 入口 → 泊位。
+  // waitAt 为到达整备点 staging 的累计里程；到达后进入 3 秒等待，再继续外侧服务通道 → 入口 → 充电桩。
   let waitAt = 0;
   if (toGate && toBay) {
     const stagingIndex = points.findIndex(p => p[0] === o.staging[0] && p[1] === o.staging[1]);
@@ -1180,10 +1184,10 @@ function beginReturn(reason, from = state.displayPosition, viaExit = false, opti
   syncRobotPose(from, 'RETURNING', null);
   if (purpose === 'charge') {
     status('回坞充电', `${reason}：沿 A* 路径驶向 ${STORE.chargingDocks[0]?.id || '充电桩'}。`, 'MOVING');
-    log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) 沿导航图驶向充电桩 (${target.map(n => n.toFixed(0)).join(', ')})，抵达后开始补电。`);
+    log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) 沿导航图驶向充电桩对接位 (${target.map(n => n.toFixed(0)).join(', ')})，抵达后开始补电。`);
   } else {
-    status('返回等待区', `${reason}：沿 A* 路径返回 ${target.map(n => n.toFixed(0)).join(', ')} 泊位。`, 'MOVING');
-    log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) ${viaExit ? '经右出口与外侧通道' : '沿店内真实路径'}返回泊位。`);
+    status('返回充电桩', `${reason}：沿 A* 路径返回充电桩待命位 ${target.map(n => n.toFixed(0)).join(', ')}。`, 'MOVING');
+    log(`${reason}：机器人从 (${from.map(n => n.toFixed(1)).join(', ')}) ${viaExit ? '经右出口与外侧通道' : '沿店内真实路径'}返回充电桩待命位。`);
   }
   scene3d?.setRobots(robotFleetSnapshot());
   // 从空闲状态发起回坞时没有正在运行的动画循环，需要自己启动一次（配送中则由原循环接管）。
@@ -1206,13 +1210,13 @@ function stepReturn(dt) {
   // 店外整备：到达 staging（远离出口的前墙外侧服务通道中央）后停 3 秒（仿真时间，倍速下同步缩短），展示机器人离店且不挡出口。
   if (leg.waitAt > 0 && !leg.waited && leg.distance >= leg.waitAt - .01) {
     leg.waited = true; leg.waitLeft = 3;
-    status('离店整备', '机器人已驶出出口并让开门口，在外侧整备 3 秒后从入口回归泊位。', 'CHARGING');
-    log('机器人已驶出右出口，在外侧远离出口处整备 3 秒（不再堵住出店口，随后从入口方向回归）。');
+    status('离店整备', '机器人已驶出出口并让开门口，在外侧整备 3 秒后从入口返回充电桩。', 'CHARGING');
+    log('机器人已驶出右出口，在外侧远离出口处整备 3 秒（不再堵住出店口，随后从入口方向返回充电桩）。');
   }
   if (leg.waitLeft > 0) {
     leg.waitLeft = Math.max(0, leg.waitLeft - step);
     syncRobotPose(state.displayPosition, 'RETURNING', null);
-    if (leg.waitLeft === 0) log('店外整备完成：机器人沿外侧通道从入口方向回归泊位。');
+    if (leg.waitLeft === 0) log('店外整备完成：机器人沿外侧通道从入口方向返回充电桩。');
     return true;
   }
   const travelledStep = step * BASE_SPEED * (result.speedFactor ?? 1);
@@ -1232,15 +1236,15 @@ function stepReturn(dt) {
     state.history = [[...target]]; state.legDistance = 0; state.behavior = null;
     scene3d?.setRobots(robotFleetSnapshot());
     if (leg.purpose === 'charge') {
-      log(`${robot.id} 已抵达充电桩，开始补电。`);
+      log(`${robot.id} 已抵达充电桩对接位，开始补电。`);
       attachCharger();
       return false;
     }
-    log(`${robot.id} 已返回等待区并恢复待命状态。`);
+    log(`${robot.id} 已回到充电桩待命位，恢复待命状态。`);
     // V2.2：返航后不自动开始下一单，交由用户在订单页/3D 页手动点击「继续下一单」。
     state.nextAvailable = state.queue.length > 0;
-    if (state.nextAvailable) status('等待下一订单', `${robot.id} 在泊位待命，还有 ${state.queue.length} 单等待处理，请点击「继续下一单」。`, 'IDLE');
-    else status('归位休息', `${robot.id} 已回到泊位休息，暂无待处理订单。`, 'IDLE');
+    if (state.nextAvailable) status('等待下一订单', `${robot.id} 在充电桩待命，还有 ${state.queue.length} 单等待处理，请点击「继续下一单」。`, 'IDLE');
+    else status('归位待命', `${robot.id} 已回到充电桩待命，暂无待处理订单。`, 'IDLE');
     renderAll();
     return false;
   }
@@ -1290,7 +1294,7 @@ function resetPlayback(preserveSafety = false) {
   state.normalPlan = state.order ? buildPlan(state.order.lines, 'normal', state.slot) : null;
   setText('playLabel', '开始履约'); setText('playIcon', '▶');
   status(state.order ? '已收到支付订单' : '等待订单',
-    state.order ? '点击播放以检查载重并从入口出发。' : '请先选择商品并提交订单。', 'IDLE');
+    state.order ? '点击播放以检查载重并从充电桩出发。' : '请先选择商品并提交订单。', 'IDLE');
   if (state.fault) status('故障安全停车', faultAdvice[state.fault], 'FAULT');
   renderAll();
 }
@@ -1298,8 +1302,8 @@ function actualPrice() { return state.bought.reduce((n, x) => n + x.product.pric
 /** V2.2：手动开启下一单。无排队订单时机器人保持归位休息，不发生任何跳转。 */
 function startNextOrder() {
   if (!state.queue.length) {
-    status('归位休息', '没有待处理的下一单，机器人保持在泊位休息。', 'IDLE');
-    log('点击了「继续下一单」，但队列为空，机器人继续休息。');
+    status('归位待命', '没有待处理的下一单，机器人在充电桩待命。', 'IDLE');
+    log('点击了「继续下一单」，但队列为空，机器人继续在充电桩待命。');
     renderAll(); return false;
   }
   if (state.running) {
@@ -1331,7 +1335,8 @@ function activateNext() {
 /** 依据机器人等待区到首个货区的真实 A* 距离分配空闲机器人。 */
 function assignRobot(lines) {
   const stops = uniqueStops(lines);
-  const candidates = state.fleet.filter(r => r.status === 'IDLE' || r.status === 'ASSIGNED');
+  // V2.7：停在充电桩上补电的机器人同样可以派单（充满后就在桩上待命，是默认空闲状态）。
+  const candidates = state.fleet.filter(r => ['IDLE', 'ASSIGNED', 'CHARGING'].includes(r.status));
   if (!candidates.length) return null;
   let best = null, bestScore = Infinity;
   for (const robot of candidates) {
@@ -1475,11 +1480,12 @@ function arrive() {
     state.pauseLeft = .8; state.stage++; renderAll();
   } else {
     state.running = false; state.finished = true; state.awaitingPickup = true; state.stage++;
-    log('机器人已到达店内取货交接区，等待顾客交接（出口仅供通行，不停靠）。');
-    status('等待取货交接', `订单 ${state.order.id} 已备好，等待取货。`, 'CHARGING');
+    log('机器人已在收银台完成结账并驶入店内取货交接区；平台已收到「结账完成」消息，等待操作员点击「确认取货」。');
+    status('等待确认取货', `订单 ${state.order.id} 已结账并备好，点击「确认取货」后机器人返回充电桩补电。`, 'CHARGING');
     setText('playLabel', '等待交接'); setText('playIcon', '✓'); renderAll();
   }
-  if (state.order) setText('orderMessage', `${state.order.id}：${state.awaitingPickup ? '已在取货交接区等待交接' : '机器人履约中'}；仅为模拟支付。`);
+  if (state.order) setText('orderMessage', `${state.order.id}：${state.awaitingPickup
+    ? '平台已收到结账完成消息，等待你点击「确认取货」→ 机器人返回充电桩补电。' : '机器人履约中'}；仅为模拟支付。`);
 }
 function decideSubstitution(accept) {
   if (!state.shortage) return;
@@ -1507,8 +1513,9 @@ function confirmHandoff() {
   state.completed.push({ id: finished.id, status: '已完成' });
   state.order = null; state.awaitingPickup = false; state.stockoutId = '';
   syncRobotPose(state.displayPosition, 'RETURNING', null);
-  setText('orderMessage', `${finished.id} 已完成，机器人正在返回等待区。`);
-  beginReturn('配送完成', state.displayPosition, true);
+  setText('orderMessage', `${finished.id} 已确认取货，机器人正在返回充电桩并补电。`);
+  // V2.7：确认后不再停在收银区/泊位，直接回充电桩对接位，抵达后自动补电。
+  beginReturn('配送完成', state.displayPosition, true, { target: dockSlotPoint(), purpose: 'charge' });
   renderAll();
 }
 function cancelOrder(id) {
@@ -1743,9 +1750,8 @@ function pedestrianLoop(now) {
 }
 function startPedestrianLoop() { requestAnimationFrame(pedestrianLoop); }
 function playPause() {
-  // V2.4 充电中：播放按钮兼作「暂停充电」。
-  if (state.charging?.active) { stopCharging('已暂停'); return; }
   // V2.4 只读回放：独立播放/暂停，不进入订单状态机，绝不 patchOrder。
+  // V2.7：回放优先于「暂停充电」——看历史回放不应被桩上的充电状态挡住。
   if (state.replay) {
     const r = state.replay;
     if (r.playing) {
@@ -1761,17 +1767,26 @@ function playPause() {
     }
     return;
   }
+  // V2.7 充电中：若已有待执行订单，这一次点击就直接「结束充电 + 从充电桩出发」；
+  // 没有订单时仍作为「暂停充电」。下一单因此永远从充电桩起步，无需再回泊位。
+  if (state.charging?.active) {
+    const hasOrder = !!state.order && !state.awaitingPickup;
+    stopCharging(hasOrder ? '接单出发' : '已暂停');
+    if (!hasOrder || state.returnLeg) return;
+  }
   if (state.shortage) { status('请先处理缺货', '请在任务面板选择接受替代品或跳过。', 'PICKING'); return; }
   if (state.assistPending) { status('请确认协助取货', '员工核对商品后机器人才能移动。', 'PICKING'); return; }
   if (state.fault || state.events.has('failure')) { status('故障安全停车', faultAdvice[state.fault || 'localization'], 'FAULT'); return; }
-  if (state.awaitingPickup) { status('请确认交接', '顾客需在店内取货交接区取走订单。', 'CHARGING'); return; }
-  if (!state.order) { status('请先提交订单', '选择商品并模拟支付后才能启动机器人。', 'IDLE'); log('没有已支付订单，机器人停留在入口。'); return; }
-  if (orderWeight() > CAPACITY) { status('无法出发 · 超载', `${kgText(orderWeight())} 超过 ${kgText(CAPACITY)}。`, 'FAULT'); log('载重检查未通过，机器人停留在入口。', 'danger'); return; }
+  if (state.awaitingPickup) { status('请确认取货', '平台已收到结账完成消息，请点击「确认取货」，机器人随后返回充电桩。', 'CHARGING'); return; }
+  if (!state.order) { status('请先提交订单', '选择商品并模拟支付后才能启动机器人。', 'IDLE'); log('没有已支付订单，机器人停留在充电桩待命。'); return; }
+  if (orderWeight() > CAPACITY) { status('无法出发 · 超载', `${kgText(orderWeight())} 超过 ${kgText(CAPACITY)}。`, 'FAULT'); log('载重检查未通过，机器人停留在充电桩。', 'danger'); return; }
   if (state.running) {
     state.running = false; state.lastFrame = 0; setText('playLabel', '继续履约'); setText('playIcon', '▶');
     status('仿真已暂停', '点击继续从当前位置恢复。', 'IDLE');
     renderProgress(); renderQueue(); return;
   }
+  // V2.7：接单出发 —— 充电已在 playPause 入口处结束，此处只记录从充电桩起步。
+  if (state.stage === 0 && state.elapsed === 0) log(`从充电桩对接位 ${state.displayPosition.map(n => n.toFixed(0)).join(', ')} 出发。`);
   if (state.stage === 0 && state.elapsed === 0) {
     log(`载重检查通过：${kgText(orderWeight())} / ${kgText(CAPACITY)}。`);
     log(`${state.plan.method}；共 ${state.plan.stops.length} 个货区；A* 已完成逐段规划。`);
@@ -2010,26 +2025,29 @@ function syncBattery(robot) {
   if (target) target.battery = state.battery;
   scene3d?.setRobots(robotFleetSnapshot());
 }
-/** 对接充电桩：机器人已停在桩位后开始补电（指示灯脉冲，电量按仿真时间恢复）。 */
+/** 对接充电桩：机器人停在桩体正前方的对接位（不与桩体穿模）后开始补电。 */
 function attachCharger() {
   const robot = activeRobot();
   const dock = STORE.chargingDocks[0];
   if (!dock) return false;
-  robot.position = [...dock.position]; state.position = [...dock.position]; state.displayPosition = [...dock.position];
+  // V2.7：对接位与桩体中心错开 5.4 单位，车体与桩体底座之间保留约 1.0 单位净空，
+  // 因此这里落位用的是 dockSlot 而不是桩体坐标（旧版本直接落在桩体上会穿模）。
+  const slot = dock.dockSlot || dock.position;
+  robot.position = [...slot]; state.position = [...slot]; state.displayPosition = [...slot];
   state.inertialVelocity = [0, 0];
   syncRobotPose(state.displayPosition, 'CHARGING', null);
   state.running = false;
   state.charging = { active: true, robotId: robot.id, lastFrame: 0, rate: 6 }; // 每秒 +6%（仿真时间）
   scene3d?.setCharging?.(true);
   setText('playLabel', '暂停充电'); setText('playIcon', 'Ⅱ');
-  status('充电中', `${robot.id} 已在 ${dock.id} 补电：${state.battery.toFixed(0)}% → 100%。`, 'CHARGING');
-  log(`${robot.id} 已对接 ${dock.id}，开始补电（当前 ${state.battery.toFixed(0)}%）。`, 'ok');
+  status('充电中', `${robot.id} 已在 ${dock.id} 对接补电：${state.battery.toFixed(0)}% → 100%，充满后继续在桩上待命。`, 'CHARGING');
+  log(`${robot.id} 已对接 ${dock.id}（对接位 ${slot.map(n => n.toFixed(0)).join(', ')}，与桩体保持净空），开始补电（当前 ${state.battery.toFixed(0)}%）。`, 'ok');
   requestAnimationFrame(chargeLoop);
   renderAll();
   return true;
 }
 
-/** 开始充电：机器人先沿 A* 导航图真实行驶到充电桩，再对接补电（不再瞬移）。 */
+/** 开始充电：机器人先沿 A* 导航图真实行驶到充电桩对接位，再对接补电（不瞬移）。 */
 function startCharging() {
   if (state.replay) { status('回放中不可充电', '请先退出回放。', 'CHARGING'); return false; }
   if (state.running) { status('请先暂停履约', '机器人配送途中无法回坞，请先暂停或等待配送完成。', 'FAULT'); return false; }
@@ -2037,22 +2055,23 @@ function startCharging() {
   const dock = STORE.chargingDocks[0];
   if (!dock) { log('未配置充电桩，无法充电。', 'warn'); return false; }
   if (state.battery >= 99.5) { status('电量已充满', `当前电量 ${state.battery.toFixed(0)}%，无需充电。`, 'IDLE'); return false; }
-  if (dist(state.displayPosition, dock.position) < 2.6) return attachCharger();
+  const slot = dock.dockSlot || dock.position;
+  if (dist(state.displayPosition, slot) < 2.6) return attachCharger();
   log(`${robot.id} 从 ${state.displayPosition.map(n => n.toFixed(0)).join(', ')} 回坞充电，沿导航图驶向 ${dock.id}。`);
-  return beginReturn('回坞充电', state.displayPosition, false, { target: dock.position, purpose: 'charge' });
+  return beginReturn('回坞充电', state.displayPosition, false, { target: slot, purpose: 'charge' });
 }
 function stopCharging(reason = '手动停止') {
   if (!state.charging) return;
   state.charging.active = false; state.charging = null;
   scene3d?.setCharging?.(false);
   setText('playLabel', '开始履约'); setText('playIcon', '▶');
-  status('充电结束', `${reason}，当前电量 ${state.battery.toFixed(0)}%。`, 'IDLE');
-  log(`充电结束（${reason}），电量 ${state.battery.toFixed(0)}%。`, 'ok');
+  status('充电结束', `${reason}，当前电量 ${state.battery.toFixed(0)}%，机器人留在充电桩待命。`, 'IDLE');
+  log(`充电结束（${reason}），电量 ${state.battery.toFixed(0)}%；机器人停在充电桩待命，下一单从这里出发。`, 'ok');
   syncBattery();
-  // 充满/暂停后驶回自己的泊位（短距离），保持「充电桩—泊位」两处来回的真实动线。
-  const robot = activeRobot();
-  if (dist(state.displayPosition, robot.waitSlot) > 1.5) {
-    beginReturn('充电结束', state.displayPosition, false, { target: robot.waitSlot, purpose: 'park' });
+  // V2.7：充电桩对接位就是机器人的常驻待命位，充电结束后不再挪回其它泊位。
+  const robot = activeRobot(), slot = STORE.chargingDocks[0]?.dockSlot || robot.waitSlot;
+  if (dist(state.displayPosition, slot) > 2.6) {
+    beginReturn('充电结束', state.displayPosition, false, { target: slot, purpose: 'park' });
     return;
   }
   renderAll();

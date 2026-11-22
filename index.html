@@ -76,7 +76,7 @@
 
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label"><span class="en-mini">ACTIVE ORDERS</span>进行中订单</div><div class="kpi-value" id="kpiOrders">0</div><div class="kpi-foot">排队中或执行中</div></div>
-        <div class="kpi"><div class="kpi-label"><span class="en-mini">COMPLETED ORDERS</span>已完成订单</div><div class="kpi-value" id="kpiCompleted">0</div><div class="kpi-foot">已在交接区取货</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">COMPLETED ORDERS</span>已完成订单</div><div class="kpi-value" id="kpiCompleted">0</div><div class="kpi-foot">已确认取货并回充电桩</div></div>
         <div class="kpi kpi--warn"><div class="kpi-label"><span class="en-mini">STOCK ALERTS</span>库存预警</div><div class="kpi-value" id="kpiStock">0</div><div class="kpi-foot">仿真库存低于 10%</div></div>
         <div class="kpi kpi--dark"><div class="kpi-label"><span class="en-mini">PLANNED ROUTE</span>规划路径</div><div class="kpi-value" id="kpiDistance">—</div><div class="kpi-foot">地图单位 · 当前订单</div></div>
       </div>
@@ -297,7 +297,7 @@
               </div>
               <div id="stockoutPanel" class="decision-panel" hidden><h4>缺货 — 顾客决策</h4><p id="stockoutDetail"></p><div class="btn-row"><button id="acceptSubBtn" class="btn btn-teal btn-sm" type="button">接受替代品</button><button id="skipSubBtn" class="btn btn-secondary btn-sm" type="button">跳过该商品</button></div></div>
               <div id="assistPanel" class="decision-panel" hidden><h4>员工协助</h4><p id="assistDetail"></p><button id="confirmAssistBtn" class="btn btn-teal btn-sm" type="button">确认已协助取货</button></div>
-              <div id="handoffPanel" class="decision-panel" hidden><h4>取货交接区</h4><p id="handoffDetail"></p><button id="handoffBtn" class="btn btn-teal btn-sm" type="button">顾客已取走订单</button></div>
+              <div id="handoffPanel" class="decision-panel" hidden><h4>结账完成 · 等待确认取货</h4><p id="handoffDetail"></p><button id="handoffBtn" class="btn btn-teal btn-sm" type="button">✓ 确认取货 · 机器人回充电桩</button></div>
             </div>
             </details>
             <details class="control-group" open><summary>机器人导航</summary>
@@ -383,7 +383,7 @@
     <section class="view-panel" id="view-robot" aria-label="机器人控制中心" hidden>
       <div class="section-title"><div><p class="section-kicker">ROBOT CONTROL CENTER</p><h2>机器人状态与任务执行</h2></div><span class="badge" id="fleetBadge">仿真 AMR-01 · 1 台</span></div>
       <div class="card card-pad" style="margin-bottom:16px">
-        <div class="card-head"><div><p class="section-kicker">FLEET CONFIGURATION</p><h3>后台机器人数量配置</h3><p>默认 1 台；可开启第二台独立机器人，两台使用不同泊位且不会重叠。修改后将在下一单生效。</p></div></div>
+        <div class="card-head"><div><p class="section-kicker">FLEET CONFIGURATION</p><h3>后台机器人数量配置</h3><p>默认 1 台；可开启第二台独立机器人，两台使用不同停靠位（1 号位即充电桩对接位）且不会重叠。修改后将在下一单生效。</p></div></div>
         <div class="btn-row"><label class="field" style="min-width:240px"><span class="field-label"> simult. ROBOTS / 运行数量</span><select id="robotCountSelect"><option value="1">1 台（默认）</option><option value="2">2 台</option></select></label><span class="pill pill--info" id="robotCountStatus">配置已持久化 · 当前 1 台</span></div>
       </div>
       <div class="robot-hero">
