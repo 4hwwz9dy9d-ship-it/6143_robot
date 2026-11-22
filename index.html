@@ -76,7 +76,7 @@
 
       <div class="kpi-row">
         <div class="kpi"><div class="kpi-label"><span class="en-mini">ACTIVE ORDERS</span>进行中订单</div><div class="kpi-value" id="kpiOrders">0</div><div class="kpi-foot">排队中或执行中</div></div>
-        <div class="kpi"><div class="kpi-label"><span class="en-mini">COMPLETED ORDERS</span>已完成订单</div><div class="kpi-value" id="kpiCompleted">0</div><div class="kpi-foot">已确认取货并回充电桩</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">COMPLETED ORDERS</span>已完成订单</div><div class="kpi-value" id="kpiCompleted">0</div><div class="kpi-foot">已线上确认并回充电桩</div></div>
         <div class="kpi kpi--warn"><div class="kpi-label"><span class="en-mini">STOCK ALERTS</span>库存预警</div><div class="kpi-value" id="kpiStock">0</div><div class="kpi-foot">仿真库存低于 10%</div></div>
         <div class="kpi kpi--dark"><div class="kpi-label"><span class="en-mini">PLANNED ROUTE</span>规划路径</div><div class="kpi-value" id="kpiDistance">—</div><div class="kpi-foot">地图单位 · 当前订单</div></div>
       </div>
@@ -297,7 +297,7 @@
               </div>
               <div id="stockoutPanel" class="decision-panel" hidden><h4>缺货 — 顾客决策</h4><p id="stockoutDetail"></p><div class="btn-row"><button id="acceptSubBtn" class="btn btn-teal btn-sm" type="button">接受替代品</button><button id="skipSubBtn" class="btn btn-secondary btn-sm" type="button">跳过该商品</button></div></div>
               <div id="assistPanel" class="decision-panel" hidden><h4>员工协助</h4><p id="assistDetail"></p><button id="confirmAssistBtn" class="btn btn-teal btn-sm" type="button">确认已协助取货</button></div>
-              <div id="handoffPanel" class="decision-panel" hidden><h4>结账完成 · 等待确认取货</h4><p id="handoffDetail"></p><button id="handoffBtn" class="btn btn-teal btn-sm" type="button">✓ 确认取货 · 机器人回充电桩</button></div>
+              <div id="handoffPanel" class="decision-panel" hidden><h4>机器人自助收银台 · 等待线上确认</h4><p id="handoffDetail"></p><button id="handoffBtn" class="btn btn-teal btn-sm" type="button">✓ 确认订单 · 机器人回充电桩</button></div>
             </div>
             </details>
             <details class="control-group" open><summary>机器人导航</summary>

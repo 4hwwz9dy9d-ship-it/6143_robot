@@ -410,9 +410,11 @@ function matchedAssociations(lines) {
 function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobot().waitSlot) {
   const stops = uniqueStops(lines), n = stops.length, cache = new Map();
   const leg = (a, b) => { const k = `${key(a)}>${key(b)}`; if (!cache.has(k)) cache.set(k, planLeg(a, b, scenario, slot, mode)); return cache.get(k); };
-  const finish = leg(STORE.checkout, STORE.handoff); if (!finish) return null;
+  // V2.8：终点改成机器人自助收银台（充电桩右侧）。取完所有商品直接去自助收银台结算，
+  // 不再绕经 STORE.checkout / 店内交接区；结算后由线上确认触发返回充电桩。
+  const payPoint = STORE.robotPayStations[0].stop;
   const start = stops.map(s => leg(startPoint, s.point));
-  const checkout = stops.map(s => leg(s.point, STORE.checkout));
+  const pay = stops.map(s => leg(s.point, payPoint));
   const between = stops.map((a, i) => stops.map((b, j) => i === j ? null : leg(a.point, b.point)));
   // V2.4 实验驱动：模式 'mining' 时对段代价施加 Apriori 共购奖励——实验证实常一起购买的
   // 两货区之间代价降低，Held–Karp 因而倾向于把它们排得更近（真实实验数据改变访问顺序）。
@@ -438,7 +440,7 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
       if (choice < 0) return null;
       order.push(choice); remaining.delete(choice); previous = choice;
     }
-    bestCost = (start[order[0]]?.cost ?? 0) + order.slice(1).reduce((sum, j, i) => sum + adjustedCost(order[i], j, between[order[i]][j]), 0) + checkout[order.at(-1)].cost + finish.cost;
+    bestCost = (start[order[0]]?.cost ?? 0) + order.slice(1).reduce((sum, j, i) => sum + adjustedCost(order[i], j, between[order[i]][j]), 0) + pay[order.at(-1)].cost;
   } else {
     const states = 1 << n, all = states - 1, costs = new Float64Array(states * n), previous = new Int8Array(states * n);
     costs.fill(Infinity); previous.fill(-1);
@@ -453,15 +455,16 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
       }
     }
     let last = -1;
-    for (let j = 0; j < n; j++) if (checkout[j]) {
-      const total = costs[all * n + j] + checkout[j].cost + finish.cost;
+    for (let j = 0; j < n; j++) if (pay[j]) {
+      const total = costs[all * n + j] + pay[j].cost;
       if (Number.isFinite(total) && total < bestCost) { bestCost = total; last = j; }
     }
     if (last < 0) return null;
     let mask = all;
     while (last >= 0) { order.unshift(last); const parent = previous[mask * n + last]; mask ^= 1 << last; last = parent; }
   }
-  const legs = [start[order[0]], ...order.slice(1).map((j, i) => between[order[i]][j]), checkout[order.at(-1)], finish];
+  const legs = [start[order[0]], ...order.slice(1).map((j, i) => between[order[i]][j]), pay[order.at(-1)]];
+  if (legs.some(l => !l)) return null;
   const plan = { stops: order.map(i => stops[i]), legs, cost: bestCost, method, startPoint: [...startPoint] };
   if (mining) { plan.mining = true; plan.matchedRules = matches; plan.associationSavings =
     (between.length ? order.slice(1).reduce((s, j, i) => s + (between[order[i]][j]?.cost ?? 0) - adjustedCost(order[i], j, between[order[i]][j]), 0) : 0); }
@@ -495,8 +498,9 @@ function drawBaseMap() {
   for (const y of STORE.crossYs) svg('line', { x1: 50, y1: (STORE.height - y) * 10, x2: (STORE.width - 2) * 10, y2: (STORE.height - y) * 10, class: 'aisle-line' }, $('aisles'));
   for (const f of layoutFixtures) {
     svg('rect', { x: (f.x - f.w / 2) * 10, y: (STORE.height - f.y - f.h / 2) * 10, width: f.w * 10, height: f.h * 10, rx: 6, class: `fixture-${f.kind}` }, $('fixtures'));
-    // 机器人泊位标签上移，避免被停在泊位上的机器人圆点盖住。
-    const labelY = (STORE.height - f.y) * 10 + (f.kind === 'robotwait' ? -24 : 4);
+    // 机器人停靠位标签上移、充电桩标签下移，避免被停在桩前的机器人圆点盖住。
+    // 自助收银台的标签下移，避免与停在上方的机器人圆点/编号重叠。
+    const labelY = (STORE.height - f.y) * 10 + (f.kind === 'robotwait' ? -52 : f.kind === 'charger' ? 24 : f.kind === 'robotpay' ? 30 : 4);
     svg('text', { x: f.x * 10, y: labelY, class: 'fixture-label' }, $('fixtures')).textContent = f.label;
   }
   for (const s of shelves) {
@@ -518,8 +522,8 @@ function drawDestinations() {
     svg('circle', { cx: stop.point[0] * 10, cy: (STORE.height - stop.point[1]) * 10, r: 14, class: `destination-circle ${i < state.stage ? 'destination-done' : ''}` }, $('destinations'));
     svg('text', { x: stop.point[0] * 10, y: (STORE.height - stop.point[1]) * 10 + 4, class: 'destination-label' }, $('destinations')).textContent = i < state.stage ? '✓' : String(i + 1);
   });
-  drawGate(STORE.entrance, '入口'); drawGate(STORE.checkout, '结账'); drawGate(STORE.exit, '出口');
-  drawGate(STORE.handoff, '交接区');
+  drawGate(STORE.entrance, '入口'); drawGate(STORE.exit, '出口');
+  drawGate(STORE.robotPayStations[0].stop, '自助收银');
   scene3d?.setPickups(stops.map(s => s.point), Math.min(state.stage, stops.length));
 }
 function drawCrowd() {
@@ -658,7 +662,7 @@ function renderOverviewPreview() {
       ...STORE.crossYs.map(y => `<line x1="${tx(6)}" y1="${ty(y)}" x2="${tx(W - 4)}" y2="${ty(y)}" stroke="#dbe8e1" stroke-width="1.4"/>`),
     ].join('');
     $('twinFixtures').innerHTML = layoutFixtures.map(f => {
-      const color = f.kind === 'promo' ? '#E8A34A' : f.kind === 'kiosk' ? '#20A995' : f.kind === 'checkout' ? '#7b93a8' : f.kind === 'queue' ? '#c4d2dc' : f.kind === 'robotwait' ? '#bfe3d6' : f.kind === 'handoff' ? '#c9a8e8' : f.kind === 'cart' ? '#9fb8c4' : '#aab8bf';
+      const color = f.kind === 'promo' ? '#E8A34A' : f.kind === 'kiosk' ? '#20A995' : f.kind === 'robotpay' ? '#2c9c86' : f.kind === 'checkout' ? '#7b93a8' : f.kind === 'queue' ? '#c4d2dc' : f.kind === 'robotwait' ? '#bfe3d6' : f.kind === 'handoff' ? '#c9a8e8' : f.kind === 'cart' ? '#9fb8c4' : '#aab8bf';
       return `<rect x="${tx(f.x - f.w / 2)}" y="${ty(f.y - f.h / 2)}" width="${f.w * SX}" height="${f.h * SY}" rx="2" fill="${color}" opacity=".45"/>`;
     }).join('');
     $('twinShelves').innerHTML = shelves.map(s => {
@@ -666,8 +670,8 @@ function renderOverviewPreview() {
       return `<rect x="${tx(s.xMin)}" y="${ty(s.yMin)}" width="${(s.xMax - s.xMin) * SX}" height="${(s.yMax - s.yMin) * SY}" rx="2" fill="${color}" opacity=".32" stroke="${color}" stroke-width=".8"/>`;
     }).join('');
     $('twinGates').innerHTML = [
-      [STORE.entrance, '入口', '#20A995'], [STORE.checkout, '收银', '#7b93a8'], [STORE.exit, '出口', '#E8A34A'],
-      [STORE.handoff, '交接', '#9a6fc4'],
+      [STORE.entrance, '入口', '#20A995'], [STORE.exit, '出口', '#E8A34A'],
+      [STORE.robotPayStations[0].stop, '自助收银', '#2c9c86'],
     ].map(([p, label, c]) => `<g><rect x="${tx(p[0]) - 13}" y="${ty(p[1]) - 7}" width="26" height="14" rx="4" fill="#fff" stroke="${c}" stroke-width="1.2"/><text x="${tx(p[0])}" y="${ty(p[1]) + 3}" font-size="8" text-anchor="middle" fill="${c}">${label}</text></g>`).join('');
   }
   if (!$('twinRobot')) return;
@@ -886,7 +890,7 @@ function renderStockout() {
     $('acceptSubBtn').disabled = !alternative;
   }
   if (state.assistPending) setText('assistDetail', `货区 ${state.assistPending.stop.shelfId}：${state.assistPending.names.join('、')} 需要员工核对。`);
-  if (state.awaitingPickup) setText('handoffDetail', `订单 ${state.order.id}（取货码 ${state.order.id.slice(-4)}）已在收银台完成结账，平台已收到「结账完成」消息。请核对 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件商品、最终模拟金额 ${money(actualPrice())}，然后点击「确认取货」——机器人随即返回充电桩补电，下一单从充电桩出发。`);
+  if (state.awaitingPickup) setText('handoffDetail', `订单 ${state.order.id}（取货码 ${state.order.id.slice(-4)}）已到达机器人自助收银台并完成自助扫码结算：${state.bought.reduce((n, x) => n + x.qty, 0)} 件商品、账单 ${money(actualPrice())}，平台已收到账单。线上确认订单后，机器人返回充电桩补电，下一单直接从充电桩出发。`);
 }
 function renderOrderState() {
   setText('orderListHeading', state.order ? `${state.order.id} · ${state.order.lines.reduce((n, x) => n + x.qty, 0)} 件` : '等待订单');
@@ -909,15 +913,15 @@ function renderProgress() {
   const done = state.plan?.legs.slice(0, state.stage).reduce((n, leg) => n + leg.length, 0) || 0;
   const percent = state.awaitingPickup ? 100 : state.plan ? Math.min(100, Math.round((done + state.legDistance) / state.plan.length * 100)) : 0;
   setWidth('progressFill', percent); setText('progressPercent', `${percent}%`);
-  setText('progressText', state.awaitingPickup ? '等待交接区取货' : state.shortage ? '等待缺货决策' : state.running ? `前往${nextName()}` : state.order ? '就绪 / 已暂停' : '等待已支付订单');
+  setText('progressText', state.awaitingPickup ? '等待线上确认订单' : state.shortage ? '等待缺货决策' : state.running ? `前往${nextName()}` : state.order ? '就绪 / 已暂停' : '等待已支付订单');
   setText('nextTarget', nextName());
   setText('fulfillPct', `${percent}%`); setWidth('fulfillFill', percent);
 }
 function nextName() {
-  if (state.awaitingPickup) return '交接区取货';
+  if (state.awaitingPickup) return '机器人自助收银台 · 等待线上确认';
   if (!state.plan) return '—';
   if (state.stage < state.plan.stops.length) return `货区 ${state.plan.stops[state.stage].shelfId} · ${state.plan.stops[state.stage].lines.map(x => x.product.name).join('、')}`;
-  return state.stage === state.plan.stops.length ? '收银台' : '出口';
+  return '机器人自助收银台';
 }
 function renderTimeline() {
   const steps = ['读取已支付订单', '载重检查 · 进入门店', 'Held–Karp + A* 规划',
@@ -964,8 +968,8 @@ function renderRobotCenter() {
 function renderRouteView() {
   setText('heldKarpMethod', state.plan ? `${state.plan.method} · ${state.plan.stops.length} 个不同货区` : '等待订单。');
   const stops = state.plan?.stops || [];
-  $('heldKarpFlow').innerHTML = stops.length ? [STORE.entrance, ...stops.map(s => s.point), STORE.checkout, STORE.handoff]
-    .map((p, i, arr) => `${i ? '<span class="route-arrow">→</span>' : ''}<span class="route-node ${i <= state.stage ? 'route-node--done' : ''}">${i === 0 ? '入口' : i === arr.length - 1 ? '出口' : i === arr.length - 2 ? '结账' : `货区${stops[i - 1].shelfId}`}</span>`).join('')
+  $('heldKarpFlow').innerHTML = stops.length ? [STORE.entrance, ...stops.map(s => s.point), STORE.robotPayStations[0].stop]
+    .map((p, i, arr) => `${i ? '<span class="route-arrow">→</span>' : ''}<span class="route-node ${i <= state.stage ? 'route-node--done' : ''}">${i === 0 ? '入口' : i === arr.length - 1 ? '自助收银' : `货区${stops[i - 1].shelfId}`}</span>`).join('')
     : '<span class="muted">提交订单后计算精确访问顺序。</span>';
   $('heldKarpTable').innerHTML = stops.length ? stops.map((s, i) =>
     `<tr><td>${i + 1}</td><td><b>${escapeHtml(s.category || shelves.find(x => x.id === s.shelfId)?.category || s.shelfId)}</b></td><td class="mono">${s.point.join(', ')}</td><td>${s.lines.map(x => escapeHtml(x.product.name)).join(', ')}</td></tr>`).join('')
@@ -1287,6 +1291,7 @@ function resetPlayback(preserveSafety = false) {
   state.history = [[...waitSlot]]; state.detected = new Set(); state.traveled = 0;
   state.returnLeg = null; state.returnReason = '';
   state.behavior = null; state.lastCollisionAt = -1;
+  scene3d?.setPayStation?.(false);
   state.robotBrain?.reset();
   syncRobotPose(waitSlot, state.order ? 'ASSIGNED' : 'IDLE', state.order?.id || null);
   state.dynamicObstacles = preserveSafety ? dynamic : [];
@@ -1461,7 +1466,8 @@ function confirmPickupAssist() {
 }
 function arrive() {
   const index = state.stage, stops = state.plan.stops;
-  state.position = [...(index < stops.length ? stops[index].point : index === stops.length ? STORE.checkout : STORE.handoff)];
+  // V2.8：最后一段终点就是机器人自助收银台的买单位（不再经过 STORE.checkout / 交接区）。
+  state.position = [...(index < stops.length ? stops[index].point : STORE.robotPayStations[0].stop)];
   state.history.push([...state.position]);
   if (index < stops.length) {
     const stop = stops[index];
@@ -1475,17 +1481,24 @@ function arrive() {
     if (requestPickupAssist(stop, state.running)) return;
     completeStop(stop);
   } else if (index === stops.length) {
-    log(`结账：共 ${state.bought.reduce((n, x) => n + x.qty, 0)} 件，最终模拟金额 ${money(actualPrice())}。`);
-    status('结账完成', '机器人前往店内取货交接区（出口通道保持畅通）。', 'PICKING');
-    state.pauseLeft = .8; state.stage++; renderAll();
+    // V2.8：停在机器人自助收银台前完成自助扫码结算 → 平台收到账单 → 等线上确认。
+    const paid = actualPrice();
+    state.running = false; state.finished = true; state.awaitingPickup = true; state.stage++;
+    syncRobotPose(state.position, 'PAYING', state.order?.id);
+    scene3d?.setPayStation?.(true);
+    log(`机器人已抵达机器人自助收银台：${state.bought.reduce((n, x) => n + x.qty, 0)} 件商品完成自助扫码，账单 ${money(paid)} 已推送平台，等待线上确认。`);
+    status('等待线上确认', `订单 ${state.order.id} 已在自助收银台结算，请在订单页确认订单 → 机器人返回充电桩补电。`, 'CHARGING');
+    setText('playLabel', '等待确认'); setText('playIcon', '✓'); renderAll();
   } else {
     state.running = false; state.finished = true; state.awaitingPickup = true; state.stage++;
-    log('机器人已在收银台完成结账并驶入店内取货交接区；平台已收到「结账完成」消息，等待操作员点击「确认取货」。');
-    status('等待确认取货', `订单 ${state.order.id} 已结账并备好，点击「确认取货」后机器人返回充电桩补电。`, 'CHARGING');
-    setText('playLabel', '等待交接'); setText('playIcon', '✓'); renderAll();
+    syncRobotPose(state.position, 'PAYING', state.order?.id);
+    scene3d?.setPayStation?.(true);
+    log('机器人已在机器人自助收银台完成结算；平台已收到账单，等待操作员线上确认订单。');
+    status('等待线上确认', `订单 ${state.order.id} 已结算，确认后机器人返回充电桩补电。`, 'CHARGING');
+    setText('playLabel', '等待确认'); setText('playIcon', '✓'); renderAll();
   }
   if (state.order) setText('orderMessage', `${state.order.id}：${state.awaitingPickup
-    ? '平台已收到结账完成消息，等待你点击「确认取货」→ 机器人返回充电桩补电。' : '机器人履约中'}；仅为模拟支付。`);
+    ? '平台已收到自助收银台账单，在线确认订单后 → 机器人返回充电桩补电。' : '机器人履约中'}；仅为模拟支付。`);
 }
 function decideSubstitution(accept) {
   if (!state.shortage) return;
@@ -1507,13 +1520,14 @@ function decideSubstitution(accept) {
 function confirmHandoff() {
   if (!state.awaitingPickup) return;
   const finished = state.order;
-  log(`取货交接完成：${finished.id} 已取走，最终模拟金额 ${money(actualPrice())}。`);
+  log(`线上确认完成：${finished.id} 已支付 ${money(actualPrice())}，机器人从自助收银台返回充电桩补电。`);
   patchOrder(finished.id, { status: '已完成', completedAt: new Date().toISOString(),
     deliverSeconds: state.elapsed, path: sampledPath(), progress: 1, robotId: activeRobot().id });
   state.completed.push({ id: finished.id, status: '已完成' });
   state.order = null; state.awaitingPickup = false; state.stockoutId = '';
+  scene3d?.setPayStation?.(false);
   syncRobotPose(state.displayPosition, 'RETURNING', null);
-  setText('orderMessage', `${finished.id} 已确认取货，机器人正在返回充电桩并补电。`);
+  setText('orderMessage', `${finished.id} 已确认订单，机器人正在返回充电桩并补电。`);
   // V2.7：确认后不再停在收银区/泊位，直接回充电桩对接位，抵达后自动补电。
   beginReturn('配送完成', state.displayPosition, true, { target: dockSlotPoint(), purpose: 'charge' });
   renderAll();
@@ -2129,6 +2143,9 @@ window.__NEXUS = Object.freeze({
   },
   armInfo: id => scene3d?.getRobotArmInfo?.(id),
   debugFaceCamera: () => scene3d?.debugFaceCamera?.(),
+  debugCamera: (from, at) => scene3d?.debugCamera?.(from, at),
+  debugWorld: (point, height) => scene3d?.debugWorld?.(point, height),
+  debugCheckout: list => scene3d?.setCheckoutStatus?.(list),
   setPedDensity: value => state.pedSystem?.setDensity(value),
   setPedMode: value => state.pedSystem?.setMode(value),
   injectCrossing: (direction, options) => state.pedSystem?.injectCrossing(state.displayPosition, direction || [1, 0], options),

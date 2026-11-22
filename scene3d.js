@@ -410,11 +410,16 @@ function buildScene(container) {
   // ----- 机器人舰队：0.62 × 0.82 × 0.92 m × 3 台，独立泊位与状态 -------------
   const stateColor = { idle: 0x28B9A4, moving: 0x28B9A4, turning: 0x3D7BD6, avoiding: 0xE8A34A,
     picking: 0xE8A34A, blocked: 0xE8A34A, charging: 0x3D7BD6, error: 0xD96C68,
+    // V2.8：在机器人自助收银台结算（等待线上确认）时，车身指示改琥珀色。
+    paying: 0xE8A34A, PAYING: 0xE8A34A,
     NORMAL_NAVIGATION: 0x28B9A4, SLOW_DOWN: 0xE8A34A, YIELD: 0xE8A34A, WAIT: 0xE8A34A,
     AVOIDANCE: 0x3D7BD6, REPLANNING: 0x8E6FB0, RESUME: 0x28B9A4, EMERGENCY_STOP: 0xD96C68 };
 
   function createRobotModel(id) {
     const robot = tagGroup(new THREE.Group(), 'robot', { id, name: `NEXUS ${id}` });
+    // V2.7：机器人初始停在充电桩对接位上，正面朝向桩体（世界 +Z = 地图 -y 方向）。
+    // 行驶时 placeRobot 仍按真实行进方向覆盖该朝向。
+    robot.rotation.y = Math.PI;
     scene.add(robot); pickTargets.push(robot);
     addRounded(robot, .60, .15, .78, .055, materials.graphite, 0, .13, 0, true);
     addRounded(robot, .62, .07, .80, .03, mat(0x1d2b35, { metalness: .45 }), 0, .075, 0, true);
@@ -536,18 +541,22 @@ function buildScene(container) {
     addCylinder(group, .055, .055, .09, skin, 0, 1.40, 0, 10);
     const head = new THREE.Mesh(new THREE.SphereGeometry(.108, 16, 12), skin);
     head.position.set(0, 1.535, 0); head.castShadow = true; group.add(head);
-    // 发型：短发/长发/马尾/银发
-    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(.113, 16, 12, 0, Math.PI * 2, 0, Math.PI * .56), hair);
+    // 发型：头顶发冠 + 后脑/两侧发片（只覆盖后 240°，正面留出整张脸）。
+    // 旧版是「整圈球冠且下沿低于眉毛」，把眼睛/鼻子全包进黑发里 —— 正面看像后脑勺，
+    // 所以人物（尤其收银员）会显得诡异。这里发冠只到头部赤道，五官完全露出来。
+    const hairCap = new THREE.Mesh(new THREE.SphereGeometry(.113, 18, 12, 0, Math.PI * 2, 0, Math.PI * .50), hair);
     hairCap.position.set(0, 1.555, 0); hairCap.scale.set(1.03, 1, 1.03); group.add(hairCap);
+    const hairBack = new THREE.Mesh(new THREE.SphereGeometry(.115, 18, 12, Math.PI * 1.822, Math.PI * 1.356, 0, Math.PI * .62), hair);
+    hairBack.position.set(0, 1.552, .006); hairBack.scale.set(1.0, 1.06, 1.06); group.add(hairBack);
     if (look % 3 === 0) { const bun = new THREE.Mesh(new THREE.SphereGeometry(.06, 10, 8), hair); bun.position.set(0, 1.55, .1); group.add(bun); }
     if (L.glasses) for (const sx of [-1, 1]) {
       const lens = new THREE.Mesh(new THREE.TorusGeometry(.028, .005, 6, 12), materials.graphite);
-      lens.position.set(sx * .045, 1.55, -.095); group.add(lens);
+      lens.position.set(sx * .045, 1.545, -.095); group.add(lens);
     }
-    // 鼻/眼（低多边形但有人形辨识度）
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(.018, .045, 6), skin);
-    nose.position.set(0, 1.525, -.108); nose.rotation.x = -Math.PI / 2; group.add(nose);
-    for (const sx of [-1, 1]) addBox(group, .018, .012, .006, materials.dark, sx * .042, 1.565, -.104);
+    // 鼻/眼（低多边形但有人形辨识度）：都放在发际线以下，正面能看清五官。
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(.019, .046, 6), skin);
+    nose.position.set(0, 1.518, -.108); nose.rotation.x = -Math.PI / 2; group.add(nose);
+    for (const sx of [-1, 1]) addBox(group, .023, .014, .006, materials.dark, sx * .044, 1.542, -.104);
 
     const arms = [], legs = [];
     for (const side of [-1, 1]) {
@@ -644,13 +653,15 @@ function buildScene(container) {
       arms[1].elbow.rotation.x = -.12;
       arms[0].shoulder.rotation.z = -.14; arms[1].shoulder.rotation.z = .1;
     } else if (queueing) {
+      // 排队等结账：双臂自然垂在身前（正角=朝前），不再向后翻到背部。
       arms[0].palm.visible = true; arms[1].palm.visible = true;
-      arms[0].shoulder.rotation.x = -.06; arms[1].shoulder.rotation.x = -.06;
-      arms[0].elbow.rotation.x = -.22; arms[1].elbow.rotation.x = -.22;
+      arms[0].shoulder.rotation.x = .10; arms[1].shoulder.rotation.x = .10;
+      arms[0].elbow.rotation.x = .22; arms[1].elbow.rotation.x = .22;
+      arms[0].shoulder.rotation.z = .05; arms[1].shoulder.rotation.z = -.05;
     } else {
       arms[0].palm.visible = true; arms[1].palm.visible = true;
       arms[0].shoulder.rotation.x = -swing * .68; arms[1].shoulder.rotation.x = swing * .68;
-      arms[0].elbow.rotation.x = -.08; arms[1].elbow.rotation.x = -.08;
+      arms[0].elbow.rotation.x = .08; arms[1].elbow.rotation.x = .08;
     }
     // 转弯：身体轻微侧倾/朝向已由 rotation.y 控制
     person.model.userData.pick.id = data.id;
@@ -723,11 +734,14 @@ function buildScene(container) {
   const queueSlotMeshes = [];
   layoutFixtures.forEach((f, i) => {
     // V2.7：充电桩由下方专用模型绘制（底座+立柱+充电枪），这里跳过，避免与实体块重叠。
-    if (f.kind === 'charger') return;
+    // V2.8：机器人自助收银台同样走专用模型（1600×600×650 mm 三视图）。
+    if (f.kind === 'charger' || f.kind === 'robotpay') return;
     const p = floorPoint([f.x, f.y]);
     const isCheckout = f.kind === 'checkout';
+    // V2.8：收银台按工业设计三视图单独建模（台面 820 mm），不再走「矮方块 + 贴件」的老路。
+    if (isCheckout) { buildCheckoutCounter(f, p); return; }
     const h = f.kind === 'wall' ? 1.92 : f.kind === 'promo' ? .94 : f.kind === 'cart' ? .12 : f.kind === 'queue' || f.kind === 'robotwait' || f.kind === 'handoff' ? .02 : .28;
-    let color = f.kind === 'wall' ? 0xd9e5e4 : f.kind === 'promo' ? 0xe9cfa2 : isCheckout ? 0x9fb9c9 : 0xbcccd0;
+    let color = f.kind === 'wall' ? 0xd9e5e4 : f.kind === 'promo' ? 0xe9cfa2 : 0xbcccd0;
     if (f.kind === 'queue' || f.kind === 'robotwait' || f.kind === 'handoff') {
       const zone = new THREE.Mesh(new THREE.PlaneGeometry(f.w * X_SCALE, f.h * X_SCALE),
         new THREE.MeshBasicMaterial({ color: f.kind === 'queue' ? 0xe8a34a : f.kind === 'handoff' ? 0x9a6fc4 : 0x3d7bd6, transparent: true, opacity: f.kind === 'handoff' ? .18 : .1, depthWrite: false, side: THREE.DoubleSide }));
@@ -772,14 +786,6 @@ function buildScene(container) {
           }
         }
       }
-      if (isCheckout) {
-        // 收银台：传送带 + 扫码区 + 显示屏 + 商品扫描台
-        addBox(scene, f.w * X_SCALE - .1, .03, f.h * X_SCALE - .08, materials.conveyor, p.x, h + .015, p.z);
-        for (let k = 0; k < 5; k++) addBox(scene, .012, .012, f.h * X_SCALE - .14, materials.aluminum, p.x - f.w * X_SCALE / 2 + .18 + k * (f.w * X_SCALE - .36) / 4, h + .035, p.z);
-        addBox(scene, .22, .05, .18, mat(0x2b3943), p.x + .3, h + .05, p.z); // 扫码器
-        addBox(scene, .16, .22, .02, materials.screen, p.x - .32, h + .19, p.z - .06);
-        addBox(scene, .12, .05, .1, materials.graphite, p.x + .1, h + .06, p.z + .1);
-      }
       if (f.kind === 'kiosk') {
         // 自助结账机：立柱机身 + 触摸屏 + 扫码窗 + 支付区 + 顶部指示灯。
         addBox(scene, f.w * X_SCALE * .82, 1.35, f.h * X_SCALE * .8, mat(0xe6eef0), p.x, .675, p.z, true);
@@ -806,10 +812,103 @@ function buildScene(container) {
         for (const side of [-1, 1]) addCylinder(scene, .07, .07, 2.5, materials.aluminum, p.x + side * f.w * X_SCALE / 2, 1.25, p.z, 10);
         addBox(scene, f.w * X_SCALE + .3, .12, .12, materials.tealEmissive, p.x, 2.5, p.z);
       }
-      const label = makeLabel(f.label, isCheckout ? '#172C40' : '#ffffff', isCheckout ? '#a6e9dc' : '#335e52', f.label.length > 10 ? .46 : .56);
+      const label = makeLabel(f.label, '#ffffff', '#335e52', f.label.length > 10 ? .46 : .56);
       label.position.set(p.x, Math.max(h + .42, 1.1), p.z); scene.add(label);
     }
   });
+
+  /**
+   * V2.8：收银台（按工业设计三视图：1530 × 610 mm 台面、820 mm 台面高度）。
+   * 局部 −Z 是顾客侧、+Z 是店员侧：传送带/刷卡器朝顾客，显示器朝店员。
+   * 旧版只有 0.28 m 高的一个方块（不到膝盖），视觉上完全不像收银台。
+   */
+  function buildCheckoutCounter(f, p) {
+    const W = f.w * X_SCALE, D = f.h * X_SCALE, H = .82; // 820 mm 台面
+    const g = new THREE.Group(); g.position.set(p.x, 0, p.z); scene.add(g);
+    // 踢脚 + 柜体
+    addBox(g, W - .09, .07, D - .07, materials.graphite, 0, .035, 0, true);
+    addRounded(g, W, H - .12, D, .026, mat(0xdbe4ea), 0, .07 + (H - .12) / 2, 0, true);
+    // 三扇柜门 + 竖向拉手 + 门缝压条（面向顾客）
+    const doorW = W / 3.15;
+    for (let k = -1; k <= 1; k++) {
+      addBox(g, doorW - .02, H - .30, .012, mat(0xeaf0f4), k * doorW, .07 + (H - .12) / 2 - .015, -D / 2 - .005);
+      addBox(g, .012, .10, .014, materials.aluminum, k * doorW + doorW / 2 - .035, .50, -D / 2 - .013);
+    }
+    // 台面：白色圆角面板 + 前沿不锈钢包边
+    addRounded(g, W + .05, .05, D + .05, .02, mat(0xf4f8fa, { roughness: .36 }), 0, H + .025, 0, true);
+    addBox(g, W + .06, .016, .018, materials.aluminum, 0, H + .006, -D / 2 - .026);
+    // 传送带（顾客侧半幅）：深色带面 + 两侧铝型材
+    addBox(g, W * .56, .022, D * .54, materials.conveyor, -W * .09, H + .06, -D * .16);
+    for (const sx of [-1, 1]) addBox(g, .014, .045, D * .54, materials.aluminum, -W * .09 + sx * W * .28, H + .072, -D * .16);
+    // 扫码窗：深色机身 + 红色扫描光带
+    addBox(g, W * .15, .06, .11, materials.graphite, W * .24, H + .075, -D * .12);
+    addBox(g, W * .12, .016, .012, materials.redEmissive, W * .24, H + .085, -D * .12 - .056);
+    // 打包区（不锈钢台面）
+    addBox(g, W * .22, .015, D * .38, mat(0xc6d1d6, { metalness: .6, roughness: .28 }), W * .33, H + .056, D * .14);
+    // 店员侧：显示器立柱 + 屏幕（略朝店员倾斜）
+    addCylinder(g, .012, .014, .20, materials.aluminum, -W * .33, H + .15, D * .22, 8);
+    addBox(g, .32, .22, .016, mat(0x22323c), -W * .33, H + .31, D * .225);
+    addBox(g, .29, .19, .008, materials.screen, -W * .33, H + .31, D * .216);
+    // 顾客侧：刷卡器（小斜面）
+    addRounded(g, .16, .05, .13, .012, materials.graphite, W * .31, H + .06, -D * .40);
+    addBox(g, .10, .012, .07, materials.screen, W * .31, H + .088, -D * .40);
+    // 台号牌：挂在顾客侧前沿上方，不再横在店员胸前
+    const plate = makeLabel(f.label, '#172C40', '#a6e9dc', .46);
+    plate.position.set(0, 1.0, -D / 2 - .20); g.add(plate);
+    return g;
+  }
+
+  // V2.8：机器人专用自助收银台（三视图 1600 × 600 × 650 mm）。
+  // 局部正面朝 −Z（= 世界 −z = 门店 +y），正对机器人买单位；台面 860 mm，
+  // 与机器人机械臂（肩高 0.80 m、水平伸展 0.30 m）对齐，可以直接把购物篮推上台面。
+  const payStations = [];
+  let payActive = false;
+  function buildRobotPayStation(station) {
+    const g = new THREE.Group();
+    const at = floorPoint(station.position, 0); g.position.set(at.x, 0, at.z);
+    const bodyMat = mat(0xcbd9e4), panelMat = mat(0xe8eff4), paleMat = mat(0xdde8f0);
+    // 可调脚轮
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      addCylinder(g, .032, .032, .055, materials.graphite, sx * .21, .048, sz * .24, 10);
+      addCylinder(g, .040, .022, .022, materials.graphite, sx * .21, .016, sz * .24, 10);
+    }
+    // 底座 + 下柜体 + 柜门/把手/门缝
+    addRounded(g, .56, .09, .62, .02, mat(0xa9bcc9), 0, .12, 0, true);
+    addRounded(g, .56, .60, .58, .025, bodyMat, 0, .47, 0, true);
+    addRounded(g, .45, .50, .016, .005, panelMat, 0, .47, -.294);
+    addBox(g, .018, .11, .022, materials.graphite, .18, .47, -.303);
+    addBox(g, .43, .006, .012, mat(0xbccbd6), 0, .71, -.30);
+    // 商品放置台（860 mm，向前出檐 90 mm）
+    addRounded(g, .60, .05, .70, .016, mat(0xf4f8fa, { roughness: .34 }), 0, .865, -.03, true);
+    addBox(g, .60, .014, .016, materials.aluminum, 0, .842, -.378);
+    // 上部机身（内收）+ 扫码区 + 小票出口
+    addRounded(g, .50, .40, .44, .028, paleMat, 0, 1.10, .06, true);
+    addBox(g, .30, .085, .022, materials.screen, 0, 1.12, -.163);
+    addBox(g, .26, .014, .012, materials.redEmissive, 0, 1.12, -.176);
+    addBox(g, .18, .014, .014, mat(0xf7faf9), 0, 1.048, -.168);
+    // 屏幕（后倾 12°）
+    const head = new THREE.Group(); head.position.set(0, 1.40, .03); head.rotation.x = .21; g.add(head);
+    addRounded(head, .44, .30, .07, .018, mat(0xc3d3df), 0, 0, .012, true);
+    addBox(head, .38, .24, .008, materials.screen, 0, 0, -.045);
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(.07, .018, .02), materials.tealEmissive);
+    lamp.position.set(0, .17, -.028); head.add(lamp);
+    // 背面：散热格栅 + 线缆接口 + 维护柜门
+    for (let k = 0; k < 4; k++) addBox(g, .34, .012, .012, mat(0x9fb2c0), 0, 1.02 + k * .045, .286);
+    addBox(g, .20, .10, .02, materials.graphite, 0, .92, .292);
+    for (const dx of [-.06, -.02, .02, .06]) {
+      const port = addCylinder(g, .012, .012, .022, materials.aluminum, dx, .92, .30, 8);
+      port.rotation.x = Math.PI / 2;
+    }
+    addRounded(g, .40, .46, .016, .005, mat(0xbccdd9), 0, .55, .295);
+    addBox(g, .016, .10, .02, materials.graphite, .15, .55, .305);
+    const plate = makeLabel('机器人自助收银台', '#123A34', '#7fe0c6', .50);
+    plate.position.set(0, 1.78, 0); g.add(plate);
+    tagGroup(g, 'robotpay', { id: station.id });
+    scene.add(g);
+    payStations.push({ ...station, group: g, lamp });
+    return g;
+  }
+  STORE.robotPayStations.forEach(buildRobotPayStation);
   flushProducts();
 
   // V2.4：充电桩（入口左下空地）。底座 + 立柱 + 充电枪 + 指示灯，供机器人回坞补电。
@@ -826,7 +925,8 @@ function buildScene(container) {
     const cable = new THREE.Mesh(new THREE.TorusGeometry(.10, .018, 6, 14, Math.PI * 1.15), mat(0x24323a));
     cable.position.set(.04, .42, -.06); cable.rotation.set(Math.PI / 2, 0, .4); g.add(cable); // 充电枪线缆
     const plate = makeLabel('充电桩', '#123A34', '#7fe0c6', .42);
-    plate.position.set(0, .92, -.22); g.add(plate);
+    // V2.7：机器人就停在桩前，标签压低到桩头之上，避免与机器人名牌（y=1.06）重叠。
+    plate.position.set(0, .78, -.22); g.add(plate);
     tagGroup(g, 'charger', { id: dock.id });
     scene.add(g);
     chargingDocks.push({ ...dock, group: g, lamp });
@@ -842,10 +942,14 @@ function buildScene(container) {
     const p = floorPoint([x, y], 0); body.position.set(p.x, 0, p.z);
     body.rotation.y = 0; // 面向顾客侧（局部 -Z = 世界 -Z = 店内方向）
     body.scale.setScalar(1.0);
-    // 收银站立姿态：双臂自然微前放收银台，站姿稳定（静态摆姿，不参与行人动画循环）。
+    // 收银站立姿态：双臂自然前放收银台。
+    // 注意旋转符号：模型正面是 -Z，绕 X 轴【正】角才是朝前伸（负角会把手臂甩到背后、
+    // 手掌从后背穿出来 —— 旧版就是负角，看起来像「手装反了」）。
     rig.arms.forEach((arm, s) => {
-      arm.shoulder.rotation.x = -.16; arm.shoulder.rotation.z = (s === 0 ? -1 : 1) * .05;
-      arm.elbow.rotation.x = -.34;
+      arm.shoulder.rotation.x = .30;                        // 上臂前倾，手肘落在身体前方
+      arm.shoulder.rotation.z = s === 0 ? .13 : -.13;       // 两侧略向内收，双手聚到身前
+      arm.elbow.rotation.x = .42;                           // 前臂继续向前，手掌停在台面上方
+      arm.palm.rotation.x = -.34;                           // 手掌下扣（掌面朝下）
     });
     rig.legs.forEach(leg => { leg.hip.rotation.x = 0; leg.knee.rotation.x = .02; });
     if (body.userData.pick) body.userData.pick = { kind: 'cashier', id: `CASHIER-${idx + 1}` };
@@ -997,17 +1101,19 @@ function buildScene(container) {
       const serving = !!checkoutState[c.index]?.serving;
       const breath = Math.sin(time * 1.4 + c.phase) * .008;
       c.body.position.y = breath;
-      const scan = serving ? Math.sin(time * 7.2 + c.phase) * .5 + .5 : 0;
+      // 扫码节奏：右手把商品拿到扫码窗前再放回台面（sin 0..1，仅在结账时动）。
+      const scan = serving ? Math.sin(time * 3.6 + c.phase) * .5 + .5 : 0;
       const arms = c.rig.arms;
-      if (arms?.[0]) {
-        arms[0].shoulder.rotation.x = serving ? -.58 : -.16;
-        arms[0].elbow.rotation.x = serving ? -.72 : -.34;
+      if (arms?.length === 2) {
+        // 正角 = 朝模型正面（-Z，即收银台/顾客侧）伸；负角会让手臂翻到背后。
+        // 左手稳住商品，始终停在身前台面上，只随呼吸微动。
+        arms[0].shoulder.rotation.x = .30 + breath * 1.2 + (serving ? .05 : 0);
+        arms[0].elbow.rotation.x = serving ? .36 : .42;
+        // 右手做扫码：抬起对准扫码窗 → 落回台面。
+        arms[1].shoulder.rotation.x = serving ? .30 + .46 * scan : .30;
+        arms[1].elbow.rotation.x = serving ? .42 + .26 * scan : .42;
       }
-      if (arms?.[1]) {
-        arms[1].shoulder.rotation.x = serving ? -.62 - scan * .42 : -.16;
-        arms[1].elbow.rotation.x = serving ? -.40 - scan * .26 : -.34;
-      }
-      c.body.rotation.y = Math.sin(time * (serving ? .9 : .45) + c.phase) * (serving ? .035 : .10);
+      c.body.rotation.y = Math.sin(time * (serving ? .9 : .45) + c.phase) * (serving ? .03 : .05);
     }
     // 收银机状态灯：结账中做呼吸式脉冲，让「正在收银」在远处也看得见。
     for (let i = 0; i < checkoutLamps.length; i++) {
@@ -1020,18 +1126,26 @@ function buildScene(container) {
       dock.lamp.scale.setScalar(chargingActive ? .8 + .5 * pulse : 1);
       dock.lamp.material = chargingActive ? materials.amberEmissive : materials.tealEmissive;
     }
+    // 机器人自助收银台指示灯：待机青色常亮，机器人正在结算/等待线上确认时琥珀脉冲。
+    for (const st of payStations) {
+      st.lamp.material = payActive ? materials.amberEmissive : materials.tealEmissive;
+      st.lamp.scale.setScalar(payActive ? .85 + .55 * Math.abs(Math.sin(time * 3.2)) : 1);
+    }
     for (const model of robotModels) {
       model.lidarRing.rotation.z = time * 2.4;
       for (const wheel of model.wheelMeshes) wheel.rotation.x = (model.group.userData.distance || 0) / .135;
-      // 机械臂：取货/协助时伸出到货架正面（-Z 局部），否则收回贴身竖直停放。
+      // 机械臂：取货/协助/自助收银结算时伸出到机身正面（-Z 局部），否则收回贴身竖直停放。
       const arm = model.arm; if (!arm) continue;
       const picking = model.robotState === 'picking' || model.robotState === 'PICKING';
-      const targetReach = picking ? 1 : 0;
+      const paying = model.robotState === 'paying' || model.robotState === 'PAYING';
+      const targetReach = picking || paying ? 1 : 0;
       arm.reach += (targetReach - arm.reach) * Math.min(1, dt * 4.5);
-      arm.shoulder.rotation.x = -arm.reach * 1.15;          // 上臂前倾伸向 -Z
-      arm.elbow.rotation.x = arm.reach * .55;                // 前臂下探取货
-      arm.wrist.rotation.x = arm.reach * .62;                // 腕部对准货架层高
-      const open = .07 - arm.reach * .035;                   // 夹爪靠近时收拢
+      // 结算时机械臂在台面上方小幅抬落（把购物篮推上收银台），取货时保持原来的下探动作。
+      const payWave = paying ? Math.sin(time * 2.2) * .10 : 0;
+      arm.shoulder.rotation.x = -arm.reach * 1.15 + payWave * arm.reach; // 上臂前倾伸向 -Z
+      arm.elbow.rotation.x = arm.reach * .55 - payWave * .6;             // 前臂下探
+      arm.wrist.rotation.x = arm.reach * .62;                            // 腕部对准台面高度
+      const open = .07 - arm.reach * .035;                               // 夹爪靠近时收拢
       arm.gripperL.position.x = -open; arm.gripperR.position.x = open;
     }
     if (cameraMode === 'follow' || cameraMode === 'close') {
@@ -1085,6 +1199,8 @@ function buildScene(container) {
     setRobotState, setFleetCount, setPedestrians, setSafety, setQueueStatus, setCheckoutStatus,
     // V2.4：充电桩指示——charging=true 时灯变忙绿脉冲，否则常亮青色待机。
     setCharging(active) { chargingActive = !!active; },
+    // V2.8：机器人自助收银台指示——机器人停在买单位结算/等待线上确认时为 true。
+    setPayStation(active) { payActive = !!active; },
     // 调试：读取/设置机器人机械臂姿态（供自动化视觉核对，不影响正常仿真）。
     getRobotArmInfo(id = robotModels[0].id) {
       const m = robotById.get(id) || robotModels[0];
@@ -1095,6 +1211,18 @@ function buildScene(container) {
       const m = robotModels[0];
       m.group.rotation.y = Math.PI; // 正面（局部 -Z）转向世界 +Z，即 close 相机方向
     },
+    /** 调试用：把自由相机放到指定位置并看向目标（自动化视觉核对，不影响仿真）。 */
+    debugCamera(from, at) {
+      cameraMode = 'debug';
+      camera.position.set(from[0], from[1], from[2]);
+      cameraTarget.set(at?.[0] ?? 0, at?.[1] ?? 1, at?.[2] ?? 0);
+      controls.target.copy(cameraTarget);
+      controls.update();
+      camera.lookAt(cameraTarget);
+      return { pos: camera.position.toArray(), at: cameraTarget.toArray() };
+    },
+    /** 调试用：把店内心算坐标（store 单位）换算成世界坐标，方便摆相机。 */
+    debugWorld(point, height = 0) { const p = floorPoint(point, height); return [p.x, p.y, p.z]; },
     setPickHandler(handler) { pickHandler = typeof handler === 'function' ? handler : null; },
     setScenario(scenario, slot = '09') {
       const peak = scenario === 'peak';

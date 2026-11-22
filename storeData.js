@@ -30,14 +30,20 @@ const colCenter = c => (c < AISLE_XS.length - 1 ? (AISLE_XS[c] + AISLE_XS[c + 1]
 const LANE_XS = [132, 144, 156, 168];
 const queueSlots = x => [22, 18, 14, 10].map(y => [x, y]);
 
+// V2.8：机器人自助收银台（机身中心 / 机器人买单停靠位）。单独抽成常量，
+// 因为 STORE.handoff 也要指向它（历史代码里 handoff 表示「订单终点」）。
+const ROBOT_PAY_POS = Object.freeze([120, 10]);
+const ROBOT_PAY_STOP = Object.freeze([120, 15.4]);
+
 export const STORE = {
   width: UNIT_W, height: UNIT_H,
   meters: Object.freeze({ width: +(UNIT_W * M).toFixed(2), height: +(UNIT_H * M).toFixed(2) }),
   entrance: [8, 26], checkout: [150, 26], exit: [170, 26],
-  // V2.5：订单交接区移到店内 x=153 / y=44 的纵向通道（两组货架之间），
-  // 与右墙出口开口(y=26)相距约 4.2 m。机器人在交接区等待顾客取货，
-  // 不再停在出口通道上；出口只承担「通行」，不承担任何机器人停靠/停留功能。
-  handoff: [153, 44],
+  // V2.8：订单终点从「文具与宠物用品之间的店内交接区 [153,44]」改成
+  // 机器人专用自助收银台（充电桩右侧）。机器人取完所有商品后先去自助收银台结算，
+  // 平台收到账单、用户在线上确认订单后才返回充电桩补电。
+  // handoff 这个名字保留为「订单终点」的兼容别名，避免整条链路再改一遍。
+  handoff: [...ROBOT_PAY_STOP],
   aisleXs: AISLE_XS, crossYs: CROSS_YS, verticalYs: VERTICAL_YS,
   hotCorridor: Object.freeze({ y: 62, xMin: 45, xMax: 99 }),
   frontZone: Object.freeze({ yMin: 2, yMax: 26 }),
@@ -58,17 +64,30 @@ export const STORE = {
   checkoutService: Object.freeze({ base: 2.0, perItem: .34, min: 2.0, max: 5.2 }),
   // V2.1：唯一入口生成点。所有行人只能从左墙开口(入口)进入，不再从店内凭空出现。
   spawnPoints: Object.freeze([[8, 26], [10, 26], [6, 26], [12, 26], [8, 24], [8, 28]]),
-  // V2.7：机器人最终停靠点 = 充电桩（收银区左侧前场空地，不占顾客动线）。
-  // 桩体中心 position=[116,8]；机器人对接位 dockSlot=[116,13.4] 在桩体正前方 5.4 单位
+  // V2.8：机器人最终停靠点 = 充电桩。桩体已从 x=116 左移到 x=108，
+  // 让出右侧空间给「机器人自助收银台」（x=120），三者在收银台 1（左缘 127.5）
+  // 与前场空地之间各留 ≥1 m 通道，不再挤成一堆。
+  // 桩体中心 position=[108,8]；机器人对接位 dockSlot=[108,13.4] 在桩体正前方 5.4 单位
   // （≈0.92 m）处，车体（半深 2.35 单位）与桩体底座（半宽 2.06 单位）之间留 1.0 单位
-  // （≈0.17 m）净空，机器人正面朝向桩体、机械臂在车尾朝外，停靠/取货都不会与桩体穿模。
+  // （≈0.17 m）净空，机器人正面朝向桩体、机械臂在车头朝外，停靠不会与桩体穿模。
   chargingDocks: Object.freeze([
-    Object.freeze({ id: 'CHG-1', position: [116, 8], dockSlot: [116, 13.4] }),
+    Object.freeze({ id: 'CHG-1', position: [108, 8], dockSlot: [108, 13.4] }),
   ]),
-  // V2.7：1 号位就是充电桩对接位（机器人默认在桩上待命，下一单从桩上出发）；
-  // 2 号位是备用泊位，两处都不在排队区、不在主通道上。
-  robotWaitSlots: Object.freeze([[116, 13.4], [110, 8]]),
-  robotWait: [116, 13.4],
+  // V2.8：机器人专用自助收银台（按工业设计三视图 1600 × 600 × 650 mm 建模）。
+  // 位于充电桩右侧 x=120、y=10（机身 3.6 × 3.9 单位 ≈ 0.61 × 0.66 m），
+  // 左距充电桩 6.1 单位（≈1.04 m）、右距收银台 1 左缘 5.7 单位（≈0.97 m）。
+  // stop 是机器人买单时的停靠位（机身正前方 3.45 单位 ≈ 0.59 m，车头距台面 0.19 m），
+  // 机械臂（水平伸展 0.30 m）可以伸到 0.86 m 高的台面上放购物篮。
+  robotPayStations: Object.freeze([
+    Object.freeze({
+      id: 'RPOS-1', position: [...ROBOT_PAY_POS], stop: [...ROBOT_PAY_STOP],
+      width: 3.6, depth: 3.9, height: 1.6,
+    }),
+  ]),
+  // V2.7/V2.8：1 号位就是充电桩对接位（机器人默认在桩上待命，下一单从桩上出发）；
+  // 2 号位是备用泊位，位于 1 号位左侧，两处都不在排队区、不在主通道上。
+  robotWaitSlots: Object.freeze([[108, 13.4], [102, 13.4]]),
+  robotWait: [108, 13.4],
   exitLane: [170, 20],
   outsideExit: [182, 26],
   // 机器人从右墙出口离开后，经场景外侧服务通道返回左入口（不穿墙、不瞬移）。
@@ -103,7 +122,8 @@ export function buildNavNodes({ includeOutside = false } = {}) {
   };
   const bottomXs = [...new Set([STORE.entrance[0], ...STORE.robotWaitSlots.map(s => s[0]), ...STORE.aisleXs,
     ...LANE_XS, STORE.checkout[0], STORE.exit[0],
-    ...STORE.chargingDocks.map(d => d.position[0])])].sort((a, b) => a - b);
+    ...STORE.chargingDocks.map(d => d.position[0]),
+    ...STORE.robotPayStations.map(s => s.stop[0])])].sort((a, b) => a - b);
   for (let i = 1; i < bottomXs.length; i++) edge([bottomXs[i - 1], CROSS_YS[0]], [bottomXs[i], CROSS_YS[0]]);
   for (const y of CROSS_YS.slice(1)) for (let i = 1; i < AISLE_XS.length; i++) edge([AISLE_XS[i - 1], y], [AISLE_XS[i], y]);
   for (const x of AISLE_XS) for (let i = 1; i < VERTICAL_YS.length; i++) edge([x, VERTICAL_YS[i - 1]], [x, VERTICAL_YS[i]]);
@@ -124,6 +144,14 @@ export function buildNavNodes({ includeOutside = false } = {}) {
   for (const lane of STORE.checkoutLanes) {
     edge(lane.slots[0], [lane.x, 26]);
     for (let i = 1; i < lane.slots.length; i++) edge(lane.slots[i - 1], lane.slots[i]);
+  }
+  // V2.8：机器人自助收银台的买单位：接到前场主通道；与附近停靠位之间补短边，
+  // 结算完回桩、或从桩上出发来买单都不必绕主通道。
+  for (const pay of STORE.robotPayStations) {
+    edge(pay.stop, [pay.stop[0], CROSS_YS[0]]);
+    for (const slot of STORE.robotWaitSlots) {
+      if (Math.hypot(slot[0] - pay.stop[0], slot[1] - pay.stop[1]) <= 14) edge(pay.stop, slot);
+    }
   }
   edge(STORE.exitLane, STORE.exit);
   edge(STORE.exit, STORE.outsideExit);
@@ -201,20 +229,24 @@ export const layoutFixtures = [
   { label: '杂货侧柜',   x: 172, y: 116, w: 5,  h: 18, kind: 'wall' },
   { label: '促销岛 A',   x: 45,  y: 12,  w: 11, h: 9,  kind: 'promo' },
   { label: '促销岛 B',   x: 72,  y: 12,  w: 11, h: 9,  kind: 'promo' },
-  // V2.2：促销岛 C 从 x=126 移到 x=99，避开收银排队区（x≥130）；原位置与排队区1穿模。
-  { label: '促销岛 C',   x: 99,  y: 12,  w: 10, h: 9,  kind: 'promo' },
+  // V2.2：促销岛 C 从 x=126 移到前场空地；V2.8 再左移到 x=94，
+  // 给「充电桩(x=108) + 机器人自助收银台(x=120)」这一排让出 ≥1 m 的通行间隙。
+  { label: '促销岛 C',   x: 94,  y: 12,  w: 10, h: 9,  kind: 'promo' },
   // 两台自助结账机：位于前场空位，不占机器人主通道 y=26，也不与收银台/排队区重叠。
   { label: '自助结账 1', x: 56,  y: 6,   w: 7,  h: 4,  kind: 'kiosk' },
   { label: '自助结账 2', x: 84,  y: 6,   w: 7,  h: 4,  kind: 'kiosk' },
-  ...STORE.checkoutLanes.map((lane, i) => ({ label: `收银台 ${String(i + 1).padStart(2, '0')}`, x: lane.x, y: 6, w: 7, h: 4, kind: 'checkout' })),
+  // V2.8：收银台按三视图放大到 1.53 × 0.61 m（台面 820 mm 高），不再是一张 0.28 m 的矮台。
+  ...STORE.checkoutLanes.map((lane, i) => ({ label: `收银台 ${String(i + 1).padStart(2, '0')}`, x: lane.x, y: 6, w: 9, h: 3.6, kind: 'checkout' })),
   ...STORE.checkoutLanes.map((lane, i) => ({ label: `排队区 ${i + 1}`, x: lane.x, y: 16, w: 4, h: 15, kind: 'queue' })),
   // V2.7：机器人停靠位（1 号位=充电桩对接位）标线收窄到 5×6，避免与桩体底座/邻位标线重叠。
-  ...STORE.robotWaitSlots.map((p, i) => ({ label: `机器人停靠位 ${i + 1}`, x: p[0], y: p[1], w: 5, h: 6, kind: 'robotwait' })),
+  ...STORE.robotWaitSlots.map((p, i) => ({ label: `停靠位 ${i + 1}`, x: p[0], y: p[1], w: 5, h: 6, kind: 'robotwait' })),
   // V2.7：充电桩是实体装置（行人/机器人都不穿模），单独标记，供 2D 绘制与行人避障共用。
-  ...STORE.chargingDocks.map(d => ({ label: `${d.id} 充电桩`, x: d.position[0], y: d.position[1], w: 5, h: 5, kind: 'charger' })),
+  ...STORE.chargingDocks.map(d => ({ label: '充电桩', x: d.position[0], y: d.position[1], w: 5, h: 5, kind: 'charger' })),
   { label: '购物车停放区', x: 10,  y: 9,  w: 11, h: 7,  kind: 'cart' },
-  // V2.5：店内取货交接区地面标线（不是实体障碍，行人可正常通行）。
-  { label: '取货交接区', x: STORE.handoff[0], y: STORE.handoff[1], w: 8, h: 7, kind: 'handoff' },
+  // V2.8：机器人自助收银台（实体装置，行人绕行；机器人停在其前方的买单位）。
+  ...STORE.robotPayStations.map(s => ({ label: '机器人自助收银', x: s.position[0], y: s.position[1], w: s.width, h: s.depth, kind: 'robotpay' })),
+  // V2.8：买单位地面标线（不是实体障碍，行人可正常通行）。
+  ...STORE.robotPayStations.map(s => ({ label: '买单位', x: s.stop[0], y: s.stop[1], w: 5, h: 6, kind: 'handoff' })),
 ];
 
 // Teaching catalog: English names, mapped to real zones. Price/weight/stock
