@@ -391,3 +391,20 @@ body.presentation .presentation-exit { display: inline-flex; }
 /* V3.0：订单历史行内的「取消」——文字型危险操作，和队列里的取消保持一致。 */
 .data-table button.link-danger { padding: 0; border: 0; background: transparent; color: #b45853; font-size: 11px; text-decoration: underline; }
 .data-table button.link-danger:hover { color: #8d3b36; }
+
+/* V2 三策略对照地图 */
+.strategy-map-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 14px; align-items: start; }
+.strategy-map-wrap svg { width: 100%; height: auto; background: #f7faf8; border: 1px solid #dfe8e3; border-radius: 12px; }
+.strategy-side .zone-legend { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.strategy-route--baseline { fill: none; stroke: #3D7BD6; stroke-width: 5; stroke-dasharray: 14 9; stroke-linecap: round; stroke-linejoin: round; }
+.strategy-route--selected { fill: none; stroke: #E8A34A; stroke-width: 6.5; stroke-linecap: round; stroke-linejoin: round; }
+.strategy-route--alt { fill: none; stroke: #9fb0aa; stroke-width: 3; stroke-dasharray: 3 7; opacity: .8; }
+.strategy-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.strategy-card { border: 1.5px solid #dfe8e3; border-radius: 10px; padding: 10px 12px; background: #fbfdfc; cursor: pointer; transition: border-color .15s; }
+.strategy-card:hover { border-color: #7b9fa3; }
+.strategy-card.is-selected { border-color: #E8A34A; background: #fdf8ef; }
+.strategy-card b { display: block; margin-bottom: 4px; }
+.strategy-card small { display: block; color: #5b6f66; font-size: 11px; line-height: 1.7; }
+.strategy-card .strategy-weights { font-size: 10px; color: #84919b; }
+@media (max-width: 900px) { .strategy-cards { grid-template-columns: 1fr; } .strategy-map-wrap { grid-template-columns: 1fr; } }
+.strategy-card.is-failed { opacity: .55; border-style: dashed; }

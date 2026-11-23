@@ -55,8 +55,8 @@ const state = {
   activeRobotId: 'AMR-01', returnLeg: null, returnReason: '', historyFilter: 'ALL', historySort: 'desc',
   simSpeed: 1, // 仿真倍速 1/2/3/5：只缩放仿真时间，规则、检查与决策全部保持逐帧执行
   nextAvailable: false, // 队列中有待处理订单且机器人已归位：显示「继续下一单」手动入口
-  // V2.4 只读回放：历史订单沿已记录 path 回放，不改写订单状态、不与仿真共用状态机。
-  replay: null, origHistory: null, // replay = {id,record,path,robotId,progress,playing,duration}
+  // V2 三策略对照：selectedStrategy = { orderId, key, mode, plan }（选定后由 3D 真实执行）
+  selectedStrategy: null, strategyComparison: null,
   // V2.4 充电：{active, robotId, rate}；机器人在充电桩补电，电量按仿真时间恢复。
   charging: null,
   miningEnabled: false, // V2.4：路径优化是否启用 Apriori 实验关联加权
@@ -704,12 +704,271 @@ function buildPlan(lines, scenario, slot, mode = 'full', startPoint = activeRobo
 function nearestNode(point) {
   return [...nodes.values()].map(n => n.point).reduce((best, p) => dist(p, point) < dist(best, point) ? p : best);
 }
+
+/* --------------------------------------- V2 Peak Traffic · 三种路径策略对照 */
+/** 三种 A* 策略统一定义：同一 C(P)=α·D+β·T+γ·R 公式，仅权重不同。
+ *  它们分别映射到 edgeCost 已有的三种代价分支（distance / time / full），
+ *  绝不写死路线、不克隆行人状态机；硬性安全约束（不可穿墙/货架/封闭边）全部共用。 */
+const ROUTE_STRATEGIES = [
+  { key: 'A', mode: 'distance', label: 'Strategy A · Distance Only', weights: 'α=1, β=0, γ=0', cn: '只看路程长短' },
+  { key: 'B', mode: 'time', label: 'Strategy B · Distance + Time', weights: 'α=1, β=0.45, γ=0', cn: '路程 + 通行时间（人群摩擦）' },
+  { key: 'C', mode: 'full', label: 'Strategy C · Distance + Time + Risk', weights: 'α=1, β=0.45, γ=1.3', cn: '路程 + 时间 + 风险（人群密度）' },
+];
+/** 沿线静态人群密度：对路径按 ≈4 单位采样，取最近货区的 Peak 静态人流、按距离衰减加权。 */
+function routeDensity(points, slot) {
+  if (!points?.length) return 0;
+  let sum = 0, weightSum = 0;
+  for (let i = 0; i < points.length; i += 2) {
+    const p = points[i];
+    let best = Infinity, bestCrowd = 0;
+    for (const s of shelves) {
+      const d = dist(s.point, p);
+      if (d < best) { best = d; bestCrowd = shelfCrowd(slot, s.id); }
+    }
+    const w = 1 / (1 + best / 8);
+    sum += bestCrowd * w; weightSum += w;
+  }
+  return weightSum ? +(sum / weightSum).toFixed(2) : 0;
+}
+/** 深克隆一份 plan（执行选定策略时避免与对照缓存共用可变 legs）。 */
+function clonePlan(plan) {
+  return { ...plan, startPoint: [...plan.startPoint],
+    stops: plan.stops.map(s => ({ ...s, point: [...s.point] })),
+    legs: plan.legs.map(leg => ({ ...leg, points: leg.points.map(p => [...p]), lengths: [...leg.lengths] })),
+    points: plan.points.map(p => [...p]) };
+}
+/**
+ * 同一订单三种策略对照：
+ * 1) Held–Karp 只计算一次（full 模式决定访问顺序），三种策略共用同一份顺序与端点序列；
+ * 2) 每种策略对每段真实调用 astar（不同代价模式），绝无写死路线；
+ * 3) 指标全部由 planLeg/edgeCost 的真实物理量累计（长度/时间/风险与 mode 无关，可公平对比）。
+ */
+function buildStrategyPlans(lines, slot, startPoint = activeRobot().waitSlot) {
+  const scenario = 'peak';
+  const hkStart = performance.now();
+  const baseline = buildPlan(lines, scenario, slot, 'full', startPoint); // Held–Karp + Strategy C（唯一一次顺序计算）
+  const heldKarpMs = +(performance.now() - hkStart).toFixed(1);
+  if (!baseline) return null;
+  const payPoint = STORE.robotPayStations[0].stop;
+  const waypoints = [[...startPoint], ...baseline.stops.map(s => [...s.point]), [...payPoint]];
+  const strategies = {};
+  for (const def of ROUTE_STRATEGIES) {
+    const t0 = performance.now();
+    const legs = [];
+    let planned = true;
+    for (let i = 1; i < waypoints.length && planned; i++) {
+      const leg = planLeg(waypoints[i - 1], waypoints[i], scenario, slot, def.mode);
+      if (leg) legs.push(leg); else planned = false;
+    }
+    const solveMs = +(performance.now() - t0).toFixed(1);
+    const points = legs.flatMap((leg, i) => i ? leg.points.slice(1) : leg.points);
+    strategies[def.key] = {
+      ...def, planned, legs, points,
+      length: +legs.reduce((n, leg) => n + leg.length, 0).toFixed(1),
+      time: +(legs.reduce((n, leg) => n + leg.time, 0) + (waypoints.length - 2) * 3 + 5).toFixed(1),
+      risk: +legs.reduce((n, leg) => n + leg.risk, 0).toFixed(2),
+      cost: +legs.reduce((n, leg) => n + leg.cost, 0).toFixed(2),
+      density: routeDensity(points, slot),
+      solveMs,
+    };
+  }
+  return { orderId: null, scenario, slot, startPoint: [...startPoint], heldKarpMs,
+    stops: baseline.stops.map(s => ({ ...s })), order: baseline.method.includes('启发式') ? '启发式' : 'Held–Karp 精确',
+    method: baseline.method, waypoints, strategies, createdAt: new Date().toISOString() };
+}
+/** 路径优化页入口：对选定订单运行三策略对照（Peak 场景固定）。 */
+function runStrategyComparison() {
+  const select = $('strategyOrderSelect');
+  const id = select?.value;
+  const order = (state.order?.id === id ? state.order : null)
+    || state.queue.find(o => o.id === id)
+    || state.order || state.queue[0] || null;
+  if (!order?.lines?.length) { $('strategyCards').innerHTML = '<p class="empty">请先提交一笔订单，再运行三种策略对照。</p>'; return; }
+  if (state.running) { $('strategyNote').textContent = '机器人正在配送中，请先暂停或完成当前订单，再运行策略对照。'; return; }
+  const slot = $('strategySlotSelect')?.value || state.slot;
+  const result = buildStrategyPlans(order.lines, slot, activeRobot().waitSlot);
+  if (!result) { $('strategyCards').innerHTML = '<p class="empty">策略规划失败：订单货区不可达（检查是否封闭了通道）。</p>'; return; }
+  result.orderId = order.id; result.orderPaid = order.paid; result.robotId = order.robotId || activeRobot().id;
+  state.strategyComparison = result;
+  if (!state.selectedStrategy || state.selectedStrategy.orderId !== order.id) state.selectedStrategy = null;
+  const success = Object.values(result.strategies).filter(s => s.planned).length;
+  log(`三策略对照完成：${order.id} · Held–Karp 共用（${result.heldKarpMs}ms）· ${success}/3 种策略规划成功。`);
+  renderStrategyPanel();
+}
+/** 选中某种策略（更新卡片高亮与地图橙线）。 */
+function selectStrategy(key) {
+  const cmp = state.strategyComparison; if (!cmp) return;
+  const strategy = cmp.strategies[key]; if (!strategy?.planned) return;
+  state.selectedStrategy = { orderId: cmp.orderId, key, mode: strategy.mode, plan: null };
+  renderStrategyPanel();
+}
+/** 使用选定策略执行：激活订单（如在队列中）→ 用策略 plan 替换默认 plan → 完全复用现有 3D 执行。 */
+function executeSelectedStrategy() {
+  const cmp = state.strategyComparison, sel = state.selectedStrategy;
+  if (!cmp || !sel || sel.orderId !== cmp.orderId) { setText('orderMessage', '请先运行对照并选择一种策略。'); return false; }
+  if (state.running) { setText('orderMessage', '机器人正在配送中，请先暂停或完成当前订单。'); return false; }
+  const order = state.order?.id === cmp.orderId ? state.order : state.queue.find(o => o.id === cmp.orderId);
+  if (!order) { setText('orderMessage', `订单 ${cmp.orderId} 不在待执行队列中（可能已完成或已取消）。`); return false; }
+  if (state.order?.id !== cmp.orderId) {
+    // 队列订单 → 激活为当前订单（与「去配送」同一套流程，不新建状态机）
+    state.queue = state.queue.filter(o => o.id !== cmp.orderId);
+    const robot = robotById(order.robotId) || assignRobot(order.lines) || activeRobot();
+    order.robotId = robot.id; order.robotName = robot.id; saveOrder(order);
+    state.activeRobotId = robot.id; state.order = order;
+    state.scenario = 'peak'; // 对照固定 Peak 场景，执行保持一致
+    updateScenario();
+  }
+  const strategy = cmp.strategies[sel.key];
+  const plan = clonePlan({ stops: cmp.stops, legs: strategy.legs, points: strategy.points,
+    length: strategy.length, time: strategy.time, risk: strategy.risk, cost: strategy.cost,
+    method: `${cmp.order}（三策略共用） · ${strategy.label}`, startPoint: [...cmp.startPoint] });
+  plan.costMode = strategy.mode;
+  state.selectedStrategy.plan = plan;
+  // 对照固定 Peak 场景；执行时段与对照一致（渲染、人群与规划同源）
+  if (state.order?.id !== cmp.orderId) {
+    state.queue = state.queue.filter(o => o.id !== cmp.orderId);
+    const robot = robotById(order.robotId) || assignRobot(order.lines) || activeRobot();
+    order.robotId = robot.id; order.robotName = robot.id; saveOrder(order);
+    state.activeRobotId = robot.id; state.order = order;
+  }
+  state.scenario = 'peak';
+  state.slot = cmp.slot;
+  const slotSelect = $('timeSlot'); if (slotSelect) slotSelect.value = cmp.slot;
+  renderCrowd();
+  updateScenario(); // 内部 resetPlayback → applyStrategySelection() 恢复策略 plan
+  log(`${cmp.orderId} 将按 ${strategy.label} 执行（权重：${strategy.weights}）。`);
+  setText('orderMessage', `${cmp.orderId} 已按 ${strategy.label} 载入 3D 履约：机器人从充电桩出发，真实避障取货并前往自助收银台。点击播放开始。`);
+  NEXUS_UI?.showView('supermarket');
+  scene3d?.setActive(true); scene3d?.resize();
+  renderAll();
+  return true;
+}
+/** resetPlayback 之后恢复选定策略的 plan（否则会被默认 full/mining plan 覆盖）。 */
+function applyStrategySelection() {
+  const sel = state.selectedStrategy;
+  if (!sel?.plan || !state.order || sel.orderId !== state.order.id) return false;
+  state.plan = clonePlan(sel.plan);
+  drawRoutes();
+  return true;
+}
+/** 导出对照结果（JSON / CSV）。 */
+function exportStrategyResult(format) {
+  const cmp = state.strategyComparison; if (!cmp) return;
+  const sel = state.selectedStrategy?.orderId === cmp.orderId ? state.selectedStrategy.key : null;
+  if (format === 'json') {
+    const payload = {
+      experiment: 'Peak Traffic — Three Routing Strategies Comparison',
+      orderId: cmp.orderId, robot: cmp.robotId, scenario: cmp.scenario, slot: cmp.slot,
+      formula: 'C(P) = alpha*D(P) + beta*T(P) + gamma*R(P)',
+      sharedHeldKarp: { method: cmp.method, order: cmp.order, milliseconds: cmp.heldKarpMs,
+        stops: cmp.stops.map(s => s.shelfId) },
+      safetyConstraints: '共享同一通道图与硬性约束（不可穿墙/货架/封闭边）；避障为安全约束，非策略差异',
+      strategies: Object.fromEntries(Object.entries(cmp.strategies).map(([key, s]) => [key, {
+        label: s.label, weights: s.weights, planned: s.planned,
+        distanceUnits: s.length, predictedSeconds: s.time, riskScore: s.risk, objectiveCost: s.cost,
+        avgPeakDensityAlongRoute: s.density, astarMilliseconds: s.solveMs,
+      }])),
+      selected: sel, exportedAt: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    downloadBlob(blob, `strategy-comparison-${cmp.orderId}.json`);
+  } else {
+    const rows = [['strategy', 'weights', 'planned', 'distance_units', 'predicted_seconds', 'risk_score', 'objective_cost', 'avg_density', 'astar_ms']];
+    for (const s of Object.values(cmp.strategies))
+      rows.push([s.label, s.weights, s.planned, s.length, s.time, s.risk, s.cost, s.density, s.solveMs]);
+    const csv = '\uFEFF' + rows.map(r => r.join(',')).join('\r\n');
+    downloadBlob(new Blob([csv], { type: 'text/csv' }), `strategy-comparison-${cmp.orderId}.csv`);
+  }
+}
+function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  log(`已导出对照结果：${name}`);
+}
+/** 三策略对照面板渲染（路径优化视图）。 */
+function renderStrategyPanel() {
+  const select = $('strategyOrderSelect'); if (!select) return;
+  // 订单下拉：当前执行订单 + 待分配队列
+  const orders = [...(state.order ? [state.order] : []), ...state.queue];
+  const previous = select.value;
+  select.innerHTML = orders.length ? orders.map(o =>
+    `<option value="${o.id}">${o.id} · ${o.lines.reduce((n, x) => n + x.qty, 0)} 件 · ${money(o.paid || 0)}${state.running && state.order?.id === o.id ? '（配送中）' : ''}</option>`).join('')
+    : '<option value="">请先提交订单</option>';
+  if (orders.some(o => o.id === previous)) select.value = previous;
+  const slotSelect = $('strategySlotSelect');
+  if (slotSelect && !slotSelect.options.length) slotSelect.innerHTML = timeSlots.map(t => `<option value="${t.id}" ${t.id === state.slot ? 'selected' : ''}>${t.label}</option>`).join('');
+  drawStrategyMap();
+  const cmp = state.strategyComparison;
+  const cards = $('strategyCards'), body = $('strategyCompareBody');
+  if (!cmp) return;
+  const sel = state.selectedStrategy?.orderId === cmp.orderId ? state.selectedStrategy.key : null;
+  cards.innerHTML = ROUTE_STRATEGIES.map(def => {
+    const s = cmp.strategies[def.key];
+    const active = sel === def.key;
+    return `<div class="strategy-card ${active ? 'is-selected' : ''} ${s.planned ? '' : 'is-failed'}" data-strategy="${def.key}" role="button" tabindex="0">
+      <b>${def.label}${active ? ' · 已选中' : ''}</b>
+      <span class="strategy-weights">${def.weights}</span>
+      <small>${s.planned
+        ? `距离 ${s.length} · 预计 ${s.time}s · 风险 ${s.risk}<br>沿线密度 ${s.density} · A* 耗时 ${s.solveMs}ms`
+        : '规划失败：目标不可达'}</small>
+      <small>${def.cn}</small>
+    </div>`;
+  }).join('');
+  cards.querySelectorAll('[data-strategy]').forEach(card => {
+    card.addEventListener('click', () => selectStrategy(card.dataset.strategy));
+  });
+  const rows = [
+    ['代价权重', ...ROUTE_STRATEGIES.map(d => d.weights)],
+    ['是否规划成功', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? '✓ 成功' : '✗ 失败')],
+    ['路径长度（地图单位）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].length : '—')],
+    ['预计时间（仿真秒）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].time : '—')],
+    ['路径风险值', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].risk : '—')],
+    ['沿线平均密度（Peak 静态）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].density : '—')],
+    ['目标代价 C(P)', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].cost : '—')],
+    ['A* 求解耗时（ms）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].solveMs)],
+  ];
+  body.innerHTML = rows.map(([label, ...vals]) => `<tr><td>${label}</td>${vals.map(v => `<td class="right mono">${v}</td>`).join('')}</tr>`).join('');
+  $('strategyNote').textContent = `订单 ${cmp.orderId} · ${cmp.order} 访问顺序只计算一次（${cmp.heldKarpMs}ms）且三种策略共用；${cmp.method}。对照为初始规划结果，执行阶段仍保留实时避障与安全约束。`;
+  $('exportStrategyJsonBtn').disabled = false; $('exportStrategyCsvBtn').disabled = false;
+  $('strategyExecuteBtn').disabled = !sel;
+  $('strategyExecuteBtn').textContent = sel ? `使用 Strategy ${sel} 执行（3D）` : '使用此策略执行（3D）';
+}
+/** 对照地图：底图共用门店布局；蓝虚线=原始基线（Strategy A），橙实线=当前选中，其余灰线。 */
+function drawStrategyMap() {
+  const base = $('strategyMapBase'), layers = $('strategyRouteLayers');
+  if (!base || !layers) return;
+  if (!base.dataset.built) {
+    base.dataset.built = '1';
+    const SX = 10, SY = 10, X = p => p[0] * SX, Y = p => (STORE.height - p[1]) * SY;
+    base.innerHTML = STORE.aisleXs.map(x => `<line x1="${X([x])}" y1="${Y([STORE.height - 6])}" x2="${X([x])}" y2="${Y([6])}" stroke="#dbe8e1" stroke-width="8"/>`).join('')
+      + STORE.crossYs.map(y => `<line x1="${X([6])}" y1="${Y([y])}" x2="${X([STORE.width - 4])}" y2="${Y([y])}" stroke="#dbe8e1" stroke-width="8"/>`).join('')
+      + shelves.map(s => `<rect x="${s.xMin * SX}" y="${(STORE.height - s.yMax) * SY}" width="${(s.xMax - s.xMin) * SX}" height="${(s.yMax - s.yMin) * SY}" rx="6" fill="#c6d4cd" stroke="#9fb2a8" stroke-width="1.5"/>`).join('')
+      + [[STORE.entrance, '入口'], [STORE.robotPayStations[0].stop, '自助收银']].map(([p, label]) =>
+        `<g><circle cx="${X(p)}" cy="${Y(p)}" r="12" fill="#fff" stroke="#20A995" stroke-width="3"/><text x="${X(p)}" y="${Y(p) - 18}" font-size="22" text-anchor="middle" fill="#35505c">${label}</text></g>`).join('');
+  }
+  const cmp = state.strategyComparison;
+  if (!cmp) { layers.innerHTML = ''; return; }
+  const sel = state.selectedStrategy?.orderId === cmp.orderId ? state.selectedStrategy.key : null;
+  const overlay = $('strategyOverlaySelect')?.value || 'all';
+  const path = points => points.map((p, i) => `${i ? 'L' : 'M'}${p[0] * 10},${(STORE.height - p[1]) * 10}`).join(' ');
+  layers.innerHTML = ROUTE_STRATEGIES.filter(def => cmp.strategies[def.key].planned).map(def => {
+    const s = cmp.strategies[def.key];
+    if (overlay === 'selected' && def.key !== sel) return '';
+    if (overlay === 'pair' && def.key !== sel && def.key !== 'A') return '';
+    if (def.key === sel) return `<path d="${path(s.points)}" class="strategy-route--selected"/>`;
+    if (def.key === 'A') return `<path d="${path(s.points)}" class="strategy-route--baseline"/>`;
+    return `<path d="${path(s.points)}" class="strategy-route--alt"/>`;
+  }).join('');
+}
+
 function replanCurrentLeg(reason) {
   if (!state.plan || state.stage > state.plan.stops.length) return false;
   const leg = state.plan.legs[state.stage]; if (!leg) return false;
   const target = leg.points.at(-1);
   const from = nextNodeAhead(leg, state.legDistance).point;
-  const fresh = planLeg(from, target, state.scenario, state.slot, state.miningEnabled ? 'mining' : 'full');
+  const fresh = planLeg(from, target, state.scenario, state.slot, state.plan.costMode || (state.miningEnabled ? 'mining' : 'full'));
   if (!fresh) { state.running = false; status('无安全路径', '通道封闭导致当前目标不可达，机器人已安全停车。', 'SAFE STOP'); log(`${reason}：没有可行的替代路径，机器人已停车。`, 'danger'); return false; }
   leg.points = stitchPath(state.position, fresh.points);
   leg.lengths = leg.points.slice(1).map((p, i) => dist(leg.points[i], p));
@@ -1214,11 +1473,11 @@ function renderOverviewPreview() {
   }).join('');
   $('twinRobot').innerHTML = state.fleet.map(robot => {
     const pos = robot.id === state.activeRobotId ? state.displayPosition : robot.position;
-    const c = state.charging?.active ? '#E8A34A' : state.replay ? '#7b6cf0' : '#0f6f5e';
+    const c = state.charging?.active ? '#E8A34A' : '#0f6f5e';
     return `<g><circle cx="${tx(pos[0])}" cy="${ty(pos[1])}" r="5.4" fill="#fff" stroke="${c}" stroke-width="1.6"/><circle cx="${tx(pos[0])}" cy="${ty(pos[1])}" r="2.6" fill="${c}"/></g>`;
   }).join('');
   const live = $('twinLive');
-  if (live) { live.textContent = state.replay ? '● 回放' : state.charging?.active ? '● 充电' : '● 实时'; live.setAttribute('fill', state.replay ? '#7b6cf0' : state.charging?.active ? '#E8A34A' : '#20A995'); }
+  if (live) { live.textContent = state.charging?.active ? '● 充电' : '● 实时'; live.setAttribute('fill', state.charging?.active ? '#E8A34A' : '#20A995'); }
 }
 function renderQueue() {
   const entries = [
@@ -1263,13 +1522,12 @@ function renderHistory() {
     const items = (record.lines || []).map(l => `${escapeHtml(l.name || l.product?.name || l.productId)} × ${l.qty}`).join('、');
     const time = record.createdAt ? new Date(record.createdAt).toLocaleString('zh-CN', { hour12: false }) : '—';
     const route = `${(record.start || []).map(n => Number(n).toFixed(0)).join(',')} → ${(record.end || []).map(n => Number(n).toFixed(0)).join(',')}`;
-    // V3.0：还没结束的订单不该显示「3D 回放」——它确实可以点进去重新配送，按钮就叫「去配送」；
-    // 同时在这一行直接给出「取消」，不必先打开详情（之前取消入口只有详情里那一个，还点不动）。
+    // V3.0：还没结束的订单显示「去配送」；V2 起已移除回放功能，已完结订单只保留「详情」。
     const final = orderFinal(record);
-    const action = final ? '3D 回放' : '去配送';
+    const action = final ? '' : '去配送';
     return `<tr><td class="mono">${escapeHtml(record.id)}</td><td>${items}</td><td class="right">${money(record.paid || 0)}</td><td>${time}</td><td>${escapeHtml(record.robotId || '待分配')}</td><td class="mono">${route}</td>
       <td><span class="pill ${record.status === '已完成' ? 'pill--ok' : record.status === '已取消' ? 'pill--danger' : 'pill--info'}">${escapeHtml(orderStatusCn(record.status))}</span></td>
-      <td><button type="button" data-history-detail="${escapeHtml(record.id)}">详情</button> <button type="button" data-history-demo="${escapeHtml(record.id)}">${action}</button>${final ? '' : ` <button type="button" class="link-danger" data-history-cancel="${escapeHtml(record.id)}">取消</button>`}</td></tr>`;
+      <td><button type="button" data-history-detail="${escapeHtml(record.id)}">详情</button>${final ? '' : ` <button type="button" data-history-demo="${escapeHtml(record.id)}">${action}</button> <button type="button" class="link-danger" data-history-cancel="${escapeHtml(record.id)}">取消</button>`}</td></tr>`;
   }).join('') : '<tr><td colspan="8" class="muted">没有符合条件的订单。</td></tr>';
   setText('historyStoreBadge', persistenceStatus() === 'localStorage' ? '本地持久化' : '内存临时');
 }
@@ -1290,13 +1548,19 @@ function showOrderDetail(id) {
     ['取消前进度', record.cancelProgress != null ? `${(Number(record.cancelProgress) * 100).toFixed(0)}%` : '—'],
     ['已记录路径点', path.length],
   ];
-  // V3.0：未完成订单的主操作是「去配送」，完成的订单才是只读回放。
+  // V3.0：未完成订单的主操作是「去配送」。V2 起回放功能已移除，已完结订单只保留信息查看。
   // V3.3：已取消订单额外提供「再来一单」（同商品生成新订单）与「删除记录」。
   const final = orderFinal(record);
   const cancelled = record.status === '已取消' || record.status === 'Cancelled';
   $('orderDetail').innerHTML = `<div class="grid grid-2"><ul>${lines || '<li>无商品明细</li>'}</ul><table class="data-table"><tbody>${rows.map(([k, v]) => `<tr><td>${k}</td><td class="right mono">${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table></div>
-    <div class="btn-row" style="margin-top:12px"><button id="detailDemoBtn" class="btn btn-teal btn-sm" type="button">${final ? '3D 回放' : '▶ 去配送（3D）'}</button>${final ? '' : '<button id="detailCancelBtn" class="btn btn-secondary btn-sm" type="button">取消该订单</button>'}${cancelled ? '<button id="detailReorderBtn" class="btn btn-secondary btn-sm" type="button">↻ 再来一单</button><button id="detailDeleteBtn" class="btn btn-danger btn-sm" type="button">删除记录</button>' : ''}</div>`;
-  $('detailDemoBtn').onclick = () => viewOrderDemo(id);
+    <div class="btn-row" style="margin-top:12px">${final ? '' : `<button id="detailDemoBtn" class="btn btn-teal btn-sm" type="button">▶ 去配送（3D）</button><button id="detailStrategyBtn" class="btn btn-secondary btn-sm" type="button">⚖ 三种策略对照</button><button id="detailCancelBtn" class="btn btn-secondary btn-sm" type="button">取消该订单</button>`}${cancelled ? '<button id="detailReorderBtn" class="btn btn-secondary btn-sm" type="button">↻ 再来一单</button><button id="detailDeleteBtn" class="btn btn-danger btn-sm" type="button">删除记录</button>' : ''}</div>`;
+  const demo = $('detailDemoBtn'); if (demo) demo.onclick = () => viewOrderDemo(id);
+  const strategyBtn = $('detailStrategyBtn'); if (strategyBtn) strategyBtn.onclick = () => {
+    viewOrderDemo(id, { start: false });
+    NEXUS_UI?.showView('route');
+    const select = $('strategyOrderSelect'); if (select) select.value = id;
+    runStrategyComparison();
+  };
   const cancel = $('detailCancelBtn'); if (cancel) cancel.onclick = () => cancelOrderById(id, '用户在订单历史中取消');
   const reorder = $('detailReorderBtn'); if (reorder) reorder.onclick = () => reorderFromRecord(record);
   const del = $('detailDeleteBtn');
@@ -1344,15 +1608,14 @@ function showOrderDetailClose() {
 function orderFinal(record) { return record?.status === '已完成' || record?.status === '已取消'; }
 
 /**
- * 从持久化记录打开订单：已终结订单只读回放；未完成订单载入任务并**直接出发**（「去配送」）。
- * V3.0：之前这个入口对未完成订单一律显示「3D 回放」，语义是错的——它其实会重建任务并等用户点播放。
+ * 从持久化记录打开订单：未完成订单载入任务并**直接出发**（「去配送」）。
+ * V2：回放功能已整体移除——已完结订单不再提供 3D 回放，只保留订单详情查看。
  */
 function viewOrderDemo(id, { start = true } = {}) {
   const record = getOrderRecord(id);
   if (!record) { setText('orderMessage', `订单 ${id} 不存在，无法打开演示。`); return; }
-  exitReplay(false); // 先清理可能存在的旧回放
   if (orderFinal(record)) {
-    startReplay(record);
+    setText('orderMessage', `${id} 状态为「${orderStatusCn(record.status)}」，可在订单历史中查看详情${record.status === '已取消' || record.status === 'Cancelled' ? '、再来一单或删除记录' : ''}。`);
     return;
   }
   if (state.order && state.order.id !== id && state.running) {
@@ -1384,81 +1647,6 @@ function viewOrderDemo(id, { start = true } = {}) {
   if (willStart) playPause();
 }
 
-/** V2.4 只读回放：沿 record.path 逐帧插值驱动机器人；不触碰 state.order / patchOrder，状态永不被改写。 */
-function startReplay(record) {
-  const path = (record.path?.length > 1 ? record.path : (record.cancelPosition ? [record.start, record.cancelPosition] : []))
-    .map(p => [...p]);
-  if (path.length < 2) { setText('orderMessage', `订单 ${record.id} 没有可回放的轨迹数据。`); return; }
-  const robotId = record.robotId && robotById(record.robotId) ? record.robotId : activeRobot().id;
-  const robot = robotById(robotId);
-  state.activeRobotId = robotId;
-  // 计算回放时长：按记录中的实际用时，缺省按轨迹点密度估算，限制在 4~30 秒，避免过长/过短。
-  const duration = Math.max(4, Math.min(30, (record.deliverSeconds && record.deliverSeconds > 0)
-    ? record.deliverSeconds : path.length * .12));
-  state.replay = { id: record.id, record, path, robotId, progress: 0, playing: false, duration,
-    lastFrame: 0, label: record.status === '已完成' ? '已完成 · 回放' : '已取消 · 回放' };
-  state.running = false; state.finished = false;
-  state.origHistory = state.history;
-  state.history = [[...path[0]]];
-  state.position = [...path[0]]; state.displayPosition = [...path[0]]; state.inertialVelocity = [0, 0];
-  if (robot) { robot.position = [...path[0]]; robot.status = 'IDLE'; }
-  syncRobotPose(state.displayPosition, 'IDLE', null);
-  scene3d?.setHistory(state.history);
-  scene3d?.setRobots(robotFleetSnapshot());
-  NEXUS_UI?.showView('supermarket');
-  scene3d?.setActive(true); scene3d?.resize();
-  setText('playLabel', '播放回放'); setText('playIcon', '▶');
-  status('配送回放', `${record.id} · ${state.replay.label}，共 ${path.length} 个轨迹点。`, 'CHARGING');
-  log(`进入只读回放：${record.id}（${state.replay.label}），订单状态不会被修改。`);
-  setText('orderMessage', `${record.id} 已进入只读回放（${state.replay.label}），点击「播放回放」观看沿真实记录轨迹的移动。`);
-  renderAll();
-}
-
-/** 退出回放并恢复进入前的历史轨迹；silent=true 时不清空订单消息（供 viewOrderDemo 前置清理调用）。 */
-function exitReplay(silent = true) {
-  if (!state.replay) return false;
-  state.replay.playing = false; state.running = false;
-  state.replay = null;
-  if (state.origHistory) { state.history = state.origHistory; state.origHistory = null; }
-  const robot = activeRobot();
-  if (robot) { robot.position = [...robot.waitSlot]; robot.status = 'IDLE'; }
-  state.position = [...(robot?.waitSlot || STORE.entrance)]; state.displayPosition = [...state.position];
-  syncRobotPose(state.displayPosition, 'IDLE', null);
-  scene3d?.setHistory(state.history); scene3d?.setRobots(robotFleetSnapshot());
-  setText('playLabel', '开始履约'); setText('playIcon', '▶');
-  if (!silent) setText('orderMessage', '已退出回放，机器人归位待命。');
-  return true;
-}
-
-/** 回放心跳：与仿真主循环解耦，按仿真倍速推进，走到终点自动停止（状态不变）。 */
-function replayLoop(now) {
-  const r = state.replay;
-  if (!r || !r.playing) return;
-  if (!r.lastFrame) r.lastFrame = now;
-  const dt = Math.min((now - r.lastFrame) / 1000, .05) * state.simSpeed;
-  r.lastFrame = now;
-  r.progress = Math.min(1, r.progress + dt / r.duration);
-  const d = r.progress * (r.path.length - 1);
-  const i = Math.min(r.path.length - 2, Math.floor(d));
-  const t = d - i;
-  const a = r.path[i], b = r.path[i + 1];
-  const pos = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-  state.position = pos; state.displayPosition = [...pos];
-  state.history = [...r.path.slice(0, i + 1), [...pos]];
-  const robot = robotById(r.robotId);
-  if (robot) { robot.position = [...pos]; robot.distance = d * .17; }
-  syncRobotPose(state.displayPosition, 'RETURNING', r.id);
-  scene3d?.setHistory(state.history);
-  scene3d?.setRobots(robotFleetSnapshot());
-  renderProgress();
-  if (r.progress >= 1) {
-    r.playing = false; state.running = false;
-    setText('playLabel', '重新播放'); setText('playIcon', '▶');
-    status('回放结束', `${r.id} 回放完成 · 订单状态未改变。`, 'CHARGING');
-    renderAll(); return;
-  }
-  requestAnimationFrame(replayLoop);
-}
 function renderStockout() {
   const select = $('stockoutSelect'), previous = state.stockoutId;
   select.innerHTML = '<option value="">不模拟缺货</option>' + (state.order?.lines || []).map(x =>
@@ -1486,14 +1674,6 @@ function renderOrderState() {
   renderQueue(); renderStockout();
 }
 function renderProgress() {
-  if (state.replay) {
-    const pct = Math.round(state.replay.progress * 100);
-    setWidth('progressFill', pct); setText('progressPercent', `${pct}%`);
-    setText('progressText', `${state.replay.id} · ${state.replay.label} · ${pct}%`);
-    setWidth('fulfillFill', pct); setText('fulfillPct', `${pct}%`);
-    setText('nextTarget', '只读回放');
-    return;
-  }
   const done = state.plan?.legs.slice(0, state.stage).reduce((n, leg) => n + leg.length, 0) || 0;
   const percent = state.awaitingPickup ? 100 : state.plan ? Math.min(100, Math.round((done + state.legDistance) / state.plan.length * 100)) : 0;
   setWidth('progressFill', percent); setText('progressPercent', `${percent}%`);
@@ -1726,10 +1906,7 @@ function renderAll() {
   renderLiveOps(); renderQueue(); renderOrderState(); renderInventory(); renderProgress();
   renderTimeline(); renderRobotCenter(); renderRouteView(); renderSimulationView(); renderPresentationHud();
   renderOverviewPreview(); renderPedestrianPanel(); renderHistory(); renderRestocks();
-  const replay = !!state.replay;
-  const exitBtn = $('exitReplayBtn'); if (exitBtn) exitBtn.hidden = !replay;
-  const resetBtn = $('resetBtn'); if (resetBtn) resetBtn.textContent = replay ? '↺ 回到初始' : '↺ 重新开始';
-  const nextBtn = $('nextOrderBtn'); if (nextBtn && replay) nextBtn.hidden = true;
+  renderStrategyPanel();
   $('normalBtn')?.setAttribute('aria-pressed', String(state.scenario === 'normal'));
   $('peakBtn')?.setAttribute('aria-pressed', String(state.scenario === 'peak'));
   $('scenarioNormal').setAttribute('aria-pressed', String(state.scenario === 'normal'));
@@ -1938,6 +2115,7 @@ function resetPlayback(preserveSafety = false) {
   state.dynamicObstacles = preserveSafety ? dynamic : [];
   state.plan = state.order ? buildPlan(state.order.lines, state.scenario, state.slot, state.miningEnabled ? 'mining' : 'full') : null;
   state.normalPlan = state.order ? buildPlan(state.order.lines, 'normal', state.slot) : null;
+  applyStrategySelection(); // V2：用户选定了三策略之一的 plan，则覆盖默认 plan（并同步地图）
   setText('playLabel', '开始履约'); setText('playIcon', '▶');
   status(state.order ? '已收到支付订单' : '等待订单',
     state.order ? '点击播放以检查载重并从充电桩出发。' : '请先选择商品并提交订单。', 'IDLE');
@@ -2518,7 +2696,7 @@ function scaledSubsteps(realDelta) {
   return { count: Math.max(1, Math.ceil(total / sub)), step: Math.min(sub, total || sub) };
 }
 function animate(now) {
-  if (!state.running || state.replay) return; // 回放由 replayLoop 独立驱动，主仿真心跳不介入
+  if (!state.running) return;
   if (!state.lastFrame) state.lastFrame = now;
   const delta = (now - state.lastFrame) / 1000;
   state.lastFrame = now;
@@ -2527,15 +2705,13 @@ function animate(now) {
   if (state.running) requestAnimationFrame(animate);
 }
 
-/* 行人自主循环：与机器人订单播放解耦。机器人未播放时由本循环独立推进行人；
-   机器人播放（含 advance 快进测试）时由 stepSimulation 推进，避免重复更新。 */
+  // 行人自主循环：与机器人订单播放解耦。机器人未播放时由本循环独立推进行人；
+  //   机器人播放（含 advance 快进测试）时由 stepSimulation 推进，避免重复更新。
 let pedLastFrame = 0, pedLoopTick = 0;
 function pedestrianLoop(now) {
   requestAnimationFrame(pedestrianLoop);
   const ped = state.pedSystem;
-  // V3.3：回放期间 state.running 被置 true，但主仿真心跳（animate）在回放时直接返回，
-  // 行人此前会因此冻住。让位条件改为「主仿真真的在推进」——回放时行人照常逛街。
-  if (!ped || !ped.running || document.hidden || (state.running && !state.replay)) { pedLastFrame = 0; return; }
+  if (!ped || !ped.running || document.hidden || state.running) { pedLastFrame = 0; return; }
   if (!pedLastFrame) { pedLastFrame = now; return; }
   const dt = Math.min((now - pedLastFrame) / 1000, .05);
   pedLastFrame = now;
@@ -2548,23 +2724,6 @@ function pedestrianLoop(now) {
 }
 function startPedestrianLoop() { requestAnimationFrame(pedestrianLoop); }
 function playPause() {
-  // V2.4 只读回放：独立播放/暂停，不进入订单状态机，绝不 patchOrder。
-  // V2.7：回放优先于「暂停充电」——看历史回放不应被桩上的充电状态挡住。
-  if (state.replay) {
-    const r = state.replay;
-    if (r.playing) {
-      r.playing = false; state.running = false; r.lastFrame = 0;
-      setText('playLabel', '继续回放'); setText('playIcon', '▶');
-      status('回放暂停', `${r.id} 停在 ${(r.progress * 100).toFixed(0)}%。`, 'CHARGING');
-    } else {
-      if (r.progress >= 1) { r.progress = 0; r.lastFrame = 0; }
-      r.playing = true; state.running = true; r.lastFrame = 0;
-      setText('playLabel', '暂停回放'); setText('playIcon', 'Ⅱ');
-      status('配送回放', `${r.id} 正在沿记录轨迹回放。`, 'RETURNING');
-      requestAnimationFrame(replayLoop);
-    }
-    return;
-  }
   // V2.7 充电中：若已有待执行订单，这一次点击就直接「结束充电 + 从充电桩出发」；
   // 没有订单时仍作为「暂停充电」。下一单因此永远从充电桩起步，无需再回泊位。
   if (state.charging?.active) {
@@ -2705,6 +2864,13 @@ function bindEvents() {
     if (plus) changeQty(plus, 1); if (minus) changeQty(minus, -1);
   });
   $('productSearch').addEventListener('input', scheduleCatalogSearch);
+  // V2 三策略对照
+  $('runStrategyBtn')?.addEventListener('click', runStrategyComparison);
+  $('strategyExecuteBtn')?.addEventListener('click', executeSelectedStrategy);
+  $('exportStrategyJsonBtn')?.addEventListener('click', () => exportStrategyResult('json'));
+  $('exportStrategyCsvBtn')?.addEventListener('click', () => exportStrategyResult('csv'));
+  $('strategyOverlaySelect')?.addEventListener('change', drawStrategyMap);
+  $('strategyOrderSelect')?.addEventListener('change', () => { state.strategyComparison = null; state.selectedStrategy = null; renderStrategyPanel(); });
   $('categoryFilter').addEventListener('change', updateSubcategories);
   $('subcategoryFilter').addEventListener('change', scheduleCatalogSearch);
   $('demoOrderBtn').addEventListener('click', demoOrder);
@@ -2714,10 +2880,8 @@ function bindEvents() {
   $('timeSlot').addEventListener('change', () => { state.slot = $('timeSlot').value; renderCrowd(); updateScenario(); });
   $('playBtn').addEventListener('click', playPause);
   $('resetBtn').addEventListener('click', () => {
-    if (exitReplay()) { log('已退出回放，机器人归位待命。'); return; }
     resetPlayback(); log('当前订单已重新开始，机器人已返回入口。');
   });
-  $('exitReplayBtn')?.addEventListener('click', () => { if (exitReplay()) log('已退出回放，订单状态保持不变。'); });
   $('safetyTestBtn')?.addEventListener('click', toggleBlock);
   $('cameraResetBtn').addEventListener('click', () => setCamera('full'));
   $('cameraFull')?.addEventListener('click', () => setCamera('full'));
@@ -2863,7 +3027,6 @@ function attachCharger() {
 
 /** 开始充电：机器人先沿 A* 导航图真实行驶到充电桩对接位，再对接补电（不瞬移）。 */
 function startCharging() {
-  if (state.replay) { status('回放中不可充电', '请先退出回放。', 'CHARGING'); return false; }
   if (state.running) { status('请先暂停履约', '机器人配送途中无法回坞，请先暂停或等待配送完成。', 'FAULT'); return false; }
   const robot = activeRobot();
   const dock = STORE.chargingDocks[0];
@@ -2929,18 +3092,8 @@ window.__NEXUS = Object.freeze({
   applyPedPreset,
   setScenario: value => { state.scenario = value === 'peak' ? 'peak' : 'normal'; updateScenario('test'); return syncCrowdToScenario(); },
   setSimSpeed, setRobotCount, startNextOrder, activateNext,
-  viewOrderDemo, exitReplay, startReplay,
+  viewOrderDemo, runStrategyComparison, selectStrategy, executeSelectedStrategy,
   startCharging, stopCharging, associationWeight, matchedAssociations,
-  replayTick: dt => { // 测试用：同步推进回放 dt 秒（不依赖 rAF 时钟）
-    const r = state.replay; if (!r || !r.playing) return null;
-    r.progress = Math.min(1, r.progress + dt / r.duration);
-    const d = r.progress * (r.path.length - 1), i = Math.min(r.path.length - 2, Math.floor(d)), t = d - i;
-    const a = r.path[i], b = r.path[i + 1], pos = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    state.displayPosition = [...pos];
-    const robot = robotById(r.robotId); if (robot) robot.position = [...pos];
-    syncRobotPose(state.displayPosition, 'RETURNING', r.id);
-    return { progress: r.progress, position: pos };
-  },
   armInfo: id => scene3d?.getRobotArmInfo?.(id),
   debugFaceCamera: () => scene3d?.debugFaceCamera?.(),
   debugCamera: (from, at) => scene3d?.debugCamera?.(from, at),
