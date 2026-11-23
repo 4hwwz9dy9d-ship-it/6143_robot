@@ -378,11 +378,64 @@ export class PedestrianSystem {
     // V3.8：机器人停稳（still）时，hull 内（4.2 单位，覆盖推车行人 hull 3.79）的
     // 节点与边硬排除——那里被车体物理占据，行人必须绕行。
     const avoid = robot?.position
-      ? { point: [...robot.position], radius: 11, hardR: 4.2, still: robot.still !== false }
+      ? { point: [...robot.position], radius: 11, hardR: robot.hardROverride ?? 4.2,
+          // forceHard：视觉避让重算路线时，即使机器人在行驶也按「占住当前车身」
+          // 硬排除——这是一次性的主动决策（行人看见车挡路才触发，带冷却），
+          // 不是常开硬排除，不会把人流赶进机器人前方通道。
+          still: robot.forceHard === true || robot.still !== false }
       : null;
     person.route = routeBetween(this.nodes, this.safePoint(person.position, person.radius), safeGoal, avoid);
     person.routeIndex = Math.min(1, person.route.length - 1);
     person.state = state;
+  }
+
+  /**
+   * V3.9 视觉避让反射：行人「看见」机器人挡在自己前方路线（接下来的 1-2 个路段
+   * 距车身 <9 单位 ≈1.5 m）时，不走到跟前再被钳住/被让行逻辑推来推去，而是当场
+   * 重算一条绕开车身的路线——真人看到挡路的机器人会提前拐进旁边通道，而不是
+   * 顶着车走或贴着车绕圈。带 5.5 s 冷却与「路线确实绕开才计数」防抖；绕不开时
+   * （机器人堵死唯一通道）路线保持原样，由既有让行/绕行机制兜底。
+   */
+  robotAvoidReflex(person, robot, step) {
+    person.robotRouteCd = Math.max(0, (person.robotRouteCd || 0) - step);
+    if (!robot?.position || person.robotRouteCd > 0) return;
+    // 只对「停稳/慢速」的机器人触发（正是课堂截图的场景：车停着取货/礼让，行人围堵）。
+    // 行驶中的车交给既有让行+排斥机制——行人会自然减速从车后通过；对行驶中的车
+    // 提前大换道会把人流赶进它要去的通道、越绕越堵（V3.8 实测 160 s 礼让雪崩）。
+    if (robot.still === false) return;
+    if (!['WALK_TO_SECTION', 'GOING_TO_CHECKOUT', 'DETOUR', 'WALKING'].includes(person.state)) return;
+    const route = person.route || [];
+    const idx = Math.max(1, person.routeIndex ?? 1);
+    if (idx >= route.length) return;
+    const lookEnd = Math.min(route.length - 1, idx + 2);
+    let minD = Infinity;
+    for (let i = idx - 1; i < lookEnd; i++) {
+      const a = i === idx - 1 ? person.position : route[i];
+      const b = route[i + 1];
+      if (!a || !b) continue;
+      minD = Math.min(minD, distToSegment(robot.position, a, b));
+    }
+    // 只对「按当前路线会撞上/贴上车身」的行人换道（minD < 5.5 ≈0.94 m）：
+    // 从旁边滑过车尾的行人本来就不冲突，让他们也大绕行只会给高峰人流添堵。
+    if (minD >= 5.5) return;
+    const before = route.map(p => [...p]);
+    const goal = person.goal ? [...person.goal] : [...STORE.exit];
+    const back = person.state;
+    // 停稳的机器人：硬排除车身（节点/边，排除半径 5 单位——换道后真正远离车身，
+    // 不会绕一圈又贴回来被钳住重试）；行驶中的机器人不触发（见上）。
+    this.sendTo(person, goal, back, { ...robot, hardROverride: 5 });
+    // 冷却随机化：避免一群人同步重算路线、在机器人正前方形成同步人流脉冲。
+    person.robotRouteCd = 7 + this.random() * 4;
+    person.reflexCount = (person.reflexCount || 0) + 1;
+    // 防抖：新路线对机器人的最近距离没有比原路线更远（没有真绕开）就不算成功绕行，
+    // 只保留冷却避免每帧重算；真绕开时记一次「看见机器人换道」。
+    const closest = (r) => {
+      let d = Infinity;
+      for (let i = 0; i < r.length - 1; i++) d = Math.min(d, distToSegment(robot.position, r[i], r[i + 1]));
+      return d;
+    };
+    if (closest(person.route) > minD + .25) this.metrics.robotReroutes = (this.metrics.robotReroutes || 0) + 1;
+    else person.route = before;
   }
 
   /**
@@ -638,6 +691,9 @@ export class PedestrianSystem {
     for (let i = this.people.length - 1; i >= 0; i--) {
       const person = this.people[i];
       this.advance(person, step, robot);
+      // V3.9 视觉避让：看见机器人挡在前方路线上 → 当场换一条绕开车身的路线
+      // （提前拐进旁边通道），而不是走到跟前贴着车蹭或顶着直冲。
+      this.robotAvoidReflex(person, robot, step);
       // V3.4 防卡看门狗：绕行/让行逻辑只在机器人附近触发，行人若被挤偏路线后
       // 卡在货架角、设备边或人群边缘（两轴移动同时被拒），此前没有任何自救手段，
       // 会永远站在那里、机器人也一直等——课堂演示最忌讳这种僵局。
