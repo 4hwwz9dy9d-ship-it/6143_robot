@@ -43,6 +43,7 @@
       <button type="button" data-view="robot"><span class="nav-icon">◎</span><span>机器人控制<small>ROBOT CONTROL</small></span></button>
       <button type="button" data-view="route"><span class="nav-icon">◇</span><span>路径优化<small>ROUTE OPTIMIZATION</small></span></button>
       <button type="button" data-view="simulation"><span class="nav-icon">⚡</span><span>仿真中心<small>SIMULATION CENTER</small></span></button>
+      <button type="button" data-view="intelligence"><span class="nav-icon">✦</span><span>人机协同智能<small>HUMAN-AWARE AI</small></span></button>
       <p class="nav-group">D · RESEARCH LAB 研究实验室</p>
       <button type="button" data-view="evaluation-lab"><span class="nav-icon">✓</span><span>评估实验室<small>EVALUATION LAB</small></span></button>
       <button type="button" data-view="research"><span class="nav-icon">◈</span><span>研究方法<small>RESEARCH</small></span></button>
@@ -443,6 +444,55 @@
       </div>
     </section>
 
+    <!-- ============ NEXUS 2.1 人机协同智能 / 动态场景 / 决策日志 ============ -->
+    <section class="view-panel" id="view-intelligence" aria-label="人机协同智能" hidden>
+      <div class="section-title"><div><p class="section-kicker">NEXUS 2.1 · HUMAN-AWARE AUTONOMY</p><h2>人机协同智能 · 可解释决策</h2>
+        <p>局部规划器每步比较「减速 / 左绕 / 右绕 / 等待 / 后退」，由真实训练的随机森林在线给出风险等级；行人用协同避让主动绕行。所有数值读取自运行中的仿真，不预先写死。</p></div><span class="badge" id="aiModelBadge">模型加载中…</span></div>
+
+      <div class="kpi-row" style="margin-top:4px">
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">ML RISK MODEL</span>风险识别森林</div><div class="kpi-value" id="aiRiskAcc">—</div><div class="kpi-foot">12 树 · 测试集准确率</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">TRAVEL REGRESSION</span>通行时间回归</div><div class="kpi-value" id="aiTravelR2">—</div><div class="kpi-foot">标准化线性回归 R²</div></div>
+        <div class="kpi"><div class="kpi-label"><span class="en-mini">TRAFFIC CLUSTERS</span>交通状态聚类</div><div class="kpi-value" id="aiClusters">—</div><div class="kpi-foot">K-Means · 质心数</div></div>
+        <div class="kpi kpi--dark"><div class="kpi-label"><span class="en-mini">COLLISIONS PREVENTED</span>碰撞预防次数</div><div class="kpi-value" id="aiCollisions">0</div><div class="kpi-foot">底盘扫掠拦截的穿模</div></div>
+      </div>
+
+      <div class="grid grid-2" style="margin-top:16px">
+        <div class="card card-pad">
+          <div class="card-head"><div><p class="section-kicker">DYNAMIC SCENARIOS · 10 SCENARIOS</p><h3>动态演示场景</h3><p>一键注入可复现的人流/障碍组合，观察机器人如何重新决策。每个场景都走同一套全局规划 + 局部避障逻辑。</p></div></div>
+          <div class="ped-scenarios" id="aiScenarios" style="grid-template-columns:repeat(2,1fr)">
+            <button type="button" data-ai-scenario="normal">01 正常购物</button>
+            <button type="button" data-ai-scenario="crossing">02 行人横穿</button>
+            <button type="button" data-ai-scenario="headon">03 迎面相遇</button>
+            <button type="button" data-ai-scenario="crowdblock">04 人群堵路</button>
+            <button type="button" data-ai-scenario="narrow">05 窄道会车</button>
+            <button type="button" data-ai-scenario="cart">06 购物车阻挡</button>
+            <button type="button" data-ai-scenario="peak">07 高峰拥堵</button>
+            <button type="button" data-ai-scenario="suddenstop">08 突然停步</button>
+            <button type="button" data-ai-scenario="group">09 结伴并行</button>
+            <button type="button" data-ai-scenario="avoid">10 主动绕行让行</button>
+          </div>
+          <p id="aiScenarioNote" class="order-message" role="status">选择场景后自动进入 3D 超市；若尚未开始配送，请先提交订单并点击播放。</p>
+          <div class="btn-row" style="margin-top:8px"><button id="aiGo3dBtn" class="btn btn-teal btn-sm" type="button">进入 3D 观察 →</button><button id="aiResetScenarioBtn" class="btn btn-secondary btn-sm" type="button">↺ 恢复常规客流</button></div>
+        </div>
+        <div class="card card-pad">
+          <div class="card-head"><div><p class="section-kicker">SMART HUMAN-ROBOT INTERACTION</p><h3>智能人机交互演示</h3><p>行人「看到」机器人后会自主侧移让行、错身通过后继续原目标；机器人只靠数据与决策换路，不会被行人挤离航道。</p></div><span class="pill pill--info" id="aiPedState">—</span></div>
+          <div id="aiInteraction" class="list"><p class="empty">进入 3D 并开始配送后，这里显示实时的减速/让行/绕行事件。</p></div>
+          <p class="assumption">行人速度为 0.95 m/s（快走 1.35 m/s），高于机器人 0.78 m/s；避让是规则驱动的行为仿真，不代表真实视觉识别或安全认证。</p>
+        </div>
+      </div>
+
+      <div class="card card-pad" style="margin-top:16px">
+        <div class="card-head"><div><p class="section-kicker">EXPLAINABLE DECISION LOG</p><h3>可解释决策日志</h3><p>每条记录都来自一次真实的动作切换，含风险等级、左右净空、五个候选方案代价。按时间顺序滚动，最新在上。</p></div>
+          <div class="btn-row"><span class="badge" id="aiDecisionCount">0 条</span><button id="aiDecisionClearBtn" class="btn btn-secondary btn-sm" type="button">清空</button></div></div>
+        <div class="table-wrap" style="max-height:360px;overflow:auto"><table class="data-table"><thead><tr><th>时间</th><th>级别</th><th>决策</th><th>依据</th></tr></thead><tbody id="aiDecisionBody"></tbody></table></div>
+      </div>
+
+      <div class="card card-pad" style="margin-top:16px">
+        <div class="card-head"><div><p class="section-kicker">DYNAMIC REPLANNING BENCHMARK</p><h3>动态重规划基准</h3><p>同一订单，对比静态基线路线与启用人群感知后的重规划路线：长度、风险暴露、预测通行时间全部来自真实模型与仿真场。</p></div><button id="aiBenchmarkBtn" class="btn btn-secondary btn-sm" type="button">运行基准</button></div>
+        <div id="aiBenchmarkPanel"><p class="empty">提交订单后点击「运行基准」，读取三策略的 ML 预测与真实规划指标。</p></div>
+      </div>
+    </section>
+
     <!-- ====================== 路径优化 ====================== -->
     <section class="view-panel" id="view-route" aria-label="路径优化" hidden>
       <div class="section-title"><div><p class="section-kicker">ROUTE OPTIMIZATION</p><h2>两种算法，一条可执行的路线</h2><p>Held–Karp 决定货架访问顺序；A* 在 3D 场景共用的栅格图上逐段规划。</p></div><span class="badge">计算结果</span></div>
@@ -626,6 +676,11 @@
   <div class="hud-block"><span>路径</span><b id="hudRoute">—</b></div>
   <div class="hud-block"><span>算法</span><b id="hudMetrics" class="is-teal">Held–Karp + A*</b></div>
   <div class="hud-block"><span>数据感知</span><b id="hudData" class="is-teal">—</b></div>
+  <div class="hud-block"><span>速度 / 行人</span><b id="hudSpeed">—</b></div>
+  <div class="hud-block"><span>风险 / TTC</span><b id="hudRisk">—</b></div>
+  <div class="hud-block"><span>决策动作</span><b id="hudAction" class="is-teal">—</b></div>
+  <div class="hud-block"><span>策略 / 重规划</span><b id="hudStrategy">—</b></div>
+  <div class="hud-block"><span>预测通行时间</span><b id="hudPredicted">—</b></div>
 </div>
 </body>
 </html>

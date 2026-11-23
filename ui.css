@@ -252,6 +252,7 @@ body.presentation .scene-3d, body.presentation .fallback-map { height: 100%; min
 body.presentation .playbar { margin-top: 10px; }
 .presentation-hud { position: fixed; left: 22px; bottom: 22px; z-index: 40; display: none; gap: 10px; max-width: min(860px, calc(100vw - 44px)); padding: 13px 16px; border: 1px solid rgba(120,220,205,.28); border-radius: var(--r-md); background: rgba(16,28,40,.92); color: #d7e9ef; box-shadow: var(--sh-3); backdrop-filter: blur(8px); }
 body.presentation .presentation-hud { display: flex; }
+.presentation-hud { flex-wrap: wrap; gap: 8px 14px; }
 .hud-block { min-width: 0; padding-right: 14px; border-right: 1px solid var(--ctrl-grid); }
 .hud-block:last-child { border-right: 0; padding-right: 0; }
 .hud-block span { display: block; color: #7f9dac; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }

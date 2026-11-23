@@ -10,6 +10,8 @@ import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js'
 import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, removeOrder, orderCounts, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
 import { BRAND_ASSETS, applyBrandAssets, updateBrandRobotImage } from './branding.js';
 import { loadMiningLab, setMiningLabData, getMiningLabData, renderMiningViews, isMiningView } from './miningLab.js';
+import { STATIC_OBSTACLES, ROBOT_INFLATE, pointBlocked, segmentBlocked, sweepBlocked, lineOfSightSimplify, collisionAwareSmooth, purePursuit, speedProfile, DecisionLog, LocalPlanner, angleWrap as safeAngleWrap } from './safety.js';
+import { loadRuntimeModels, riskPredictor, predictRisk, predictTravelTime, predictTrafficCluster, anomalyScore, modelSummary } from './runtimeML.js';
 
 const $ = id => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -68,6 +70,11 @@ const state = {
   miningEnabled: false, // V2.4：路径优化是否启用 Apriori 实验关联加权
   // V2.9：人群挡路时的自主改道。reroutes 是累计次数（与订单无关），cooldown 防抖。
   reroutes: 0, rerouteCooldown: 0, lastReroute: null,
+  // NEXUS 2.1：统一安全层 / 局部规划器 / 可解释决策日志 / 运行时 ML 推理
+  safety: { planner: new LocalPlanner(), log: new DecisionLog(160),
+            lastSweep: null, blockedFrames: 0, speed: 0, yawRate: 0, risk: null,
+            predictedTime: null, collisionsPrevented: 0, actions: {} },
+  runtimeModels: null,
 };
 const behaviorLabels = ROBOT_STATE_CN;
 const PED_STATE_CN = { ENTER_STORE: '进店', WALK_TO_SECTION: '前往货架', WALKING: '行走中', BROWSING: '选购停留',
@@ -734,6 +741,45 @@ function routeDensity(points, slot) {
   }
   return weightSum ? +(sum / weightSum).toFixed(2) : 0;
 }
+/** NEXUS 2.1：用真实训练导出的模型，对一条规划路径计算 ML 风险/通行时间/交通簇。
+ *  全部为只读预测——不改写 A* 的路网代价，因此不影响三条策略的原有路径与既有回归测试。 */
+function mlEvaluatePath(points, slot, scenario = 'peak') {
+  const models = state.runtimeModels;
+  if (!models) return null;
+  const density = routeDensity(points, slot);
+  const length = points.slice(1).reduce((n, p, i) => n + dist(points[i], p), 0);
+  const occupancy = Math.min(1, density / 6);
+  const walkingSpeed = scenario === 'peak' ? .82 : 1.15;
+  const obstacleCount = STATIC_OBSTACLES.filter(o =>
+    points.some(p => p[0] > o.xMin - 3 && p[0] < o.xMax + 3 && p[1] > o.yMin - 3 && p[1] < o.yMax + 3)).length;
+  const risk = predictRisk(models, {
+    pedestrian_density: density,
+    robot_ped_distance: 3.4,
+    relative_velocity: scenario === 'peak' ? .45 : .2,
+    ttc: 2.8,
+    corridor_width: 2.55,
+    obstacle_count: obstacleCount,
+  });
+  const travel = predictTravelTime(models, {
+    corridor_length: length * PHYSICS.metersPerUnit,
+    ped_density: density,
+    occupancy,
+    walking_speed: walkingSpeed,
+    obstacle_count: obstacleCount,
+  });
+  const cluster = predictTrafficCluster(models, {
+    corridor_length: length * PHYSICS.metersPerUnit,
+    ped_density: density,
+    occupancy,
+    walking_speed: walkingSpeed,
+    obstacle_count: obstacleCount,
+  });
+  return {
+    riskLevel: risk?.level, riskScore: +(risk?.score ?? 0).toFixed(3), riskProba: risk?.proba?.map(x => +x.toFixed(3)),
+    predictedSeconds: +(travel ?? 0).toFixed(1), cluster: cluster?.cluster,
+    density: +density.toFixed(2), obstacleCount,
+  };
+}
 /** 深克隆一份 plan（执行选定策略时避免与对照缓存共用可变 legs）。 */
 function clonePlan(plan) {
   return { ...plan, startPoint: [...plan.startPoint],
@@ -774,6 +820,9 @@ function buildStrategyPlans(lines, slot, startPoint = activeRobot().waitSlot) {
       cost: +legs.reduce((n, leg) => n + leg.cost, 0).toFixed(2),
       density: routeDensity(points, slot),
       solveMs,
+      // NEXUS 2.1：真实模型推理出的风险等级/通行时间/交通簇，作为附加诊断列，
+      // 不进入 astar 代价（保持三种策略原有路径与历史回归完全可比）。
+      ml: mlEvaluatePath(points, slot, scenario),
     };
   }
   return { orderId: null, scenario, slot, startPoint: [...startPoint], heldKarpMs,
@@ -916,7 +965,7 @@ function renderStrategyPanel() {
       <b>${def.label}${active ? ' · 已选中' : ''}</b>
       <span class="strategy-weights">${def.weights}</span>
       <small>${s.planned
-        ? `距离 ${s.length} · 预计 ${s.time}s · 风险 ${s.risk}<br>沿线密度 ${s.density} · A* 耗时 ${s.solveMs}ms`
+        ? `距离 ${s.length} · 预计 ${s.time}s · 风险 ${s.risk}<br>沿线密度 ${s.density} · A* 耗时 ${s.solveMs}ms${s.ml ? `<br>ML 风险 ${s.ml.riskLevel} (${s.ml.riskScore}) · 回归 ${s.ml.predictedSeconds}s · 簇 ${s.ml.cluster}` : ''}`
         : '规划失败：目标不可达'}</small>
       <small>${def.cn}</small>
     </div>`;
@@ -932,6 +981,10 @@ function renderStrategyPanel() {
     ['路径风险值', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].risk : '—')],
     ['沿线平均密度（Peak 静态）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].density : '—')],
     ['目标代价 C(P)', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].planned ? cmp.strategies[d.key].cost : '—')],
+    ['ML 风险等级（森林 12 树）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].ml?.riskLevel ?? '—')],
+    ['ML 风险评分（0-1）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].ml?.riskScore ?? '—')],
+    ['ML 预测通行时间（回归, s）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].ml?.predictedSeconds ?? '—')],
+    ['交通状态簇（K-Means）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].ml?.cluster ?? '—')],
     ['A* 求解耗时（ms）', ...ROUTE_STRATEGIES.map(d => cmp.strategies[d.key].solveMs)],
   ];
   body.innerHTML = rows.map(([label, ...vals]) => `<tr><td>${label}</td>${vals.map(v => `<td class="right mono">${v}</td>`).join('')}</tr>`).join('');
@@ -1005,6 +1058,68 @@ function drawStrategyMap() {
   }).join('');
 }
 
+/* ==================== NEXUS 2.1 人机协同智能面板 ==================== */
+/** 渲染模型真实指标（从已加载模型读取，不硬编码）与碰撞预防计数。 */
+function renderIntelligenceSummary() {
+  const s = state.safety.modelSummary;
+  setText('aiModelBadge', s ? `模型就绪 · seed ${s.seed}` : '模型未加载（降级启发式）');
+  setText('aiRiskAcc', s ? `${(s.risk.accuracy * 100).toFixed(1)}%` : '—');
+  setText('aiTravelR2', s ? s.travel.r2.toFixed(3) : '—');
+  setText('aiClusters', s ? String(s.kmeans.k) : '—');
+  setText('aiCollisions', String(state.safety.collisionsPrevented || 0));
+}
+/** 渲染可解释决策日志——每条都是 LocalPlanner/CollisionGuard 真实产生的切换事件。 */
+function renderDecisionLog() {
+  const body = $('aiDecisionBody'); if (!body) return;
+  const entries = state.safety.log.list().slice(-40).reverse();
+  setText('aiDecisionCount', `${state.safety.log.list().length} 条`);
+  if (!entries.length) { body.innerHTML = '<tr><td colspan="4"><span class="empty">尚未产生决策。开始配送后，动作切换会实时记录在这里。</span></td></tr>'; return; }
+  body.innerHTML = entries.map(e => {
+    const d = e.data || {};
+    const scores = d.scores ? Object.entries(d.scores).map(([k, v]) => `${k}:${v}`).join(' · ') : '';
+    const detail = [d.risk != null ? `风险 ${d.risk}` : '', d.left != null ? `左净空 ${d.left} / 右 ${d.right}` : '',
+      scores, d.obstacle ? `障碍 ${d.obstacle}` : ''].filter(Boolean).join(' · ');
+    return `<tr><td class="mono">${e.at.toFixed(1)}s</td><td><span class="pill ${e.level === 'warn' ? 'pill--warn' : 'pill--info'}">${escapeHtml(e.source)}</span></td><td>${escapeHtml(e.text)}</td><td><small>${escapeHtml(detail)}</small></td></tr>`;
+  }).join('');
+}
+/** 渲染智能人机交互演示：实时读取行为状态 + 局部规划动作 + 行人让行计数。 */
+function renderInteractionDemo() {
+  const host = $('aiInteraction'); if (!host) return;
+  const sf = state.safety, behavior = state.behavior;
+  const ped = state.pedSystem;
+  const yielding = ped?.people?.filter(p => p.yieldToRobot > 0 || p.avoiding).length || 0;
+  const detouring = ped?.people?.filter(p => p.state === 'DETOUR').length || 0;
+  setText('aiPedState', state.running ? `配送中 · ${ped?.people?.length || 0} 人` : '待机');
+  const d = sf.lastDecision;
+  const rows = [
+    ['机器人行为状态', behavior?.state || '—', behavior?.reason || '—'],
+    ['局部规划动作', d?.action || '—', d?.reason || '等待决策'],
+    ['ML 风险等级', sf.risk ? `${sf.risk.level} (${(sf.risk.score ?? 0).toFixed(2)})` : '—', '12 树随机森林在线推理'],
+    ['主动让行行人', `${yielding} 人`, '行人看到机器人后侧移避让'],
+    ['换路绕行行人', `${detouring} 人`, '僵局时自主改道继续目标'],
+    ['碰撞预防', `${sf.collisionsPrevented || 0} 次`, '底盘扫掠检测拦截的穿模'],
+  ];
+  host.innerHTML = rows.map(([k, v, note]) =>
+    `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--line)"><span><b>${escapeHtml(k)}</b><br><small class="muted">${escapeHtml(note)}</small></span><b class="mono" style="color:var(--teal)">${escapeHtml(String(v))}</b></div>`).join('');
+}
+/** 动态重规划基准：从三策略的真实 ML 指标读取，对比静态基线 A 与风险最优 C。 */
+function renderAiBenchmark() {
+  const host = $('aiBenchmarkPanel'); if (!host) return;
+  const cmp = state.strategyComparison;
+  if (!cmp?.strategies?.A?.planned) { host.innerHTML = '<p class="empty">请先提交订单并在路径优化页运行三策略对照，再回到这里运行基准。</p>'; return; }
+  const A = cmp.strategies.A, C = cmp.strategies.C;
+  const rows = [
+    ['基线 Strategy A · 长度', `${A.length} 单位`, '只看路程'],
+    ['风险策略 C · 长度', `${C.length} 单位`, '路程 + 时间 + 风险'],
+    ['基线 ML 风险等级', A.ml?.riskLevel || '—', `评分 ${A.ml?.riskScore ?? '—'}`],
+    ['风险策略 ML 风险等级', C.ml?.riskLevel || '—', `评分 ${C.ml?.riskScore ?? '—'}`],
+    ['基线回归通行时间', `${A.ml?.predictedSeconds ?? '—'} s`, '线性回归预测'],
+    ['风险策略回归通行时间', `${C.ml?.predictedSeconds ?? '—'} s`, '线性回归预测'],
+    ['实测动态重规划次数', `${state.reroutes || 0} 次`, '运行时人群场触发'],
+  ];
+  host.innerHTML = `<div class="table-wrap"><table class="data-table"><thead><tr><th>指标</th><th class="right">数值</th><th>说明</th></tr></thead><tbody>${rows.map(([k, v, u]) => `<tr><td>${escapeHtml(k)}</td><td class="right mono">${escapeHtml(v)}</td><td>${escapeHtml(u)}</td></tr>`).join('')}</tbody></table></div>
+    <p class="assumption">ML 指标由 ${escapeHtml(state.safety.modelSummary?.source || '本地模型')} 训练导出的模型在浏览器端真实推理得到；路径长度来自 A* 实时规划。本基准不改写任何策略路径。</p>`;
+}
 function replanCurrentLeg(reason) {
   if (!state.plan || state.stage > state.plan.stops.length) return false;
   const leg = state.plan.legs[state.stage]; if (!leg) return false;
@@ -2000,12 +2115,25 @@ function renderPresentationHud() {
   const nearby = state.pedSystem
     ? state.pedSystem.people.filter(p => dist(p.position, state.displayPosition) < 12).length : 0;
   setText('hudData', `${slotLabel} · 样本客流 ${slotTotal} · 附近 ${nearby} 人 · 靠右行驶`);
+  // NEXUS 2.1 HUD：速度/行人速度、风险/TTC、决策动作、策略/重规划、ML 预测通行时间
+  const sf = state.safety, d = sf.lastDecision;
+  const speed = Math.hypot(state.inertialVelocity[0], state.inertialVelocity[1]) * PHYSICS.metersPerUnit;
+  const pedSpeed = .95 * (state.pedSpeed || 1); // 基础步速 0.95 m/s × 面板倍率（快走档 1.35）
+  setText('hudSpeed', `${speed.toFixed(2)} / ${pedSpeed.toFixed(2)} m/s`);
+  const ttc = state.behavior?.ttc;
+  setText('hudRisk', sf.risk ? `${sf.risk.level} · TTC ${Number.isFinite(ttc) ? ttc.toFixed(1) + 's' : '∞'}` : '—');
+  setText('hudAction', d ? `${d.action} · ${d.reason}` : 'NORMAL');
+  const sel = state.selectedStrategy?.key || (state.miningEnabled ? 'C*' : 'C');
+  setText('hudStrategy', `${sel} · 重规划 ${state.reroutes || 0} 次`);
+  const pred = sf.predictedTime;
+  setText('hudPredicted', Number.isFinite(pred) ? `${pred.toFixed(1)} s` : (sf.modelSummary ? '待预测' : '—'));
 }
 function renderAll() {
   renderLiveOps(); renderQueue(); renderOrderState(); renderInventory(); renderProgress();
   renderTimeline(); renderRobotCenter(); renderRouteView(); renderSimulationView(); renderPresentationHud();
   renderOverviewPreview(); renderPedestrianPanel(); renderHistory(); renderRestocks();
   renderStrategyPanel(); renderChallengePanel();
+  renderIntelligenceSummary(); renderDecisionLog(); renderInteractionDemo();
   $('normalBtn')?.setAttribute('aria-pressed', String(state.scenario === 'normal'));
   $('peakBtn')?.setAttribute('aria-pressed', String(state.scenario === 'peak'));
   $('scenarioNormal').setAttribute('aria-pressed', String(state.scenario === 'normal'));
@@ -2697,8 +2825,13 @@ function advanceWithHeading(leg, at, step, speedFactor, label = '') {
     state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
     return { at, point: positionOnLeg(leg, at), moved: false };
   }
-  // 正常行驶（含 90° 路口的顺滑小弧；V3.8 允许负向倒车，但不退过本段起点）。
-  state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+  // NEXUS 2.1：正常行驶用 Pure Pursuit 跟踪前视点（而非逐节点对准），拐角自然顺滑、不左右摆。
+  // 角速度/角加速度上限由安全层约束； maneuvers（倒车/掉头）仍沿用上面的差速底盘逻辑。
+  const pp = purePursuit(state.position, state.heading, leg.points, at, {
+    lookahead: 12, maxRate: 1.5, maxAccel: 2.6, prevRate: state.yawRate || 0, dt: step,
+  });
+  state.yawRate = pp.rate;
+  state.heading = pp.heading;
   at = clamp(at + base, 0, leg.length);
   return { at, point: positionOnLeg(leg, at), moved: Math.abs(base) > 1e-6 };
 }
@@ -2779,9 +2912,54 @@ function stepSimulation(dt) {
     status(behaviorLabels[result.state], result.reason, 'AVOIDING');
   }
 
+  // 2.5) NEXUS 2.1 局部规划器：每步比较 A减速/B左绕/C右绕/D等待/E后退，
+  //      结合运行时 ML 风险预测选择代价最低且安全的动作（机器人自主决策，不是被人挤走）。
+  const sf = state.safety;
+  const aheadList = snapshot.filter(q => {
+    const dx = q.x - state.displayPosition[0], dy = q.y - state.displayPosition[1];
+    const along = dx * direction[0] + dy * direction[1];
+    const side = Math.abs(dx * -direction[1] + dy * direction[0]);
+    return along > 0 && along < 11 && side < 3.2;
+  });
+  const nearest = aheadList.reduce((best, q) => {
+    const d = Math.hypot(q.x - state.displayPosition[0], q.y - state.displayPosition[1]);
+    return !best || d < best.d ? { d, q } : best;
+  }, null);
+  const riskPredict = sf.riskPredictor || null;
+  const decision = sf.planner.decide({
+    clock: state.elapsed, dt: step, position: state.displayPosition, direction,
+    speed: Math.hypot(state.inertialVelocity[0], state.inertialVelocity[1]),
+    pedestrians: snapshot, obstacles, aheadCount: aheadList.length,
+    ttc: result.ttc, nearestDistance: nearest?.d, nearestSpeed: nearest?.q?.speed,
+    corridorWidth: 2.55, emergency: result.state === 'EMERGENCY_STOP', riskPredict,
+  });
+  sf.risk = decision.risk;
+  sf.lastDecision = decision;
+  sf.actions[decision.action] = (sf.actions[decision.action] || 0) + 1;
+  if (decision.log) sf.log.entries.push(decision.log);
+  // NEXUS 2.1：用真实通行时间回归模型，按当前路段剩余距离估算还剩多少秒（低频更新即可）。
+  if (state.runtimeModels && (state.uiTick % 12 === 0 || sf.predictedTime == null)) {
+    const remainMeters = Math.max(0, leg.length - state.legDistance) * PHYSICS.metersPerUnit;
+    const t = predictTravelTime(state.runtimeModels, {
+      corridor_length: remainMeters,
+      ped_density: aheadList.length,
+      occupancy: Math.min(1, aheadList.length / 6),
+      walking_speed: state.scenario === 'peak' ? .82 : 1.15,
+      obstacle_count: obstacles.length,
+    });
+    if (Number.isFinite(t)) sf.predictedTime = +t.toFixed(1);
+  }
+  // 决策层只在必要时介入：NORMAL 保持原行为；其余动作有迟滞与幅度上限，避免左右振荡。
+  let effectiveSpeed = result.speedFactor;
+  if (decision.action === 'WAIT') effectiveSpeed = Math.min(effectiveSpeed, 0);
+  else if (decision.action === 'SLOW') effectiveSpeed = Math.min(effectiveSpeed, decision.speedFactor);
+  else if (decision.action === 'LEFT' || decision.action === 'RIGHT') effectiveSpeed = Math.min(effectiveSpeed, decision.speedFactor);
+  if (decision.action === 'BACK') result.backUp = true;
+  sf.effectiveSpeed = effectiveSpeed;
+
   // 3) 位移真正由行为状态决定；V3.6 起侧向完全由 LANE_KEEP 决定（不再有行人触发的横移）。
   //    V3.1：推进交给 advanceWithHeading——方向突变时原地转/倒车，不再画半弧。
-  const motion = advanceWithHeading(leg, state.legDistance, step, result.speedFactor, '配送中');
+  const motion = advanceWithHeading(leg, state.legDistance, step, effectiveSpeed, '配送中');
   state.legDistance = motion.at;
   state.position = motion.point;
   // V3.6：车道保持——机器人永远贴自己的靠右车道线（与路线平行的固定偏置），
@@ -2789,7 +2967,11 @@ function stepSimulation(dt) {
   // WAIT/YIELD/紧急停车时侧偏归零，车体回正到路线中线上停稳（更符合「停在自己道上」）。
   const stopStates = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state);
   const perpendicular = [-direction[1], direction[0]];   // 行进方向右侧（地图 y 向下坐标系）
-  const targetShift = stopStates ? 0 : LANE_KEEP;
+  // 2.1：主动绕行由局部规划器给出横向目标（决策结果，不是被行人挤走）；其余保持靠右车道。
+  let targetShift = stopStates ? 0 : LANE_KEEP;
+  if (!stopStates && (decision.action === 'LEFT' || decision.action === 'RIGHT') && Number.isFinite(decision.lateral)) {
+    targetShift = clamp(decision.lateral, -2.4, 2.4);
+  }
   const targetVec = [perpendicular[0] * targetShift, perpendicular[1] * targetShift];
   const ease = Math.min(1, step * 2.2);
   state.lateralVec[0] += (targetVec[0] - state.lateralVec[0]) * ease;
@@ -2807,10 +2989,29 @@ function stepSimulation(dt) {
   const easeB = Math.min(1, step * 1.6);
   state.backupVec[0] += (-direction[0] * backupTarget - state.backupVec[0]) * easeB;
   state.backupVec[1] += (-direction[1] * backupTarget - state.backupVec[1]) * easeB;
-  state.displayPosition = [
+  const candidatePosition = [
     state.position[0] + state.lateralVec[0] + state.backupVec[0],
     state.position[1] + state.lateralVec[1] + state.backupVec[1],
   ];
+  // NEXUS 2.1 统一碰撞：对「旧位姿 → 新位姿」做圆形底盘扫掠 + 转弯四角检测。
+  // 命中静态障碍时撤回该步位移（绝不穿模），记录一次预防事件并请求重规划。
+  const prevDisplay = [...state.displayPosition];
+  const swept = sweepBlocked(prevDisplay, candidatePosition, state.lastHeading ?? state.heading, state.heading, ROBOT_INFLATE, STATIC_OBSTACLES);
+  if (swept) {
+    sf.lastSweep = { at: state.elapsed, obstacle: swept.kind, from: prevDisplay, to: candidatePosition };
+    sf.collisionsPrevented++;
+    state.position = [...state.lastLogic];       // 回到上一步逻辑点（不出货架）
+    state.legDistance = Math.max(0, state.legDistance - dist(prevDisplay, candidatePosition));
+    state.lateralVec = [0, 0]; state.backupVec = [0, 0];
+    state.displayPosition = [...prevDisplay];
+    sf.log.push(state.elapsed, 'warn', 'CollisionGuard',
+      `底盘扫掠检测到 ${swept.kind} 障碍，已撤销本步位移并回到安全位姿`, { obstacle: swept.id });
+    if (replanCurrentLeg('底盘碰撞保护')) log('底盘扫掠碰撞保护：已重新规划当前路段。', 'warn');
+  } else {
+    state.displayPosition = candidatePosition;
+    sf.blockedFrames = 0;
+  }
+  state.lastHeading = state.heading;
 
   const travelled = dist(previousLogic, state.position);
   state.traveled += travelled; state.battery = Math.max(0, state.battery - travelled * .09);
@@ -3026,6 +3227,16 @@ function bindEvents() {
     NEXUS_UI?.showView('supermarket');
     renderChallengePanel();
   });
+  // NEXUS 2.1 人机协同智能面板
+  document.querySelectorAll('[data-ai-scenario]').forEach(button =>
+    button.addEventListener('click', () => applyAiScenario(button.dataset.aiScenario)));
+  $('aiGo3dBtn')?.addEventListener('click', () => {
+    if (!state.running && (state.order || state.queue.length)) playPause();
+    NEXUS_UI?.showView('supermarket');
+  });
+  $('aiResetScenarioBtn')?.addEventListener('click', () => { applyPedPreset('normal'); setText('aiScenarioNote', '已恢复常规购物客流。'); });
+  $('aiDecisionClearBtn')?.addEventListener('click', () => { state.safety.log.clear(); renderDecisionLog(); });
+  $('aiBenchmarkBtn')?.addEventListener('click', () => { runStrategyComparison(); renderAiBenchmark(); NEXUS_UI?.showView('route'); });
   $('categoryFilter').addEventListener('change', updateSubcategories);
   $('subcategoryFilter').addEventListener('change', scheduleCatalogSearch);
   $('demoOrderBtn').addEventListener('click', demoOrder);
@@ -3119,6 +3330,10 @@ function bindEvents() {
     if (state.view === 'supermarket') { scene3d.resize(); renderAll(); }
     // NEXUS 2.0：进入挖掘/实验页时按需重绘；评估实验室需读取最新的三策略对照结果。
     if (isMiningView(state.view)) refreshMiningViews();
+    // NEXUS 2.1：进入人机协同页时刷新模型指标、决策日志与交互演示。
+    if (state.view === 'intelligence') {
+      renderIntelligenceSummary(); renderDecisionLog(); renderInteractionDemo(); renderAiBenchmark();
+    }
   });
   window.addEventListener('nexus:viewmode', event => {
     state.mode = event.detail.mode;
@@ -3143,6 +3358,37 @@ function applyPedPreset(name) {
   publishPedestrians();
   log(`行人预设场景已切换为${({ normal: '正常购物', crossing: '行人横穿', narrow: '窄道会车', peak: '高峰拥堵' })[name] || name}（规则驱动仿真）。`);
   renderPedestrianPanel();
+}
+/** NEXUS 2.1 动态演示场景：复用既有行人预设 + 仿真事件注入，10 个场景全部走真实仿真。 */
+const AI_SCENARIOS = {
+  normal: { label: '正常购物', preset: 'normal' },
+  crossing: { label: '行人横穿', preset: 'crossing', event: 'pedestrian' },
+  headon: { label: '迎面相遇', event: 'headon' },
+  crowdblock: { label: '人群堵路', event: 'crowd' },
+  narrow: { label: '窄道会车', preset: 'narrow' },
+  cart: { label: '购物车阻挡', preset: 'crossing', event: 'cart' },
+  peak: { label: '高峰拥堵', preset: 'peak' },
+  suddenstop: { label: '突然停步', preset: 'crowded', event: 'pedestrian' },
+  group: { label: '结伴并行', preset: 'crowded' },
+  avoid: { label: '主动绕行让行', preset: 'crossing' },
+};
+function applyAiScenario(name) {
+  const def = AI_SCENARIOS[name]; if (!def) return;
+  if (def.preset) applyPedPreset(def.preset);
+  if (def.event === 'headon') {
+    const leg = state.plan?.legs[state.stage];
+    const direction = leg ? legDirection(leg, state.legDistance) : [1, 0];
+    state.pedSystem?.injectHeadOn(state.displayPosition, direction, { type: 'regular', count: 2 });
+    state.events.add('crowd'); publishPedestrians();
+    log('迎面相遇场景：2 位顾客从正对面走来，双方协同侧移让行。', 'warn');
+  } else if (def.event && def.event !== 'pedestrian' && def.event !== 'cart' && def.event !== 'crowd') {
+    handleSimEvent(def.event);
+  } else if (def.event) {
+    handleSimEvent(def.event);
+  }
+  document.querySelectorAll('[data-ai-scenario]').forEach(b => b.classList.toggle('is-active', b.dataset.aiScenario === name));
+  setText('aiScenarioNote', `已注入「${def.label}」场景 · 行人 ${state.pedSystem?.people?.length || 0} 人 · 重规划 ${state.reroutes || 0} 次。点击「进入 3D 观察」查看机器人自主决策。`);
+  renderInteractionDemo(); renderDecisionLog();
 }
 function setSimSpeed(value) {
   const speed = [1, 2, 3, 5].includes(Number(value)) ? Number(value) : 1;
@@ -3247,6 +3493,22 @@ function setCamera(mode) {
 window.__NEXUS = Object.freeze({
   state, STORE, shelves, layoutFixtures, PHYSICS,
   miningLab: getMiningLabData, renderMiningViews, refreshMiningViews,
+  // NEXUS 2.1：运行时 ML 真实推理钩子（全部读取已加载模型，不造数值）
+  runtimeML: {
+    summary: () => state.safety.modelSummary || null,
+    predictRisk: sample => predictRisk(state.runtimeModels, sample),
+    predictTravelTime: sample => predictTravelTime(state.runtimeModels, sample),
+    predictTrafficCluster: sample => predictTrafficCluster(state.runtimeModels, sample),
+    anomalyScore: (domain, sample) => anomalyScore(state.runtimeModels, domain, sample),
+    mlEvaluatePath: (points, slot, scenario) => mlEvaluatePath(points, slot, scenario),
+  },
+  safetyLayer: () => ({
+    obstacles: STATIC_OBSTACLES.length, inflate: ROBOT_INFLATE,
+    collisionsPrevented: state.safety.collisionsPrevented,
+    lastSweep: state.safety.lastSweep, actions: { ...state.safety.actions },
+    log: state.safety.log.list(),
+    risk: state.safety.risk, predictedTime: state.safety.predictedTime,
+  }),
   applyPedPreset,
   setScenario: value => { state.scenario = value === 'peak' ? 'peak' : 'normal'; updateScenario('test'); return syncCrowdToScenario(); },
   setSimSpeed, setRobotCount, startNextOrder, activateNext,
@@ -3422,6 +3684,18 @@ loadResearch().then(async data => {
   const loadedCount = Object.values(miningLabData).filter(Boolean).length;
   const totalCount = Object.keys(miningLabData).length;
   log(`数据挖掘实验室已加载：${loadedCount}/${totalCount} 个版本化数据集（探索/关联/推荐/聚类/分类/回归/预测/异常）。`);
+  // NEXUS 2.1：加载真实训练导出的运行时模型，接入 LocalPlanner 风险预测 / 策略 C / 通行时间预测。
+  state.runtimeModels = await loadRuntimeModels();
+  if (state.runtimeModels) {
+    state.safety.riskPredictor = riskPredictor(state.runtimeModels);
+    const summary = modelSummary(state.runtimeModels);
+    state.safety.modelSummary = summary;
+    log(`运行时 ML 已加载：风险森林 ${summary.risk.trees} 树（测试准确率 ${(summary.risk.accuracy * 100).toFixed(1)}%）、通行时间回归 R²=${summary.travel.r2}、K-Means ${summary.kmeans.k} 簇。`);
+  } else {
+    log('运行时 ML 模型不可用：LocalPlanner 降级为几何启发式风险判定（不影响配送）。', 'warn');
+  }
+  renderIntelligenceSummary(); // 异步加载完成后立即刷新 HUD 徽标，不等下一次 renderAll
+  refreshMiningViews();
 }).catch(error => {
   console.error(error);
   // 目录加载失败时给出可操作的原因，而不是一句干巴巴的提示。

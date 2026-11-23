@@ -86,6 +86,14 @@ python scripts/build_anomaly_detection.py        # → lab/anomaly-detection.jso
 
 The front end loads these files lazily (`miningLab.js` → `loadMiningLab()`), and each file is isolated: a missing JSON only disables its own panel. The four-section navigation (OPERATIONS / DATA MINING / INTELLIGENT ROBOTICS / RESEARCH LAB) is defined in `index.html` + the `titles` whitelist in `layout.js`. See `DEVELOPMENT_REPORT.md` for the complete 2.0 delivery and verification record.
 
+### NEXUS RETAIL 2.1 — human-aware autonomy
+
+```bash
+python scripts/build_runtime_models.py   # → lab/runtime-models.json (RF risk / LR travel / K-Means / IsolationForest)
+```
+
+`runtimeML.js` loads that JSON and executes the trained models in-browser (`predictRisk` / `predictTravelTime` / `predictTrafficCluster` / `anomalyScore`); `safety.js` provides unified static collision bodies, swept底盘 detection, LOS simplification, collision-aware smoothing, Pure Pursuit and the five-option `LocalPlanner`. These feed the new **人机协同智能** view (`view-intelligence`): 10 dynamic scenarios, explainable decision log, live HUD and dynamic-replanning benchmark. All models are trained on seeded **simulated** data (documented in the JSON `disclaimers`) — Instacart data is used only for the real catalog, co-purchase rules and demand heat. PHASE 10 A–J acceptance: **11/11 PASS**; see `DEVELOPMENT_REPORT_2.1.md` and `TEST_REPORT.md` §33.
+
 ## Local preview
 
 ```bash

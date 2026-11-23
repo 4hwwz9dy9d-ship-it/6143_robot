@@ -11,6 +11,7 @@
     robot: '机器人控制中心',
     route: '路径优化',
     simulation: '仿真中心',
+    intelligence: '人机协同智能',
     research: '研究方法',
     ml: '监督学习',
     'data-explorer': '数据探索',
