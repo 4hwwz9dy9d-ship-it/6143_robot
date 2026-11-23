@@ -30,6 +30,8 @@ export class RobotBehavior {
     this.clearTime = 0;
     this.replanPending = false;
     this.replanCooldown = 0;
+    // V3.4 蠕行停滞检测窗口
+    this.progressClock = 0; this.progressAnchor = null; this.crawlWindows = 0;
     this.collisionCooldown = 0;
     this.nearMissCooldown = 0;
     this.yieldCooldown = 0;
@@ -247,6 +249,33 @@ export class RobotBehavior {
     } else {
       this.blockedTime = Math.max(0, this.blockedTime - step * 1.6);
       if (this.state !== 'RESUME') this.clearTime = 0;
+    }
+
+    // V3.4 蠕行停滞检测：AVOIDANCE/SLOW_DOWN 以 0.2–0.8 倍速蠕动时 speedFactor ≥0.2，
+    // 上面的 blockedTime 永远不累计——高峰人群里机器人能以 ≈0.05 m/s 蠕行上百秒，
+    // 课堂上看起来就是「机器人卡死」。用固定窗口的净进度兜底：
+    // 5 s 窗口位移 < 1.5 单位（≈0.26 m）视为受阻 → 请求换路；连续 3 窗仍无解才请求人工介入。
+    // 取货暂停/结账等待在 stepSimulation 更早处返回，不会进入本逻辑。
+    this.progressClock = (this.progressClock || 0) + step;
+    if (this.progressClock >= 5) {
+      const moved = position && this.progressAnchor
+        ? Math.hypot(position[0] - this.progressAnchor[0], position[1] - this.progressAnchor[1]) : Infinity;
+      this.progressAnchor = position ? [...position] : null;
+      this.progressClock = 0;
+      if (moved < 1.5) {
+        this.crawlWindows = (this.crawlWindows || 0) + 1;
+        this.metrics.crawlStalls = (this.metrics.crawlStalls || 0) + 1;
+        if (this.crawlWindows < 3 && this.replanCooldown === 0) {
+          next = 'REPLANNING';
+          reason = '蠕动停滞：5 秒净进度不足，请求换路绕行';
+          speedFactor = .12;
+          this.blockedTime = Math.max(this.blockedTime, 4.5);
+        } else if (this.crawlWindows >= 3) {
+          next = 'WAIT';
+          reason = '持续蠕动停滞，保持停车并请求人工介入';
+          if (this.metrics.humanInterventions === 0 || this.crawlWindows === 3) this.metrics.humanInterventions++;
+        }
+      } else this.crawlWindows = 0;
     }
 
     // V3.1：绕行侧带保持时间（1.5 s 防抖），避免两侧都有人时左右来回摆（「抖一抖」）。

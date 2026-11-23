@@ -81,7 +81,7 @@ export class PedestrianSystem {
     this.spawnCooldown = 0;
     this.clock = 0;
     this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0,
-      checkoutServed: 0, checkoutWaitSum: 0 };
+      checkoutServed: 0, checkoutWaitSum: 0, unstuckSoft: 0, unstuckHard: 0 };
     this.densityTarget = { low: 7, medium: 16, high: 30 }[this.density] ?? 7;
     this.lanes = this.makeLanes();
   }
@@ -105,7 +105,7 @@ export class PedestrianSystem {
     this.people = []; this.nextId = 1; this.random = makeRandom(6143);
     this.spawnCooldown = 0; this.clock = 0;
     this.metrics = { spawned: 0, exits: 0, pedestrianYields: 0, blocks: 0, queueWaits: 0, maxQueue: 0, detours: 0,
-      checkoutServed: 0, checkoutWaitSum: 0 };
+      checkoutServed: 0, checkoutWaitSum: 0, unstuckSoft: 0, unstuckHard: 0 };
     this.lanes = this.makeLanes();
     if (this.running) this.fill();
   }
@@ -206,6 +206,8 @@ export class PedestrianSystem {
       serviceSeconds: this.serviceSeconds(items, basket),
       yieldToRobot: 0, blocked: 0, crossing: !!forced.crossing,
       yieldSide: 0, yieldTimer: 0,
+      // V3.4 防卡看门狗：固定 3 s 观测窗测「到目标的净进度」，连续卡住 → 绕行/吸附脱困。
+      stuckWindows: 0, progressClock: 0, anchorGoalDist: 0, nudgeCooldown: 0,
       // V2.5 僵局脱离：与机器人持续近距离对峙时，行人明确换一条方向绕行，
       // 而不是反复侧移贴着机器人「绕圈」。
       stallTimer: 0, detourCooldown: 0, detourGoal: null, detourReturn: null,
@@ -230,8 +232,70 @@ export class PedestrianSystem {
     }
   }
 
-  sendTo(person, goal, state = 'WALK_TO_SECTION') {
-    person.goal = [...goal];
+  /**
+   * V3.4 防卡看门狗：只对「应该在路上走」的状态生效（BROWSING/QUEUEING 站着不动是合法的，
+   * planted 演练人群也不会被驱散）。位移窗口 0.8 单位（≈0.14 m）：正常行走哪怕最慢的
+   * 类型 3.5 s 也会走出 >8 单位，所以超过阈值必然是被卡住了。
+   */
+  watchdog(person, step) {
+    const WALKING = ['ENTER_STORE', 'WALK_TO_SECTION', 'GOING_TO_CHECKOUT', 'EXITING', 'DETOUR'];
+    if (!WALKING.includes(person.state)) { person.stuckWindows = 0; return; }
+    // 每 3 s 一个观测窗：用「到目标的距离缩短量」判断净进度——
+    // 只测位移抓不到 ±2.5 单位的来回振荡（被人群/墙体弹回又被路线拉回来），
+    // 而正常行走的顾客 3 s 内必然向目标靠近 ≥4 单位（最慢类型 ≈0.8 m/s）。
+    person.progressClock = (person.progressClock || 0) + step;
+    if (!person.anchorGoalDist && person.goal) person.anchorGoalDist = dist(person.position, person.goal);
+    if (person.progressClock < 2.5) return;
+    const dGoal = person.goal ? dist(person.position, person.goal) : Infinity;
+    const progress = (person.anchorGoalDist ?? Infinity) - dGoal;
+    person.anchorGoalDist = dGoal;
+    person.progressClock = 0;
+    person.stuckWindows = progress < 1.0 ? (person.stuckWindows || 0) + 1 : 0;
+    if (person.stuckWindows < 2 || person.nudgeCooldown > 0) return;
+    person.nudgeCooldown = 3.5;
+    const soft = person.stuckWindows < 3;
+    person.stuckWindows = 0;
+    const goal = person.goal ? [...person.goal]
+      : (person.section?.point ? [...person.section.point] : [...STORE.exit]);
+    const escape = this.escapePoint(person, soft ? 7 : 11);
+    if (!escape) return;
+    if (soft) {
+      // 第一级：换局部路线绕到「离目标更近的空闲点」，复用 DETOUR 机制自动恢复原目标。
+      this.metrics.unstuckSoft = (this.metrics.unstuckSoft || 0) + 1;
+      const back = person.state;
+      this.sendTo(person, escape, 'DETOUR');
+      person.detourGoal = goal;
+      person.detourReturn = back === 'DETOUR' ? 'WALK_TO_SECTION' : back;
+    } else {
+      // 终极兜底：直接吸附到附近合法点再重新规划（视觉上是半步挪动，极罕见）。
+      person.position = [...escape]; person.velocity = [0, 0];
+      this.sendTo(person, goal, person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state);
+      this.metrics.unstuckHard = (this.metrics.unstuckHard || 0) + 1;
+    }
+  }
+
+  /** V3.4：环状搜索一个合法脱困点——优先选「比当前位置更接近目标」的，找不到则退化为最近空闲点。
+   *  人群密集处标准间距（isFree 的 +0.5 余量）可能全部落空，导致看门狗无从施救；
+   *  因此第二圈起放宽人际间距（货架/墙体仍然严格），保证总能找到落脚点。 */
+  escapePoint(person, maxRing = 7) {
+    const goal = person.goal || person.section?.point || STORE.exit;
+    const dGoal = dist(person.position, goal);
+    let fallback = null;
+    for (let ring = 2; ring <= maxRing; ring++) {
+      for (let k = 0; k < 16; k++) {
+        const a = k / 16 * TAU + this.random() * .12;
+        const c = [person.position[0] + Math.cos(a) * ring * 1.6, person.position[1] + Math.sin(a) * ring * 1.6];
+        const loose = ring >= 3;
+        const ok = loose ? this.isFree(c, person.radius * .6) : this.isFree(c, person.radius);
+        if (!ok) continue;
+        if (!fallback) fallback = c;
+        if (dist(c, goal) < dGoal - 1) return c;
+      }
+    }
+    return fallback;
+  }
+
+  sendTo(person, goal, state = 'WALK_TO_SECTION') {    person.goal = [...goal];
     // 排队位与出口都是「别人站过/正在让出的合法位置」，不做安全点吸附，
     // 否则队伍前进时每个人都会被挤偏，队列会散开。
     const safeGoal = (state === 'EXITING' || state === 'GOING_TO_CHECKOUT') ? [...goal] : this.safePoint(goal, person.radius);
@@ -269,6 +333,9 @@ export class PedestrianSystem {
     let bestScore = Infinity;
     for (const node of this.nodes.values()) {
       const p2 = node.point;
+      // V3.4：跳过店外节点（入口/出口引点在墙外）——选中它们会把行人引到墙边
+      // 被墙约束钉死（x 钳制 + 速度清零），看起来就是「卡在墙上不动」。
+      if (p2[0] < 6 || p2[0] > STORE.width - 6 || p2[1] < 6 || p2[1] > STORE.height - 6) continue;
       const dRobot = dist(p2, robot.position), dPerson = dist(p2, person.position);
       if (dRobot < 16 || dPerson < 8 || dPerson > 46) continue;
       const score = dPerson + dist(p2, goal);
@@ -480,6 +547,12 @@ export class PedestrianSystem {
     for (let i = this.people.length - 1; i >= 0; i--) {
       const person = this.people[i];
       this.advance(person, step, robot);
+      // V3.4 防卡看门狗：绕行/让行逻辑只在机器人附近触发，行人若被挤偏路线后
+      // 卡在货架角、设备边或人群边缘（两轴移动同时被拒），此前没有任何自救手段，
+      // 会永远站在那里、机器人也一直等——课堂演示最忌讳这种僵局。
+      // 现在：行走中 3.5 s 几乎无位移 → 换一条局部路线绕到离目标更近的空闲点；
+      // 再卡 5 s → 直接吸附到附近最近合法点并重新规划（视觉上只是半步挪动，极罕见）。
+      this.watchdog(person, step);
       // 走出出口即消失：一旦越过右墙开口外侧（x > width + 6）立即移除，
       // 避免行人停留在墙外铺装区产生视觉穿模；离店计数在此时结算。
       const passedExit = person.state === 'EXITING' && person.position[0] > STORE.width + 6;
