@@ -463,7 +463,11 @@ let liveCrowdOn = false;
  *  直段依旧是严格的直线，但机器人仍贴通道一侧，推车行人可从另一侧通过，
  *  不会回到「走中心线就被迎面行人顶死」的死锁。 */
 const LANE_KEEP = 1.6;
-const LANE_OFFSET = Object.freeze([-LANE_KEEP, 0]);   // 固定世界偏移，永不随航向旋转
+const LANE_OFFSET = Object.freeze([-1.6, 0]);
+/** 路线显示统一用机器人真正行驶的车道：2D 虚线、3D 路线带与车体位姿必须重合。
+ *  A* 仍在通道中心导航节点上计算，显示时整体平移到实际车道，
+ *  这样「竖着走没对齐虚线」消失，同时保留贴一侧与迎面行人错开的物理效果。 */
+const displayPath = points => (points || []).map(p => [p[0] + LANE_OFFSET[0], p[1] + LANE_OFFSET[1]]);
 /** V3.5 数据感知说明：用时段时间槽的人流样本（crowdSamples，来自仿真统计的数据集）
  *  说明「当前时段哪条通道最热、哪条最冷」，并声明 A* 已把它们作为风险项加权。
  *  这是数据挖掘课程要求「机器人靠数据识别高峰人少路线」的可解释性输出。 */
@@ -1807,14 +1811,14 @@ function drawCrowd() {
 function drawRoutes() {
   clear($('comparisonRoute')); clear($('plannedRoute'));
   if (state.plan) {
-    if (state.scenario === 'peak' && state.normalPlan) svg('path', { d: pathData(state.normalPlan.points), class: 'comparison-path' }, $('comparisonRoute'));
-    svg('path', { d: pathData(state.plan.points), class: 'planned-path' }, $('plannedRoute'));
+    if (state.scenario === 'peak' && state.normalPlan) svg('path', { d: pathData(displayPath(state.normalPlan.points)), class: 'comparison-path' }, $('comparisonRoute'));
+    svg('path', { d: pathData(displayPath(state.plan.points)), class: 'planned-path' }, $('plannedRoute'));
   }
   for (const stored of state.closedEdges) {
     const [a, b] = stored.split('|').map(s => s.split(',').map(Number));
     svg('line', { x1: a[0] * 10, y1: (STORE.height - a[1]) * 10, x2: b[0] * 10, y2: (STORE.height - b[1]) * 10, class: 'restricted-path' }, $('comparisonRoute'));
   }
-  scene3d?.setRoutes(state.plan?.points || [], state.scenario === 'peak' ? state.normalPlan?.points : null);
+  scene3d?.setRoutes(displayPath(state.plan?.points), state.scenario === 'peak' ? displayPath(state.normalPlan?.points) : null);
   scene3d?.setRestricted([...state.closedEdges].map(stored => stored.split('|').map(s => s.split(',').map(Number))));
   drawHistory();
 }
@@ -1835,7 +1839,7 @@ function drawRobot() {
     svg('text', { x: x * 10, y: (STORE.height - y) * 10 - radius - 6, class: 'robot-map-label' }, $('robotLayer')).textContent = robot.id;
   }
   if (state.returnLeg && state.returnLeg.points.length > 1) {
-    svg('path', { d: pathData(state.returnLeg.points), class: 'return-path' }, $('robotRouteLayer'));
+    svg('path', { d: pathData(displayPath(state.returnLeg.points)), class: 'return-path' }, $('robotRouteLayer'));
   }
   scene3d?.setRobots(robotFleetSnapshot());
   const behaviour = state.behavior;
