@@ -37,11 +37,9 @@ export class RobotBehavior {
     this.yieldCooldown = 0;
     this.interventionCooldown = 0;
     this.emergencyTime = 0;
+    this.backupLeft = 0;    // V3.8：紧急死锁倒车剩余量
     // V2.5：连续「侧向净空足够但被挡住」的时长，用于判定人机对峙僵局并主动绕行。
     this.bypassTime = 0;
-    // V3.1：绕行侧记忆（防抖），替代旧的「挤缝 steer」。
-    this.avoidSide = 0;
-    this.avoidHold = 0;
     this.metrics = {
       collisions: 0, nearMisses: 0, yields: 0, replannings: 0, bypasses: 0,
       waitSeconds: 0, humanInterventions: 0, minDistance: Infinity, minTtc: Infinity,
@@ -94,7 +92,10 @@ export class RobotBehavior {
     let worst = null;
     let emergency = false, nearMiss = false, collision = false;
     let avoidance = 0;
-    this.waitShiftNeed = 0;   // V3.1c：本帧计算的「停车让位」横向需求（米，带符号）
+    // V3.6 意图修正：机器人是自主决策体，不是会被推着走的物体——
+    // 行人靠近时机器人只做「纵向调速 + 停车礼让 + 数据驱动换路」三件事，
+    // 不再做任何侧向平移（旧的「绕行偏移」「停车让位」观感上就是被行人挤走，已全部移除）。
+    // 通道内的固定位置由 LANE_KEEP 靠右偏置决定（与行人无关，永远平行于路线）。
     // V3.1：不再「挤缝」——人挡在车道上时机器人选择停车等待或改道，
     // 而是横着蹭过去（那既像推人，也会左右抖）。只有人本来就站在车道边缘、
     // 净空明确足够时才低速绕过。
@@ -145,18 +146,6 @@ export class RobotBehavior {
       if (clearance > 0 && along > .4 && !candidate.crossing && d < S.warnDistance + .6) {
         avoidance = avoidance || (lateral > 0 ? -1 : 1);
       }
-      // V3.1c：停车让位量——机器人停稳后向远离该行人的一侧平移（≤0.45 m），
-      // 把通道让出来给行人走。与旧的「挤缝前进」不同：这只发生在 speedFactor=0
-      // 的停车状态下（车不动、人先过），且方向带 2 s 粘滞，不会左右抖。
-      if (along > .6 && along < S.warnDistance + 1.5 && !candidate.crossing) {
-        const required = P.width / 2 + radius + .20;
-        const shortfall = required - Math.abs(lateral);
-        if (shortfall > .04) {
-          const side = lateral >= 0 ? -1 : 1;
-          const need = side * Math.min(shortfall + .1, .45);
-          if (Math.abs(need) > Math.abs(this.waitShiftNeed || 0)) this.waitShiftNeed = need;
-        }
-      }
     };
 
     for (const person of pedestrians) consider(person, person.radius ?? .26, true);
@@ -188,8 +177,21 @@ export class RobotBehavior {
       this.emergencyTime += step;
       next = 'EMERGENCY_STOP'; speedFactor = 0;
       reason = '检测到侵入安全边界，立即停车并请求人工确认';
+      // V3.8 死锁破解：行人被楔在 hull 边（碰撞钳制恰好压在安全边界上，排斥力与
+      // 行进意图抵消、人无法自行离开）时，EMERGENCY_STOP 会永远保持——实测可死锁
+      // 3000+ 仿真秒。紧急持续 >6 s：机器人沿车头反方向**倒车**让出空间（自主决策、
+      // 不偏离航道、不是被人挤走），把楔住的人放出来。倒车一段后若仍被占，休息
+      // 4 s 再倒一轮（循环武装，直到人离开或人工介入）。
+      if (this.emergencyTime > 6) {
+        if ((this.backupLeft ?? 0) > 0) { /* 正在倒车，倒完再休息 */ }
+        else {
+          this.backupRest = Math.max(0, (this.backupRest ?? 0) - step);
+          if (this.backupRest <= 0) this.backupLeft = 2.2;
+        }
+      }
     } else if (worst) {
       this.emergencyTime = Math.max(0, this.emergencyTime - step * 2);
+      if (this.emergencyTime <= 0) this.backupLeft = 0;
       const { distance, ttc, crossing, headOn, away } = worst;
       // V2.5：侧向净空足够时机器人「绕过人」继续通行，而不是长时间停车等对峙。
       // 只要不是行人横穿/迎面窄道，且已出现减速停滞，就主动进入绕行（速度不大幅下降）。
@@ -278,34 +280,22 @@ export class RobotBehavior {
       } else this.crawlWindows = 0;
     }
 
-    // V3.1：绕行侧带保持时间（1.5 s 防抖），避免两侧都有人时左右来回摆（「抖一抖」）。
-    this.avoidHold = Math.max(0, (this.avoidHold || 0) - step);
-    if (avoidance !== 0) {
-      if (this.avoidHold <= 0 || avoidance === this.avoidSide) {
-        this.avoidSide = avoidance;
-        this.avoidHold = Math.min(1.5, this.avoidHold + step * 2);
-      }
-    }
-    const bypassShift = this.avoidHold > 0 && this.state !== 'EMERGENCY_STOP' ? this.avoidSide : 0;
-    // V3.1c：停车让位——只在机器人真的停住（speedFactor=0）时平移让出通道；
-    // 方向粘滞 2 s：同一批行人站着不动时，机器人不会左右换边。
-    this.shiftHold = Math.max(0, (this.shiftHold || 0) - step);
-    let waitShift = 0;
-    if (speedFactor === 0 && Math.abs(this.waitShiftNeed) > .02) {
-      if (this.shiftHold <= 0 || Math.sign(this.waitShiftNeed) === Math.sign(this.shiftSide || 0)) {
-        this.shiftSide = Math.sign(this.waitShiftNeed);
-        this.shiftHold = 2;
-      }
-    }
-    if (speedFactor === 0 && this.shiftHold > 0) waitShift = this.shiftSide * Math.min(.45, Math.abs(this.waitShiftNeed) + .1);
-    else if (speedFactor > .2) this.shiftHold = 0;
+    // V3.6：侧向平移已移除——AVOIDANCE 状态只表示「低速从行人旁边通过」，
+    // 车体始终贴自己的靠右车道线，不横移。avoidSide/avoidHold 的防抖记忆随之不再需要。
+    // 停车时也不再「让位平移」：机器人原地停在自己的车道上，行人绕行（行人让行规则不变）。
 
     this.setState(next, reason);
+    // V3.8：紧急停车超 6 s 且安全边界仍被占据 → 输出倒车指令（app.js 沿车头反方向平移）。
+    const backing = emergency && (this.backupLeft ?? 0) > 0;
+    if (backing) {
+      this.backupLeft -= step;
+      if (this.backupLeft <= 0) { this.backupLeft = 0; this.backupRest = 4; }
+    }
     return {
       state: this.state, speedFactor,
-      parkShift: waitShift,   // V3.1c：停车让位平移（app.js 在 WAIT/YIELD 状态也应用它）
-      lateralShift: waitShift || (bypassShift && (this.state === 'AVOIDANCE' || avoidance !== 0)
-        ? bypassShift * (this.state === 'AVOIDANCE' ? 1.15 : .22) : 0),
+      backUp: backing,       // 沿自身路线倒车脱困（车道保持不变，只是纵向后退）
+      parkShift: 0,           // V3.6：停车不再侧移让位（保持车道线，行人绕行）
+      lateralShift: 0,        // V3.6：不再有行人触发的侧向偏移（靠右行驶由 LANE_KEEP 常量承担）
       ttc: this.last.ttc, distance: this.last.distance, reason, emergency,
       needsReplan: this.replanPending, collision, nearMiss,
       brakeDistance, targetSpeed: P.maxSpeed * speedFactor,

@@ -51,9 +51,25 @@ function makeRandom(seed = 6143) {
  * 惩罚系数取 4（×5）是实测值：27 单位的纵向通道边被加权到 ≈135 单位后，
  * 一定贵于绕行 y=26 前场主通道（≈126 单位），行人才会真的换道而不是硬穿。
  */
+/** 点到线段的最短距离（V3.8：机器人挡在两节点中间时，必须按「边是否扫过车身」排除，
+ *  只排除端点会让行人路线的边从机器人身上直接穿过去——行人走到 hull 被钳住、
+ *  机器人永远 EMERGENCY_STOP，实测 3000+ 仿真秒死锁的根因之一）。 */
+function distToSegment(p, a, b) {
+  const abx = b[0] - a[0], aby = b[1] - a[1];
+  const t = clamp(((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / (abx * abx + aby * aby || 1), 0, 1);
+  return Math.hypot(p[0] - (a[0] + abx * t), p[1] - (a[1] + aby * t));
+}
+
 function routeBetween(nodes, from, to, avoid = null) {
-  const a = [...nodes.values()].reduce((best, n) => dist(n.point, from) < dist(best.point, from) ? n : best);
-  const b = [...nodes.values()].reduce((best, n) => dist(n.point, to) < dist(best.point, to) ? n : best);
+  // V3.8：机器人占据的节点与**边**硬排除——但只在机器人**停稳/慢速**时生效：
+  // 死锁的成因是「停着的车被行人路线横穿车身」；行驶中的车头有让行+实时排斥，
+  // 常开硬排除反而把行人全赶到机器人要去的通道上、越绕越堵（实测重规划 102 次）。
+  const hardR = (!avoid?.still || !avoid?.point) ? 0 : (avoid.hardR ?? 4.2);
+  const nearRobot = p => hardR > 0 && dist(p, avoid.point) < hardR;
+  const edgeBlocked = (a, b) => hardR > 0 && distToSegment(avoid.point, a, b) < hardR;
+  const nearest = (to) => [...nodes.values()].filter(n => !nearRobot(n.point))
+    .reduce((best, n) => dist(n.point, to) < dist(best.point, to) ? n : best);
+  const a = nearest(from), b = nearest(to);
   const start = nodeKey(a.point), finish = nodeKey(b.point);
   const weight = p => {
     if (!avoid) return 1;
@@ -68,6 +84,7 @@ function routeBetween(nodes, from, to, avoid = null) {
     const node = nodes.get(current);
     for (const nk of node.neighbors) {
       const next = nodes.get(nk);
+      if (nearRobot(next.point) || edgeBlocked(node.point, next.point)) continue;   // V3.8：车体占住的节点/边不通行
       const score = costs.get(current)
         + dist(node.point, next.point) * (weight(node.point) + weight(next.point)) / 2;
       if (score < (costs.get(nk) ?? Infinity)) { costs.set(nk, score); prev.set(nk, current); open.add(nk); }
@@ -293,8 +310,22 @@ export class PedestrianSystem {
     person.stuckWindows = 0;
     const goal = person.goal ? [...person.goal]
       : (person.section?.point ? [...person.section.point] : [...STORE.exit]);
-    const escape = this.escapePoint(person, soft ? 7 : 11);
-    if (!escape) return;
+    const escape = this.escapePoint(person, soft ? 7 : 11, robot);
+    if (!escape) {
+      // V3.8：找不到合法脱困点时不能就此放弃——若机器人在附近（这是最常见的卡因），
+      // 直接沿「远离机器人」方向硬推到 hull 外（≤3 单位，视觉上就是让开半步）。
+      if (robot?.position) {
+        const away = normalize([person.position[0] - robot.position[0], person.position[1] - robot.position[1]]);
+        const hull = (PHYSICS.robot.radius + (person.radius || .26)) / M + .9;
+        const target = [robot.position[0] + away[0] * hull, robot.position[1] + away[1] * hull];
+        if (this.isFree(target, person.radius * .6)) {
+          person.position = [...target]; person.velocity = [0, 0];
+          this.sendTo(person, goal, person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state, robot);
+          this.metrics.unstuckHard = (this.metrics.unstuckHard || 0) + 1;
+        }
+      }
+      return;
+    }
     if (soft) {
       // 第一级：换局部路线绕到「离目标更近的空闲点」，复用 DETOUR 机制自动恢复原目标。
       this.metrics.unstuckSoft = (this.metrics.unstuckSoft || 0) + 1;
@@ -313,14 +344,19 @@ export class PedestrianSystem {
   /** V3.4：环状搜索一个合法脱困点——优先选「比当前位置更接近目标」的，找不到则退化为最近空闲点。
    *  人群密集处标准间距（isFree 的 +0.5 余量）可能全部落空，导致看门狗无从施救；
    *  因此第二圈起放宽人际间距（货架/墙体仍然严格），保证总能找到落脚点。 */
-  escapePoint(person, maxRing = 7) {
+  escapePoint(person, maxRing = 7, robot = null) {
     const goal = person.goal || person.section?.point || STORE.exit;
     const dGoal = dist(person.position, goal);
+    // V3.8：脱困点必须离开机器人 hull + 0.7 单位安全余量——否则「救人」会把人
+    // 又塞回机器人安全边界内，机器人永远 EMERGENCY_STOP、人也永远卡在旁边（实测死锁）。
+    const robotClear = robot?.position
+      ? (PHYSICS.robot.radius + (person.radius || .26)) / M + .7 : 0;
     let fallback = null;
     for (let ring = 2; ring <= maxRing; ring++) {
       for (let k = 0; k < 16; k++) {
         const a = k / 16 * TAU + this.random() * .12;
         const c = [person.position[0] + Math.cos(a) * ring * 1.6, person.position[1] + Math.sin(a) * ring * 1.6];
+        if (robotClear && robot.position && dist(c, robot.position) < robotClear) continue;
         const loose = ring >= 3;
         const ok = loose ? this.isFree(c, person.radius * .6) : this.isFree(c, person.radius);
         if (!ok) continue;
@@ -337,7 +373,13 @@ export class PedestrianSystem {
     const safeGoal = (state === 'EXITING' || state === 'GOING_TO_CHECKOUT') ? [...goal] : this.safePoint(goal, person.radius);
     // V3.5：路线规划避开机器人本体（半径 11 单位 ≈1.9 m 内的节点加权），
     // 行人会提前换一条通道，不再扎堆穿过机器人所在/停靠的节点。
-    const avoid = robot?.position ? { point: [...robot.position], radius: 11 } : null;
+    // V3.5：路线规划避开机器人本体（半径 11 单位 ≈1.9 m 内的节点加权），
+    // 行人会提前换一条通道，不再扎堆穿过机器人所在/停靠的节点。
+    // V3.8：机器人停稳（still）时，hull 内（4.2 单位，覆盖推车行人 hull 3.79）的
+    // 节点与边硬排除——那里被车体物理占据，行人必须绕行。
+    const avoid = robot?.position
+      ? { point: [...robot.position], radius: 11, hardR: 4.2, still: robot.still !== false }
+      : null;
     person.route = routeBetween(this.nodes, this.safePoint(person.position, person.radius), safeGoal, avoid);
     person.routeIndex = Math.min(1, person.route.length - 1);
     person.state = state;
@@ -370,6 +412,15 @@ export class PedestrianSystem {
     // 卡死（行人在货架边反复蹭=另一种「围机器人转」）。
     let escape = this.safePoint(pt, person.radius);
     let bestScore = Infinity;
+    // V3.8：目标去重——统计其他绕行中行人已占用的绕行目标，同目标 +24 分/人。
+    // 否则同一波人全被派往同一个节点，在半路挤成一堵人墙（实测 5 人共享 [126,62]
+    // 卡死 200+ 仿真秒，还顺带堵死机器人整条通道）。
+    const taken = new Map();
+    for (const other of this.people) {
+      if (other === person || other.state !== 'DETOUR') continue;
+      const key = other.goal ? other.goal.map(n => Math.round(n)).join(',') : '';
+      if (key) taken.set(key, (taken.get(key) || 0) + 1);
+    }
     for (const node of this.nodes.values()) {
       const p2 = node.point;
       // V3.4：跳过店外节点（入口/出口引点在墙外）——选中它们会把行人引到墙边
@@ -377,12 +428,13 @@ export class PedestrianSystem {
       if (p2[0] < 6 || p2[0] > STORE.width - 6 || p2[1] < 6 || p2[1] > STORE.height - 6) continue;
       const dRobot = dist(p2, robot.position), dPerson = dist(p2, person.position);
       if (dRobot < 16 || dPerson < 8 || dPerson > 46) continue;
-      const score = dPerson + dist(p2, goal);
+      const crowd = taken.get(p2.map(n => Math.round(n)).join(',')) || 0;
+      const score = dPerson + dist(p2, goal) + crowd * 24;
       if (score < bestScore) { bestScore = score; escape = [...p2]; }
     }
     person.detourGoal = goal;
     person.detourReturn = person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state;
-    this.sendTo(person, escape, 'DETOUR');
+    this.sendTo(person, escape, 'DETOUR', robot);
     person.detourCooldown = 6.0;
     person.stallTimer = 0;
     person.yieldTimer = 0;
@@ -592,6 +644,32 @@ export class PedestrianSystem {
       // 现在：行走中 3.5 s 几乎无位移 → 换一条局部路线绕到离目标更近的空闲点；
       // 再卡 5 s → 直接吸附到附近最近合法点并重新规划（视觉上只是半步挪动，极罕见）。
     this.watchdog(person, step, robot);
+      // V3.8 反楔死扫荡：行人被压在停稳机器人 hull 边缘（排斥力与行进意图抵消的
+      // 平衡点）>3 s 时，无窗口/冷却门槛直接挪出半步——这是「人贴着停着的车被
+      // 挤住」这一死锁形态（机器人永远 EMERGENCY_STOP）的最后一道保险。
+      if (robot?.position && robot.still !== false) {
+        const hullM = (PHYSICS.robot.radius + (person.radius || .26)) / M + .55;
+        const dRobot = dist(person.position, robot.position);
+        if (dRobot < hullM) person.wedgeTime = (person.wedgeTime || 0) + step;
+        else person.wedgeTime = 0;
+        if (person.wedgeTime > 3 && dRobot > .001) {
+          person.wedgeTime = 0;
+          const goal = person.goal ? [...person.goal] : [...STORE.exit];
+          const escape = this.escapePoint(person, 8, robot);
+          if (escape) {
+            person.position = [...escape]; person.velocity = [0, 0];
+            this.sendTo(person, goal, person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state, robot);
+          } else {
+            const away = normalize([person.position[0] - robot.position[0], person.position[1] - robot.position[1]]);
+            const target = [robot.position[0] + away[0] * hullM, robot.position[1] + away[1] * hullM];
+            if (this.isFree(target, person.radius * .6)) {
+              person.position = [...target]; person.velocity = [0, 0];
+              this.sendTo(person, goal, person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state, robot);
+            }
+          }
+          this.metrics.unstuckHard = (this.metrics.unstuckHard || 0) + 1;
+        }
+      }
       // 走出出口即消失：一旦越过右墙开口外侧（x > width + 6）立即移除，
       // 避免行人停留在墙外铺装区产生视觉穿模；离店计数在此时结算。
       const passedExit = person.state === 'EXITING' && person.position[0] > STORE.width + 6;
@@ -718,8 +796,12 @@ export class PedestrianSystem {
         // 但「正在去收银台 / 已在队列里」的顾客只做侧向让行，不放弃队列绕远路，
         // 否则队伍会被一个绕远的人卡住，收银台长时间空转。
         const queueBound = person.state === 'GOING_TO_CHECKOUT' || person.state === 'QUEUEING';
-        if (!queueBound && person.state !== 'DETOUR' && person.detourCooldown <= 0 &&
-            (person.stallTimer > 1.5 || (person.blocked > 0 && person.stallTimer > .9))) {
+        // V3.8：排队的人被楔在机器人 hull 边（<0.8 m 且僵持 >2 s）也必须允许绕行——
+        // 否则人会一直压在机器人安全边界上，机器人永远 EMERGENCY_STOP（实测死锁形态之一）。
+        // 绕开后由队列逻辑把人重新送回队位（queueSpot），不影响 FIFO。
+        const wedged = dM < .8 && person.stallTimer > 2;
+        if ((!queueBound || wedged) && person.state !== 'DETOUR' && person.detourCooldown <= 0 &&
+            (person.stallTimer > 1.5 || (person.blocked > 0 && person.stallTimer > .9) || wedged)) {
           this.beginDetour(person, robot);
           return;
         }
