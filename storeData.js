@@ -7,12 +7,13 @@
 
 export const PHYSICS = Object.freeze({
   metersPerUnit: 0.17,
-  // V3.3：机身缩小一号（radius .36→.30 / 宽 .62→.55 / 长 .82→.72）——配合通道净空钳制，
-  // 保证机器人（0.6m 直径）与推车行人（0.76m 对径）在任意通道都能会车（需 ≈1.7m，通道 ≥2.0m）。
-  robot: Object.freeze({ width: .55, length: .72, height: .92, radius: .30, maxSpeed: .78, accel: .42, brake: .62, turnRadius: .55 }),
+  // V3.5：机身再缩小一号（radius .30→.26 / 宽 .55→.48 / 长 .72→.64）——配合通道加宽
+  //（货架边缘钳制 ±6→±4.5，最小通道 ≥15 单位 ≈2.55m），「推车行人 + 机器人 + 行人」
+  // 三者可以同时在任意通道并排穿行（0.76 + 0.48 + 0.46 ≈ 1.70m，余量 ≈0.85m）。
+  robot: Object.freeze({ width: .48, length: .64, height: .92, radius: .26, maxSpeed: .78, accel: .42, brake: .62, turnRadius: .5 }),
   pedestrian: Object.freeze({ radius: .26, bodyWidth: .46 }),
   safety: Object.freeze({ buffer: .80, warnDistance: 2.0, yieldDistance: 1.35, emergencyGap: .06 }),
-  aisles: Object.freeze({ main: 2.7, secondary: 2.0, access: 1.3 }),
+  aisles: Object.freeze({ main: 2.9, secondary: 2.55, access: 1.3 }),
 });
 
 const M = PHYSICS.metersPerUnit;
@@ -20,12 +21,12 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const UNIT_W = 176, UNIT_H = 141;
 
 // 货架单元：3 排 × 6 列。通道中心即导航节点，货架永远留在单元内部，
-// 因此 A* 边不会穿过任何货架；两侧净空 ≈ 2.0–2.7 m。
+// 因此 A* 边不会穿过任何货架；V3.5 货架整体缩小一档后，两侧净空 ≈2.55–2.9 m，
+// 「推车行人 + 机器人 + 行人」三者并排（≈1.7m）也能在任意通道同时穿行。
 const AISLE_XS = [18, 45, 72, 99, 126, 153];
 const CROSS_YS = [26, 62, 98, 134];
 const VERTICAL_YS = [26, 44, 62, 80, 98, 114, 134];
 const ROW_CENTERS = [44, 80, 114];
-const colCenter = c => (c < AISLE_XS.length - 1 ? (AISLE_XS[c] + AISLE_XS[c + 1]) / 2 : (AISLE_XS[c] + UNIT_W) / 2);
 
 // 收银台队列：顾客排队区在前场 y<26，与机器人 y=26 主通道分离。
 // 每个收银台有独立队列位与容量上限，避免所有人涌向同一坐标。
@@ -173,48 +174,50 @@ export function buildNavNodes({ includeOutside = false } = {}) {
 
 // 18 个不规则货区。w/h 在各自单元内变化，通道净宽 2.0–2.7 m。
 const zoneDefs = [
-  // 第一排 — 日用 / 个人护理
-  { category: 'Personal Care',       col: 0, row: 0, w: 14, h: 18, kind: 'gondola', height: 1.62 },
-  { category: 'Household Essentials',col: 1, row: 0, w: 13, h: 20, kind: 'gondola', height: 1.86 },
-  { category: 'Cleaning Supplies',   col: 2, row: 0, w: 15, h: 16, kind: 'gondola', height: 1.45 },
-  { category: 'Baby Care',           col: 3, row: 0, w: 12, h: 19, kind: 'gondola', height: 1.72 },
-  { category: 'Stationery',          col: 4, row: 0, w: 14, h: 17, kind: 'bulk',    height: 1.38 },
-  { category: 'Pet Supplies',        col: 5, row: 0, w: 13, h: 18, kind: 'gondola', height: 1.70 },
+  // 第一排 — 日用 / 个人护理（V3.5：w/h 各缩小 2，给通道让宽）
+  { category: 'Personal Care',       col: 0, row: 0, w: 12, h: 16, kind: 'gondola', height: 1.62 },
+  { category: 'Household Essentials',col: 1, row: 0, w: 11, h: 18, kind: 'gondola', height: 1.86 },
+  { category: 'Cleaning Supplies',   col: 2, row: 0, w: 13, h: 14, kind: 'gondola', height: 1.45 },
+  { category: 'Baby Care',           col: 3, row: 0, w: 10, h: 17, kind: 'gondola', height: 1.72 },
+  { category: 'Stationery',          col: 4, row: 0, w: 12, h: 15, kind: 'bulk',    height: 1.38 },
+  { category: 'Pet Supplies',        col: 5, row: 0, w: 11, h: 16, kind: 'gondola', height: 1.70 },
   // 第二排 — 食品饮料
-  { category: 'Beverages',           col: 0, row: 1, w: 14, h: 18, kind: 'cooler',  height: 2.05 },
-  { category: 'Dairy & Eggs',        col: 1, row: 1, w: 13, h: 19, kind: 'cooler',  height: 2.05 },
-  { category: 'Bakery',              col: 2, row: 1, w: 15, h: 17, kind: 'bulk',    height: 1.38 },
-  { category: 'Snacks',              col: 3, row: 1, w: 12, h: 20, kind: 'gondola', height: 1.55 },
-  { category: 'Ready Meals',         col: 4, row: 1, w: 14, h: 16, kind: 'gondola', height: 1.68 },
-  { category: 'Frozen Food',         col: 5, row: 1, w: 13, h: 18, kind: 'cooler',  height: 2.10 },
+  { category: 'Beverages',           col: 0, row: 1, w: 12, h: 16, kind: 'cooler',  height: 2.05 },
+  { category: 'Dairy & Eggs',        col: 1, row: 1, w: 11, h: 17, kind: 'cooler',  height: 2.05 },
+  { category: 'Bakery',              col: 2, row: 1, w: 13, h: 15, kind: 'bulk',    height: 1.38 },
+  { category: 'Snacks',              col: 3, row: 1, w: 10, h: 18, kind: 'gondola', height: 1.55 },
+  { category: 'Ready Meals',         col: 4, row: 1, w: 12, h: 14, kind: 'gondola', height: 1.68 },
+  { category: 'Frozen Food',         col: 5, row: 1, w: 11, h: 16, kind: 'cooler',  height: 2.10 },
   // 第三排 — 生鲜与粮油
-  { category: 'Fresh Produce',       col: 0, row: 2, w: 16, h: 18, kind: 'produce', height: 1.12 },
-  { category: 'Seafood',             col: 1, row: 2, w: 13, h: 17, kind: 'cooler',  height: 1.95 },
-  { category: 'Meat',                col: 2, row: 2, w: 15, h: 19, kind: 'cooler',  height: 1.95 },
-  { category: 'Grains & Oils',       col: 3, row: 2, w: 12, h: 18, kind: 'gondola', height: 1.78 },
-  { category: 'Soy Products',        col: 4, row: 2, w: 14, h: 20, kind: 'cooler',  height: 1.90 },
-  { category: 'Condiments',          col: 5, row: 2, w: 13, h: 16, kind: 'gondola', height: 1.64 },
+  { category: 'Fresh Produce',       col: 0, row: 2, w: 14, h: 16, kind: 'produce', height: 1.12 },
+  { category: 'Seafood',             col: 1, row: 2, w: 11, h: 15, kind: 'cooler',  height: 1.95 },
+  { category: 'Meat',                col: 2, row: 2, w: 13, h: 17, kind: 'cooler',  height: 1.95 },
+  { category: 'Grains & Oils',       col: 3, row: 2, w: 10, h: 16, kind: 'gondola', height: 1.78 },
+  { category: 'Soy Products',        col: 4, row: 2, w: 12, h: 18, kind: 'cooler',  height: 1.90 },
+  { category: 'Condiments',          col: 5, row: 2, w: 11, h: 14, kind: 'gondola', height: 1.64 },
 ];
 
 export const shelves = zoneDefs.map((d, i) => {
   // 单元内确定性错位：同一列的货架不在一条直线上，形成更自然的卖场层次；
   // 偏移量控制在单元净空内，不侵入任何 A* 通道节点/边。
-  const jitterX = ((i * 7) % 5 - 2) * .9;   // -1.8 ~ +1.8 单位
-  const jitterY = ((i * 11) % 5 - 2) * 1.1; // -2.2 ~ +2.2 单位
+  const jitterY = ((i * 11) % 5 - 2) * .75; // V3.5：-1.5 ~ +1.5 单位（收窄，保证行间通道更宽）
   // V3.0：最右一列（col 5）紧贴右墙，原来 13 单位的货架把「货架—右墙」压到
   // 只剩 0.5–0.9 m，靠墙冷柜再塞进来就四台柜子叠在角落里。这里把这一列收窄到
   // 9 单位并居中放在 x≈163.5：左侧主通道 2.4 m（机器人），右侧靠墙通道 1.3 m（行人）。
   const lastCol = d.col === 5;
-  // V3.3 单元净空钳制：货架边缘与左右通道中心线至少留 6 单位（≈1.02 m），即任何
-  // 「货架↔货架」通道最窄 12 单位 ≈2.04 m——机器人与推车行人可以会车，高峰不卡死；
-  // 同时保留错位与宽度差（2.0–2.6 m），卖场看起来依然是有宽有窄的自然布局，不是棋盘。
-  const lo = AISLE_XS[d.col] + 6;
-  const hi = (d.col < AISLE_XS.length - 1 ? AISLE_XS[d.col + 1] : UNIT_W - 4) - 6;
-  const w = Math.min(lastCol ? 9 : d.w, hi - lo);
-  const cx = clamp(colCenter(d.col) + jitterX * (lastCol ? .35 : 1), lo + w / 2, hi - w / 2);
-  // 纵向同理：行间通道 ≥12.6 单位 ≈2.14 m；第三排再压一档（h≤16），给后墙冷柜
-  // 让出 ≥12.3 单位 ≈2.1 m 的「最后一排通道」——那是高峰期人最少的备选路线。
-  const h = Math.min(d.h, d.row === 2 ? 16 : 18);
+  // V3.5 单元净空钳制：货架边缘与左右通道中心线至少留 4.5 单位（≈0.77 m）。
+  // 宽度硬上限 11 单位 + 货架整体右偏贴住单元右界（远离本列取货通道）后，
+  // 任意「货架↔货架」横向通道实测 ≥15 单位 ≈2.55 m——推车行人（0.76 m）、机器人
+  // （0.48 m）、行人（0.46 m）三者并排 ≈1.7 m 仍余 ≈0.85 m，可同时穿行不卡死。
+  const lo = AISLE_XS[d.col] + 4.5;
+  const hi = (d.col < AISLE_XS.length - 1 ? AISLE_XS[d.col + 1] : UNIT_W - 4) - 4.5;
+  const w = Math.min(lastCol ? 6 : d.w, 11, hi - lo);
+  // 右偏贴边：xMax 固定贴住单元右界（留 0–1 单位确定性抖动做自然错位；最后一列
+  // 单元净宽只有 10 单位，不抖、贴满右墙），取货通道（货架左侧）一侧因此获得最大净空。
+  const cx = hi - w / 2 - (lastCol ? 0 : ((i * 7) % 3) * .5);
+  // 纵向同理：行间通道 ≥14.5 单位 ≈2.47 m；第三排再压一档（h≤15），给后墙冷柜
+  // 让出 ≥13 单位 ≈2.2 m 的「最后一排通道」——那是高峰期人最少的备选路线。
+  const h = Math.min(d.h, d.row === 2 ? 15 : 16);
   const cy = clamp(ROW_CENTERS[d.row] + jitterY, 30 + h / 2, (d.row === 2 ? 134 : 138) - h / 2 - (d.row === 2 ? 9.8 : 0));
   return {
     id: `${d.row + 1}-${d.col + 1}`, category: d.category, kind: d.kind,

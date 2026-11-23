@@ -2,7 +2,7 @@
 // REAL DATA: public/data JSON (Instacart). CALCULATED: Held-Karp, A*, Apriori, K-means.
 // SIMULATED: shelves, stock, crowd, obstacles, robot motion, battery and timings.
 import { createStoreScene } from './scene3d.js';
-import { STORE, PHYSICS, buildNavNodes, shelves, layoutFixtures, products, timeSlots, crowdSamples, shelfCrowd, peopleForScenario } from './storeData.js';
+import { STORE, PHYSICS, buildNavNodes, shelves, layoutFixtures, products, timeSlots, crowdSamples, shelfCrowd, peopleForScenario, zoneName } from './storeData.js';
 import { PedestrianSystem, PEDESTRIAN_TYPES, PEDESTRIAN_STATES } from './pedestrian.js';
 import { RobotBehavior, ROBOT_STATES, ROBOT_STATE_CN } from './robotBehavior.js';
 import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderResearchDashboard, escapeHtml, departmentLabel, zoneLabel, zoneOfDepartment, loadMl, renderMlDashboard, renderCfRecommendations } from './instacart.js';
@@ -46,7 +46,7 @@ const state = {
   bought: [], position: [...STORE.entrance], history: [[...STORE.entrance]], logs: [], detected: new Set(),
   plan: null, normalPlan: null, battery: 100, traveled: 0, events: new Set(), dynamicObstacles: [],
   closedEdges: new Set(), view: 'overview', mode: '3d', uiTick: 0,
-  displayPosition: [...STORE.entrance], lateralOffset: 0, inertialVelocity: [0, 0], lastLogic: [...STORE.entrance],
+  displayPosition: [...STORE.entrance], lateralVec: [0, 0], inertialVelocity: [0, 0], lastLogic: [...STORE.entrance],
   pedMode: 'shopping', pedDensity: 'low', pedSpeed: 1, pedRunning: false,
   behavior: null, pedSystem: null, robotBrain: null, safetyEvents: [], lastCollisionAt: -1,
   // V2.1：默认一台，后台可配置最多两台；每台独立泊位，互不重叠。
@@ -442,6 +442,21 @@ const REROUTE = Object.freeze({
 let crowdField = new Map();
 let crowdTotal = 0;
 let liveCrowdOn = false;
+/** V3.5 靠右行驶偏置：无避让指令时，机器人向行进方向右侧（贴货架一侧）平移的单位数。
+ *  通道最小净宽 2.55 m，车体宽 0.48 m——靠右 0.27 m 后，推车行人（0.76 m）与行人
+ *  （0.46 m）可以从中间与对侧同时通过，三者不再互相堵路。 */
+const LANE_KEEP = 1.6;
+/** V3.5 数据感知说明：用时段时间槽的人流样本（crowdSamples，来自仿真统计的数据集）
+ *  说明「当前时段哪条通道最热、哪条最冷」，并声明 A* 已把它们作为风险项加权。
+ *  这是数据挖掘课程要求「机器人靠数据识别高峰人少路线」的可解释性输出。 */
+function logDataAwareness(context = '') {
+  const sample = crowdSamples[state.slot] || [];
+  if (!sample.length) return;
+  const ranked = shelves.map((s, i) => ({ id: s.id, zone: s.category, n: sample[i] ?? 0 })).sort((a, b) => b.n - a.n);
+  const hot = ranked[0], cold = ranked[ranked.length - 1];
+  const label = timeSlots.find(t => t.id === state.slot)?.label ?? state.slot;
+  log(`${context}数据感知：${label}，仿真客流最热为「${zoneName(hot.zone)}」(${hot.n} 人)、最冷为「${zoneName(cold.zone)}」(${cold.n} 人)；A* 已把时段人流作为风险项加权，自动优先穿过人少的通道。`);
+}
 function refreshCrowdField(list) {
   crowdField = new Map(); crowdTotal = list.length;
   for (const p of list) {
@@ -1202,7 +1217,7 @@ function maybeRerouteDelivery(direction, snapshot, behavior) {
   const before = leg.length;
   leg.reroutes = (leg.reroutes || 0) + 1;
   if (decision.urge || decision.afterLength > decision.beforeLength * (state.miningEnabled ? 1.5 : 1.25) + 6) leg.committed = true;
-  state.legDistance = 0; state.lateralOffset = 0;
+  state.legDistance = 0; state.lateralVec = [0, 0];   // V3.5：侧偏改为二维向量
   const length = applyReroute(leg, decision.points);
   // 规划总长度同步修正，避免进度条因为改道而倒跳。
   if (state.plan) state.plan.length = Math.max(1, state.plan.length - before + length);
@@ -1901,6 +1916,12 @@ function renderPresentationHud() {
   setText('hudOrder', state.order ? `${state.order.id} · ${state.stage}/${state.plan?.stops.length ?? 0} 个货区` : '—');
   setText('hudRoute', state.plan ? `${state.plan.length.toFixed(1)} 单位 · 代价 ${state.plan.cost.toFixed(1)}` : '—');
   setText('hudMetrics', state.plan ? state.plan.method : 'Held–Karp + A*');
+  // V3.5 数据感知：时段人流样本 + 实时附近人数 + 靠右行驶状态。
+  const slotLabel = timeSlots.find(t => t.id === state.slot)?.label ?? state.slot;
+  const slotTotal = (crowdSamples[state.slot] || []).reduce((a, b) => a + b, 0);
+  const nearby = state.pedSystem
+    ? state.pedSystem.people.filter(p => dist(p.position, state.displayPosition) < 12).length : 0;
+  setText('hudData', `${slotLabel} · 样本客流 ${slotTotal} · 附近 ${nearby} 人 · 靠右行驶`);
 }
 function renderAll() {
   renderLiveOps(); renderQueue(); renderOrderState(); renderInventory(); renderProgress();
@@ -2104,7 +2125,7 @@ function resetPlayback(preserveSafety = false) {
   const waitSlot = activeRobot().waitSlot;
   state.elapsed = 0; state.lastFrame = 0; state.bought = [];
   state.position = [...waitSlot]; state.displayPosition = [...waitSlot];
-  state.lateralOffset = 0; state.inertialVelocity = [0, 0]; state.lastLogic = [...waitSlot];
+  state.lateralVec = [0, 0]; state.inertialVelocity = [0, 0]; state.lastLogic = [...waitSlot];
   state.history = [[...waitSlot]]; state.detected = new Set(); state.traveled = 0;
   state.returnLeg = null; state.returnReason = '';
   state.rerouteCooldown = 0; state.lastReroute = null;
@@ -2293,6 +2314,20 @@ function arrive() {
   state.history.push([...state.position]);
   if (index < stops.length) {
     const stop = stops[index];
+    // V3.5 贴边取货：机器人不再停在通道节点正中间，而是向货架一侧平移 2 单位
+    //（≈0.34 m，货架边缘距中线 4.5 单位，仍有净空）——把通道节点让给行人。
+    // 这是「行人围住机器人」的主要成因修复之一：行人路径穿过节点时不再撞上停在节点上的车体。
+    const leg = state.plan.legs[index];
+    if (leg?.points?.length > 1) {
+      const dir = legDirection(leg, leg.length);
+      const perp = [-dir[1], dir[0]];
+      const k = Math.abs(perp[0]) > .01 ? Math.sign(perp[0]) * 2.0 : 0;  // 货架总在节点 +x 侧
+      if (k) {
+        state.lateralVec = [perp[0] * k, perp[1] * k];
+        state.displayPosition = [state.position[0] + state.lateralVec[0], state.position[1] + state.lateralVec[1]];
+        syncRobotPose(state.displayPosition, robotState(), state.order?.id, state.heading);
+      }
+    }
     const line = stop.lines.find(x => (x.product.id === state.stockoutId || x.product.stock < x.qty) && !state.resolutions.has(x.product.id));
     if (line) {
       const candidate = substituteFor(line.product), alternative = candidate?.stock >= line.qty ? candidate : null;
@@ -2657,13 +2692,21 @@ function stepSimulation(dt) {
   state.legDistance = motion.at;
   state.position = motion.point;
   // V3.1c：WAIT/YIELD 时应用「停车让位」平移（parkShift），其余停车状态仍归零。
+  // V3.5：侧偏从「标量 × 当前朝向」升级为「二维向量平滑过渡」——机器人转弯时侧偏
+  // 连续旋转，不再在路口出现瞬移；同时新增「靠右行驶」默认策略：无避让指令时向
+  // 行进方向右侧（贴货架一侧）偏移 1.6 单位（≈0.27 m），把通道中间与对侧让给行人，
+  // 「推车行人 + 机器人 + 行人」可以在同一条通道并排穿行。
   const parkShift = result.parkShift || 0;
-  const targetShift = parkShift || (['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state) ? 0 : result.lateralShift);
-  state.lateralOffset += (targetShift - state.lateralOffset) * Math.min(1, step * 2.2);
-  const perpendicular = [-direction[1], direction[0]];
+  const stopStates = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state);
+  const perpendicular = [-direction[1], direction[0]];   // 行进方向右侧（地图 y 向下坐标系）
+  const targetShift = parkShift || (stopStates ? 0 : (result.lateralShift || LANE_KEEP));
+  const targetVec = [perpendicular[0] * targetShift, perpendicular[1] * targetShift];
+  const ease = Math.min(1, step * 2.2);
+  state.lateralVec[0] += (targetVec[0] - state.lateralVec[0]) * ease;
+  state.lateralVec[1] += (targetVec[1] - state.lateralVec[1]) * ease;
   state.displayPosition = [
-    state.position[0] + perpendicular[0] * state.lateralOffset,
-    state.position[1] + perpendicular[1] * state.lateralOffset,
+    state.position[0] + state.lateralVec[0],
+    state.position[1] + state.lateralVec[1],
   ];
 
   const travelled = dist(previousLogic, state.position);
@@ -2683,7 +2726,7 @@ function stepSimulation(dt) {
   drawRobot(); renderProgress();
   if (state.uiTick % 12 === 0) { renderLiveOps(); renderRobotCenter(); renderPresentationHud(); renderPedestrianPanel(); }
   if (state.legDistance >= leg.length - .001) {
-    state.legDistance = 0; state.lateralOffset = 0; state.displayPosition = [...state.position];
+    state.legDistance = 0; state.lateralVec = [0, 0]; state.displayPosition = [...state.position];
     arrive();
   }
   return true;
@@ -2747,6 +2790,7 @@ function playPause() {
   if (state.stage === 0 && state.elapsed === 0) {
     log(`载重检查通过：${kgText(orderWeight())} / ${kgText(CAPACITY)}。`);
     log(`${state.plan.method}；共 ${state.plan.stops.length} 个货区；A* 已完成逐段规划。`);
+    logDataAwareness('出发。');
     patchOrder(state.order.id, { status: '配送中', startedAt: new Date().toISOString(), robotId: activeRobot().id });
     syncRobotPose(state.position, 'BUSY', state.order.id);
     state.order.status = '配送中';
@@ -3088,7 +3132,7 @@ function setCamera(mode) {
 
 /* 自动化回归测试钩子：所有数值直接来自运行中的仿真状态，不另造指标。 */
 window.__NEXUS = Object.freeze({
-  state, STORE, shelves, layoutFixtures,
+  state, STORE, shelves, layoutFixtures, PHYSICS,
   applyPedPreset,
   setScenario: value => { state.scenario = value === 'peak' ? 'peak' : 'normal'; updateScenario('test'); return syncCrowdToScenario(); },
   setSimSpeed, setRobotCount, startNextOrder, activateNext,

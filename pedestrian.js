@@ -43,10 +43,23 @@ function makeRandom(seed = 6143) {
   return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
 }
 
-function routeBetween(nodes, from, to) {
+/**
+ * V3.5：路由可选「避让源」（当前为机器人本体）。机器人附近的节点代价按距离放大
+ * （半径 11 单位内最高 ×5），Dijkstra 会自动改走相邻通道——行人不再一群人
+ * 挤到机器人所在的节点上排队「围着打转」。这是软惩罚不是硬封锁：
+ * 只有这一条路可走时行人仍会通过，只是优先选别的通道。
+ * 惩罚系数取 4（×5）是实测值：27 单位的纵向通道边被加权到 ≈135 单位后，
+ * 一定贵于绕行 y=26 前场主通道（≈126 单位），行人才会真的换道而不是硬穿。
+ */
+function routeBetween(nodes, from, to, avoid = null) {
   const a = [...nodes.values()].reduce((best, n) => dist(n.point, from) < dist(best.point, from) ? n : best);
   const b = [...nodes.values()].reduce((best, n) => dist(n.point, to) < dist(best.point, to) ? n : best);
   const start = nodeKey(a.point), finish = nodeKey(b.point);
+  const weight = p => {
+    if (!avoid) return 1;
+    const d = dist(p, avoid.point);
+    return d < avoid.radius ? 1 + 4 * (1 - d / avoid.radius) : 1;
+  };
   const costs = new Map([[start, 0]]), prev = new Map(), open = new Set([start]);
   while (open.size) {
     let current = [...open].reduce((x, y) => (costs.get(x) ?? Infinity) <= (costs.get(y) ?? Infinity) ? x : y);
@@ -54,7 +67,9 @@ function routeBetween(nodes, from, to) {
     open.delete(current);
     const node = nodes.get(current);
     for (const nk of node.neighbors) {
-      const score = costs.get(current) + dist(node.point, nodes.get(nk).point);
+      const next = nodes.get(nk);
+      const score = costs.get(current)
+        + dist(node.point, next.point) * (weight(node.point) + weight(next.point)) / 2;
       if (score < (costs.get(nk) ?? Infinity)) { costs.set(nk, score); prev.set(nk, current); open.add(nk); }
     }
   }
@@ -64,8 +79,27 @@ function routeBetween(nodes, from, to) {
   while (prev.has(cursor)) { cursor = prev.get(cursor); chain.unshift(nodes.get(cursor).point); }
   if (dist(from, chain[0]) > .01) chain.unshift(from);
   if (dist(chain.at(-1), to) > .01) chain.push(to);
-  if (chain.length > 3 && dist(chain[1], to) > dist(chain[2], to)) chain.splice(1, 1);
+  // V3.5：首段剪枝必须先确认「跨过 chain[1] 的斜线段」不穿货架/装置——
+  // 避让机器人时路线常被改到前场，盲目剪枝会剪出一条斜穿货架的直线。
+  if (chain.length > 3 && dist(chain[1], to) > dist(chain[2], to) && segmentClear(chain[0], chain[2])) chain.splice(1, 1);
   return chain;
+}
+
+/** 线段 a→b 以 1.5 单位步长采样，任一点落在货架/实体装置内即视为不安全。 */
+function segmentClear(a, b) {
+  const length = dist(a, b);
+  const steps = Math.max(2, Math.ceil(length / 1.5));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    const r = .24 / M + .3;   // 行人半径 + 余量（地图单位）
+    for (const s of shelves) if (p[0] > s.xMin - r && p[0] < s.xMax + r && p[1] > s.yMin - r && p[1] < s.yMax + r) return false;
+    for (const f of layoutFixtures) {
+      if (!['wall', 'promo', 'checkout', 'kiosk', 'charger', 'robotpay'].includes(f.kind)) continue;
+      if (p[0] > f.x - f.w / 2 - r && p[0] < f.x + f.w / 2 + r && p[1] > f.y - f.h / 2 - r && p[1] < f.y + f.h / 2 + r) return false;
+    }
+  }
+  return true;
 }
 
 export class PedestrianSystem {
@@ -128,10 +162,12 @@ export class PedestrianSystem {
     const s = shelves[Math.floor(this.random() * shelves.length)];
     const side = this.random() < .5 ? -1 : 1;
     return {
-      point: [s.point[0] + side * (1.4 + this.random() * .8), s.point[1] + (this.random() - .5) * 2.4],
+      // V3.5：浏览站位离通道节点 2.0–3.0 单位（≈0.34–0.51 m）——机器人会贴边停靠取货，
+      // 顾客别站到停靠位上，双方不用互相挤。
+      point: [s.point[0] + side * (2.0 + this.random() * 1.0), s.point[1] + (this.random() - .5) * 2.4],
       shelfId: s.id,
       // 面向货架：取货点相对货架中心的方向（地图坐标），3D 用它旋转人物正面。
-      faceHeading: Math.atan2((s.xMin + s.xMax) / 2 - (s.point[0] + side * 1.8),
+      faceHeading: Math.atan2((s.xMin + s.xMax) / 2 - (s.point[0] + side * 2.2),
         (s.yMin + s.yMax) / 2 - s.point[1]),
       pickTier: Math.floor(this.random() * 3),
     };
@@ -237,7 +273,7 @@ export class PedestrianSystem {
    * planted 演练人群也不会被驱散）。位移窗口 0.8 单位（≈0.14 m）：正常行走哪怕最慢的
    * 类型 3.5 s 也会走出 >8 单位，所以超过阈值必然是被卡住了。
    */
-  watchdog(person, step) {
+  watchdog(person, step, robot = null) {
     const WALKING = ['ENTER_STORE', 'WALK_TO_SECTION', 'GOING_TO_CHECKOUT', 'EXITING', 'DETOUR'];
     if (!WALKING.includes(person.state)) { person.stuckWindows = 0; return; }
     // 每 3 s 一个观测窗：用「到目标的距离缩短量」判断净进度——
@@ -263,13 +299,13 @@ export class PedestrianSystem {
       // 第一级：换局部路线绕到「离目标更近的空闲点」，复用 DETOUR 机制自动恢复原目标。
       this.metrics.unstuckSoft = (this.metrics.unstuckSoft || 0) + 1;
       const back = person.state;
-      this.sendTo(person, escape, 'DETOUR');
+      this.sendTo(person, escape, 'DETOUR', robot);
       person.detourGoal = goal;
       person.detourReturn = back === 'DETOUR' ? 'WALK_TO_SECTION' : back;
     } else {
       // 终极兜底：直接吸附到附近合法点再重新规划（视觉上是半步挪动，极罕见）。
       person.position = [...escape]; person.velocity = [0, 0];
-      this.sendTo(person, goal, person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state);
+      this.sendTo(person, goal, person.state === 'DETOUR' ? 'WALK_TO_SECTION' : person.state, robot);
       this.metrics.unstuckHard = (this.metrics.unstuckHard || 0) + 1;
     }
   }
@@ -295,11 +331,14 @@ export class PedestrianSystem {
     return fallback;
   }
 
-  sendTo(person, goal, state = 'WALK_TO_SECTION') {    person.goal = [...goal];
+  sendTo(person, goal, state = 'WALK_TO_SECTION', robot = null) {    person.goal = [...goal];
     // 排队位与出口都是「别人站过/正在让出的合法位置」，不做安全点吸附，
     // 否则队伍前进时每个人都会被挤偏，队列会散开。
     const safeGoal = (state === 'EXITING' || state === 'GOING_TO_CHECKOUT') ? [...goal] : this.safePoint(goal, person.radius);
-    person.route = routeBetween(this.nodes, this.safePoint(person.position, person.radius), safeGoal);
+    // V3.5：路线规划避开机器人本体（半径 11 单位 ≈1.9 m 内的节点加权），
+    // 行人会提前换一条通道，不再扎堆穿过机器人所在/停靠的节点。
+    const avoid = robot?.position ? { point: [...robot.position], radius: 11 } : null;
+    person.route = routeBetween(this.nodes, this.safePoint(person.position, person.radius), safeGoal, avoid);
     person.routeIndex = Math.min(1, person.route.length - 1);
     person.state = state;
   }
@@ -413,7 +452,7 @@ export class PedestrianSystem {
    * 顾客排到队尾 → 队首顾客由店员扫码结账（固定服务时长）→ 结账完成立即离店 →
    * 后面每位顾客整体前移一格。买得少的顾客更早到达收银台，高峰时队列会明显变长。
    */
-  assignCheckout(person) {
+  assignCheckout(person, robot = null) {
     const open = this.lanes.filter(l => l.queue.length < l.capacity);
     if (!open.length) {
       // 所有收银台都排满：顾客继续逛一会儿再回来排队，不涌向同一坐标。
@@ -433,7 +472,7 @@ export class PedestrianSystem {
     person.queueIndex = lane.queue.length - 1;
     person.queueSlot = lane.capacity - 1 - person.queueIndex;
     this.reindex(lane);
-    this.sendTo(person, queueSpot(lane, person.queueIndex), 'GOING_TO_CHECKOUT');
+    this.sendTo(person, queueSpot(lane, person.queueIndex), 'GOING_TO_CHECKOUT', robot);
     this.metrics.maxQueue = Math.max(this.metrics.maxQueue, this.totalQueued());
     return true;
   }
@@ -461,7 +500,7 @@ export class PedestrianSystem {
   }
 
   /** 队首结账完成：结算等待时间、释放队列，并把后队整体前移一格。 */
-  finishCheckout(lane, head) {
+  finishCheckout(lane, head, robot = null) {
     const index = lane.queue.indexOf(head);
     if (index >= 0) lane.queue.splice(index, 1);
     const waited = Math.max(0, this.clock - (head.queueArrivedAt || head.queueJoinAt || this.clock));
@@ -472,7 +511,7 @@ export class PedestrianSystem {
     this.exitAfterCheckout(head, lane);
     this.reindex(lane);
     lane.queue.forEach((p, i) => {
-      if (dist(p.position, queueSpot(lane, i)) > .6) this.sendTo(p, queueSpot(lane, i), 'GOING_TO_CHECKOUT');
+      if (dist(p.position, queueSpot(lane, i)) > .6) this.sendTo(p, queueSpot(lane, i), 'GOING_TO_CHECKOUT', robot);
     });
     this.metrics.maxQueue = Math.max(this.metrics.maxQueue, this.totalQueued());
   }
@@ -514,7 +553,7 @@ export class PedestrianSystem {
   }
 
   /** 收银台状态机：每次只服务一名队首顾客，服务时长由该顾客的件数决定。 */
-  serviceLanes(dt) {
+  serviceLanes(dt, robot = null) {
     for (const lane of this.lanes) {
       if (lane.queue.some(p => !this.people.includes(p))) {
         lane.queue = lane.queue.filter(p => this.people.includes(p));
@@ -531,7 +570,7 @@ export class PedestrianSystem {
       }
       lane.serveLeft = Math.max(0, lane.serveLeft - dt);
       head.serving = lane.serveLeft > 0;
-      if (lane.serveLeft <= 1e-6) this.finishCheckout(lane, head);
+      if (lane.serveLeft <= 1e-6) this.finishCheckout(lane, head, robot);
     }
   }
 
@@ -552,7 +591,7 @@ export class PedestrianSystem {
       // 会永远站在那里、机器人也一直等——课堂演示最忌讳这种僵局。
       // 现在：行走中 3.5 s 几乎无位移 → 换一条局部路线绕到离目标更近的空闲点；
       // 再卡 5 s → 直接吸附到附近最近合法点并重新规划（视觉上只是半步挪动，极罕见）。
-      this.watchdog(person, step);
+    this.watchdog(person, step, robot);
       // 走出出口即消失：一旦越过右墙开口外侧（x > width + 6）立即移除，
       // 避免行人停留在墙外铺装区产生视觉穿模；离店计数在此时结算。
       const passedExit = person.state === 'EXITING' && person.position[0] > STORE.width + 6;
@@ -563,7 +602,7 @@ export class PedestrianSystem {
       }
     }
     // 收银台按真实队列顺序服务队首，服务结束后后队整体前移。
-    this.serviceLanes(step);
+    this.serviceLanes(step, robot);
   }
 
   advance(person, dt, robot) {
@@ -588,8 +627,8 @@ export class PedestrianSystem {
       }
       if (person.timer <= 0) {
         // 买得少（购物篮小）的顾客逛完 1 个货区就直奔收银台；买得多的继续逛。
-        if (person.sections >= (person.basket ?? 3)) this.assignCheckout(person);
-        else { person.sections++; const s = this.pickSection(); person.section = s; this.sendTo(person, s.point, 'WALK_TO_SECTION'); }
+        if (person.sections >= (person.basket ?? 3)) this.assignCheckout(person, robot);
+        else { person.sections++; const s = this.pickSection(); person.section = s; this.sendTo(person, s.point, 'WALK_TO_SECTION', robot); }
       }
       person.velocity = [person.velocity[0] * Math.max(0, 1 - dt * 8), person.velocity[1] * Math.max(0, 1 - dt * 8)];
       this.move(person, dt, robot);
@@ -637,7 +676,7 @@ export class PedestrianSystem {
           const goal = person.detourGoal || STORE.exit;
           const back = person.detourReturn || 'WALK_TO_SECTION';
           person.detourGoal = null; person.detourReturn = null;
-          this.sendTo(person, goal, back === 'DETOUR' ? 'WALK_TO_SECTION' : back);
+          this.sendTo(person, goal, back === 'DETOUR' ? 'WALK_TO_SECTION' : back, robot);
         } else { this.beginExit(person); }
         target = null; break;
       }

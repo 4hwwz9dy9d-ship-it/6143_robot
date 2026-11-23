@@ -417,6 +417,9 @@ function buildScene(container) {
 
   function createRobotModel(id) {
     const robot = tagGroup(new THREE.Group(), 'robot', { id, name: `NEXUS ${id}` });
+    // V3.5：机身物理尺寸缩小（radius .30→.26 / 宽 .48 / 长 .64），模型整体同步缩放 0.85，
+    // 与 PHYSICS.robot 保持一致；轮子/机械臂/状态环等子件跟着缩放，无需逐件改尺寸。
+    robot.scale.setScalar(.85);
     // V2.7：机器人初始停在充电桩对接位上，正面朝向桩体（世界 +Z = 地图 -y 方向）。
     // 行驶时 placeRobot 仍按真实行进方向覆盖该朝向。
     robot.rotation.y = Math.PI;
