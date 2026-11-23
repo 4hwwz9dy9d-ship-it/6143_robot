@@ -455,10 +455,15 @@ const REROUTE = Object.freeze({
 let crowdField = new Map();
 let crowdTotal = 0;
 let liveCrowdOn = false;
-/** V3.5 靠右行驶偏置：无避让指令时，机器人向行进方向右侧（贴货架一侧）平移的单位数。
- *  通道最小净宽 2.55 m，车体宽 0.48 m——靠右 0.27 m 后，推车行人（0.76 m）与行人
- *  （0.46 m）可以从中间与对侧同时通过，三者不再互相堵路。 */
+/** NEXUS 2.2b：靠右行驶改为**固定的世界坐标偏移**，不再随每个路径节点旋转。
+ *  旧版把偏移量投影到「当前线段的右侧」，过节点时目标向量瞬间旋转 90°，
+ *  停车让位时又归零、恢复后再升回去——实测高峰 60 s 内 38 次横向突变、
+ *  26 次 >60° 折角，看起来就是「路线歪歪扭扭、机器人被顶飞」。
+ *  现在整个订单里始终是同一个 [-1.6, 0] 平移：轨迹只是 A* 折线的等距平移，
+ *  直段依旧是严格的直线，但机器人仍贴通道一侧，推车行人可从另一侧通过，
+ *  不会回到「走中心线就被迎面行人顶死」的死锁。 */
 const LANE_KEEP = 1.6;
+const LANE_OFFSET = Object.freeze([-LANE_KEEP, 0]);   // 固定世界偏移，永不随航向旋转
 /** V3.5 数据感知说明：用时段时间槽的人流样本（crowdSamples，来自仿真统计的数据集）
  *  说明「当前时段哪条通道最热、哪条最冷」，并声明 A* 已把它们作为风险项加权。
  *  这是数据挖掘课程要求「机器人靠数据识别高峰人少路线」的可解释性输出。 */
@@ -1516,7 +1521,7 @@ function maybeUTurn(direction, snapshot) {
   state.lastUTurnAccepted = outcome;
 
   const before = leg.length;
-  state.legDistance = 0; state.lateralVec = [0, 0]; state.backupVec = [0, 0];
+  state.legDistance = 0; state.lateralVec = [...LANE_OFFSET]; state.backupVec = [0, 0];
   const length = applyReroute(leg, outcome.points);
   if (state.plan) state.plan.length = Math.max(1, state.plan.length - before + length);
   state.rerouteCooldown = U_TURN.cooldown;
@@ -1637,7 +1642,7 @@ function maybeRerouteDelivery(direction, snapshot, behavior) {
   const before = leg.length;
   leg.reroutes = (leg.reroutes || 0) + 1;
   if (decision.urge || decision.afterLength > decision.beforeLength * (state.miningEnabled ? 1.5 : 1.25) + 6) { leg.committed = true; leg.committedAt = state.elapsed; }
-  state.legDistance = 0; state.lateralVec = [0, 0];   // V3.5：侧偏改为二维向量
+  state.legDistance = 0; state.lateralVec = [...LANE_OFFSET];   // 保持固定车道偏移，不在改道瞬间跳回中线
   const length = applyReroute(leg, decision.points);
   // 规划总长度同步修正，避免进度条因为改道而倒跳。
   if (state.plan) state.plan.length = Math.max(1, state.plan.length - before + length);
@@ -2561,8 +2566,9 @@ function resetPlayback(preserveSafety = false) {
   state.heading = null; state.maneuver = null;
   const waitSlot = activeRobot().waitSlot;
   state.elapsed = 0; state.lastFrame = 0; state.bought = [];
-  state.position = [...waitSlot]; state.displayPosition = [...waitSlot];
-  state.lateralVec = [0, 0]; state.inertialVelocity = [0, 0]; state.lastLogic = [...waitSlot];
+  state.position = [...waitSlot];
+  state.displayPosition = [waitSlot[0] + LANE_OFFSET[0], waitSlot[1] + LANE_OFFSET[1]];
+  state.lateralVec = [...LANE_OFFSET]; state.inertialVelocity = [0, 0]; state.lastLogic = [...waitSlot];
   state.history = [[...waitSlot]]; state.detected = new Set(); state.traveled = 0;
   state.returnLeg = null; state.returnReason = '';
   state.rerouteCooldown = 0; state.lastReroute = null;
@@ -2750,22 +2756,18 @@ function arrive() {
   // V2.8：最后一段终点就是机器人自助收银台的买单位（不再经过 STORE.checkout / 交接区）。
   state.position = [...(index < stops.length ? stops[index].point : STORE.robotPayStations[0].stop)];
   state.history.push([...state.position]);
+  // 终点是自助收银台对接位，不是行驶车道：必须精确停在买单位上（无车道偏移），
+  // 否则会差 1.6 单位、看起来没停进收银位，返航也从偏移点起步。
+  if (index >= stops.length) { state.lateralVec = [0, 0]; state.displayPosition = [...state.position]; }
   if (index < stops.length) {
     const stop = stops[index];
-    // V3.5 贴边取货：机器人不再停在通道节点正中间，而是向货架一侧平移 2 单位
-    //（≈0.34 m，货架边缘距中线 4.5 单位，仍有净空）——把通道节点让给行人。
-    // 这是「行人围住机器人」的主要成因修复之一：行人路径穿过节点时不再撞上停在节点上的车体。
-    const leg = state.plan.legs[index];
-    if (leg?.points?.length > 1) {
-      const dir = legDirection(leg, leg.length);
-      const perp = [-dir[1], dir[0]];
-      const k = Math.abs(perp[0]) > .01 ? Math.sign(perp[0]) * 2.0 : 0;  // 货架总在节点 +x 侧
-      if (k) {
-        state.lateralVec = [perp[0] * k, perp[1] * k];
-        state.displayPosition = [state.position[0] + state.lateralVec[0], state.position[1] + state.lateralVec[1]];
-        syncRobotPose(state.displayPosition, robotState(), state.order?.id, state.heading);
-      }
-    }
+    // NEXUS 2.2b：不再在取货瞬间做 2 单位「贴货架」侧移。
+    // 固定车道偏移已经把车体从导航节点让开 1.6 单位（远离货架一侧），
+    // 行人同样能穿过节点；旧版再侧移 2 单位、随后立刻弹回，形成 3.6 单位横向跳变，
+    // 课堂上看就是机器人「被顶了一下」。这里保持与行驶时完全相同的位姿规则。
+    state.lateralVec = [...LANE_OFFSET];
+    state.displayPosition = [state.position[0] + LANE_OFFSET[0], state.position[1] + LANE_OFFSET[1]];
+    syncRobotPose(state.displayPosition, robotState(), state.order?.id, state.heading);
     const line = stop.lines.find(x => (x.product.id === state.stockoutId || x.product.stock < x.qty) && !state.resolutions.has(x.product.id));
     if (line) {
       const candidate = substituteFor(line.product), alternative = candidate?.stock >= line.qty ? candidate : null;
@@ -3026,7 +3028,9 @@ function legDirection(leg, at) {
  *  100°–150°：原地转向（不平移），转到位再走；
  *  >150°（掉头/改道反向）：两阶段机动——先保持车头朝向、让车尾沿新路线退约 1 米
  *  （state.maneuver.reverse，即真实倒车姿态），再原地转向新路线（spin），全程不画大弧。 */
-const MOTION = Object.freeze({ arcTurn: 1.75, spinTurn: 2.6, spinRate: 2.4, reverseRatio: .55, reverseMax: 6 });
+// spinRate 从 2.4 降到 1.4 rad/s：90° 路口约 1.1 s 转完，课堂上看得清「停-转-走」，
+// 不再是一帧甩十几度的急拐（实测旧值下单步最大转向 13.7°，观感像被撞歪）。
+const MOTION = Object.freeze({ arcTurn: 1.75, spinTurn: 2.6, spinRate: 1.4, reverseRatio: .55, reverseMax: 6 });
 const angleWrap = a => { while (a > Math.PI) a -= Math.PI * 2; while (a < -Math.PI) a += Math.PI * 2; return a; };
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 /** 统一的一步推进：输入当前 leg 与已走距离，返回 { at, point }；内部维护 state.heading / state.maneuver。 */
@@ -3064,13 +3068,18 @@ function advanceWithHeading(leg, at, step, speedFactor, label = '') {
       state.maneuver = { phase: 'reverse', left: MOTION.reverseMax };
       return { at, point: positionOnLeg(leg, at), moved: false };
     }
-    // 前方被人堵住刹停：不盲倒（车身后方视角外），原地转向即可。
+    // 前方被人堵住刹停：缓慢原地对准路线。只转车头、不平移车体，
+    // 所以轨迹仍然直；但行人需要看到机器人车头朝向才会正确选边让行，不能冻结车头。
+    const prev = state.heading;
     state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+    state.yawRate = step > 0 ? angleWrap(state.heading - prev) / step : 0;
     return { at, point: positionOnLeg(leg, at), moved: false };
   }
   if (Math.abs(err) > MOTION.arcTurn) {
-    // 大角度但非掉头：停下来原地转，比斜着切过去自然，也不会扫到旁边的人。
+    // 大角度但非掉头：原地转到位，不斜着切过去（不产生折线）。
+    const prev = state.heading;
     state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+    state.yawRate = step > 0 ? angleWrap(state.heading - prev) / step : 0;
     return { at, point: positionOnLeg(leg, at), moved: false };
   }
   // NEXUS 2.2：正常行驶回到参考版本那种「看得懂」的规则——按当前线段方向匀速限速转向，
@@ -3214,29 +3223,17 @@ function stepSimulation(dt) {
   const motion = advanceWithHeading(leg, state.legDistance, step, effectiveSpeed, '配送中');
   state.legDistance = motion.at;
   state.position = motion.point;
-  // V3.6：车道保持——机器人永远贴自己的靠右车道线（与路线平行的固定偏置），
-  // 行人不再能让它横移：行为层只输出纵向调速/停车/换路请求，侧向完全由 LANE_KEEP 决定。
-  // WAIT/YIELD/紧急停车时侧偏归零，车体回正到路线中线上停稳（更符合「停在自己道上」）。
-  const stopStates = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state);
-  const perpendicular = [-direction[1], direction[0]];   // 行进方向右侧（地图 y 向下坐标系）
-  // 2.1：主动绕行由局部规划器给出横向目标（决策结果，不是被行人挤走）；其余保持靠右车道。
-  // NEXUS 2.2：侧向只由「靠右行驶」决定，局部规划器的 LEFT/RIGHT 只作为减速/改道请求，
-  // 不再直接平移车体——平移会让机器人看起来被行人挤离航道、路线歪斜。
-  // 真正的「换路」由全局改道/智能掉头完成，车头始终对准当前线段，路线是直的。
-  const targetShift = stopStates ? 0 : LANE_KEEP;
-  const targetVec = [perpendicular[0] * targetShift, perpendicular[1] * targetShift];
-  const ease = Math.min(1, step * 2.2);
-  state.lateralVec[0] += (targetVec[0] - state.lateralVec[0]) * ease;
-  state.lateralVec[1] += (targetVec[1] - state.lateralVec[1]) * ease;
-  // V3.8 紧急死锁倒车：沿车头反方向的临时后移向量（与车道同一条直线，只是纵向后退）。
-  // 不用 legDistance 负值实现——段首 legDist=0 时退无可退；向量平移在任何位置都有效。
-  // 身后 4 单位内有人时不倒（不倒车撞人）；紧急解除后向量平滑归零（车头再贴回原位）。
+  // NEXUS 2.2b：固定车道偏移，不随航向旋转、不在停车时归零。
+  // A* 折线整体平移一个常量仍是折线；直段严格是直线，行人让位也不再左右滑。
+  state.lateralVec[0] = LANE_OFFSET[0]; state.lateralVec[1] = LANE_OFFSET[1];
+  // 紧急死锁时允许极小的后退让位（≤0.7 单位 ≈12 cm），只用于脱困，
+  // 不再出现旧版 2.2 单位（≈37 cm）那种「被顶飞」的明显位移。
   state.backupVec = state.backupVec || [0, 0];
   let backupTarget = 0;
   if (result.backUp) {
     const rear = [state.position[0] - direction[0] * 4.5, state.position[1] - direction[1] * 4.5];
     const rearBlocked = snapshot.some(p => Math.hypot(p.x - rear[0], p.y - rear[1]) < 2.4);
-    if (!rearBlocked) backupTarget = 2.2;
+    if (!rearBlocked) backupTarget = .7;
   }
   const easeB = Math.min(1, step * 1.6);
   state.backupVec[0] += (-direction[0] * backupTarget - state.backupVec[0]) * easeB;
@@ -3254,7 +3251,7 @@ function stepSimulation(dt) {
     sf.collisionsPrevented++;
     state.position = [...state.lastLogic];       // 回到上一步逻辑点（不出货架）
     state.legDistance = Math.max(0, state.legDistance - dist(prevDisplay, candidatePosition));
-    state.lateralVec = [0, 0]; state.backupVec = [0, 0];
+    state.lateralVec = [...LANE_OFFSET]; state.backupVec = [0, 0];
     state.displayPosition = [...prevDisplay];
     sf.log.push(state.elapsed, 'warn', 'CollisionGuard',
       `底盘扫掠检测到 ${swept.kind} 障碍，已撤销本步位移并回到安全位姿`, { obstacle: swept.id });
@@ -3282,7 +3279,8 @@ function stepSimulation(dt) {
   drawRobot(); renderProgress();
   if (state.uiTick % 12 === 0) { renderLiveOps(); renderRobotCenter(); renderPresentationHud(); renderPedestrianPanel(); }
   if (state.legDistance >= leg.length - .001) {
-    state.legDistance = 0; state.lateralVec = [0, 0]; state.backupVec = [0, 0]; state.displayPosition = [...state.position];
+    state.legDistance = 0; state.lateralVec = [...LANE_OFFSET]; state.backupVec = [0, 0];
+    state.displayPosition = [state.position[0] + LANE_OFFSET[0], state.position[1] + LANE_OFFSET[1]];
     arrive();
   }
   return true;
