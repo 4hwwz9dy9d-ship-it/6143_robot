@@ -562,6 +562,18 @@
         </div>
         <div id="challengePanel"><p class="empty">提交订单并开始执行后，触发障碍即可看到重规划前后指标。</p></div>
       </div>
+      <!-- NEXUS 2.2 智能掉头：前方成簇人群 → 掉头改走最后一排空通道 → Risk 下降 -->
+      <div class="card card-pad" style="margin-top:16px">
+        <div class="card-head"><div><p class="section-kicker">SMART U-TURN · RISK-AWARE DETOUR</p><h3>智能掉头 · 前方一堆人时改走空通道</h3>
+          <p>机器人前视检测到成簇行人后，会比较「继续直行」与「掉头经最后一排冷通道」的 Risk（RandomForest 风险模型 + 实时人群场）；只有人群暴露下降且 Risk 明显降低才真的掉头，否则记录拒绝原因。</p></div>
+          <button id="uturnDemoBtn" class="btn btn-teal btn-sm" type="button">▶ 一键演示</button></div>
+        <div class="btn-row" style="margin:10px 0">
+          <button id="uturnCrowdBtn" class="btn btn-secondary btn-sm" type="button">① 在前方放一群人</button>
+          <button id="uturnGoBtn" class="btn btn-teal btn-sm" type="button">② 进入 3D 看掉头</button>
+          <span id="uturnStatus" class="pill">等待订单</span>
+        </div>
+        <div id="uturnPanel"><p class="empty">提交订单后点击「在前方放一群人」，这里会显示直行与掉头两条路的 Risk 对比与采纳依据。</p></div>
+      </div>
       <!-- V2.4 实验数据驱动的路径优化：Apriori 共购规则真实参与 Held–Karp 访问顺序决策 -->
       <div class="card card-pad" style="margin-top:16px">
         <div class="card-head"><div><p class="section-kicker">EXPERIMENT-DRIVEN ROUTING</p><h3>关联实验驱动的路径优化</h3><p id="miningNote">基于 Apriori 真实购物篮规则：让实验证实常被一起购买的货区在访问顺序上相邻，减少折返。</p></div><button id="miningToggleBtn" class="btn btn-teal btn-sm" type="button">启用实验驱动规划</button></div>

@@ -2,7 +2,7 @@
 // 坐标来自 storeData.js 共享地图单位 (1 unit = 0.17 m)。
 // 本版修复：渐进分批入场 / 多生成点 / 安全间距 / 货架墙碰撞 /
 // 收银台独立队列位与容量上限 / 机器人通道与顾客排队区分离。
-import { STORE, PHYSICS, shelves, layoutFixtures, buildNavNodes, nodeKey } from './storeData.js';
+import { STORE, PHYSICS, shelves, layoutFixtures, buildNavNodes, nodeKey, crowdSamples } from './storeData.js';
 
 const M = PHYSICS.metersPerUnit;
 const TAU = Math.PI * 2;
@@ -127,6 +127,7 @@ export class PedestrianSystem {
     this.nextId = 1;
     this.density = options.density ?? 'low';
     this.mode = options.mode ?? 'shopping';
+    this.slot = options.slot ?? '18';   // 数据驱动客流权重所用的时段（对应 storeData.crowdSamples）
     this.speedFactor = options.speedFactor ?? 1;
     this.running = false;
     this.spawnCooldown = 0;
@@ -144,9 +145,10 @@ export class PedestrianSystem {
 
   get targetCount() { return this.mode === 'crowded' ? Math.max(24, this.densityTarget) : this.densityTarget; }
 
-  configure({ density, mode, speedFactor, running } = {}) {
+  configure({ density, mode, slot, speedFactor, running } = {}) {
     if (density) { this.density = density; this.densityTarget = { low: 7, medium: 16, high: 30 }[density] ?? 7; }
     if (mode) this.mode = mode;
+    if (slot) this.slot = slot;
     if (typeof speedFactor === 'number') this.speedFactor = clamp(speedFactor, .5, 1.6);
     if (typeof running === 'boolean') this.running = running;
     return this;
@@ -175,8 +177,32 @@ export class PedestrianSystem {
     return r < .16 ? 'cart' : r < .36 ? 'browsing' : r < .56 ? 'slow' : r < .74 ? 'fast' : 'regular';
   }
 
+  /**
+   * 数据驱动的货区访问权重（SIMULATION 行为模型，非伪造统计）：
+   *  - 前两排是主购物区，权重按 storeData.crowdSamples 中该时段的真实仿真客流样本放大；
+   *  - 最后一排（row===2）整体降权，高峰时段更低 —— 这正是现场观察到的
+   *    「最后一排经常没有人走」，也是机器人做 Risk 对比时可以改道过去的空通道。
+   *  权重表是确定性的，测试可直接读取复核；采样只消耗一次随机流，保持整体可复现。
+   */
+  sectionWeights() {
+    const sample = crowdSamples[this.slot] || crowdSamples['18'] || crowdSamples['09'] || [];
+    const peak = this.mode === 'crowded' || this.slot === '18' || this.slot === '20';
+    return shelves.map((s, i) => {
+      const demand = sample[i] ?? 1;
+      const rowFactor = s.row === 2 ? (peak ? .20 : .34) : s.row === 1 ? .88 : 1;
+      return +Math.max(.05, rowFactor * (.6 + demand * .25)).toFixed(4);
+    });
+  }
+
   pickSection() {
-    const s = shelves[Math.floor(this.random() * shelves.length)];
+    const weights = this.sectionWeights();
+    const total = weights.reduce((a, b) => a + b, 0);
+    let r = this.random() * total, idx = weights.length - 1;
+    for (let i = 0; i < weights.length; i++) {
+      r -= weights[i];
+      if (r <= 0) { idx = i; break; }
+    }
+    const s = shelves[idx];
     const side = this.random() < .5 ? -1 : 1;
     return {
       // V3.5：浏览站位离通道节点 2.0–3.0 单位（≈0.34–0.51 m）——机器人会贴边停靠取货，
@@ -238,7 +264,9 @@ export class PedestrianSystem {
     const typeKey = forced.type || this.pickType();
     const type = PEDESTRIAN_TYPES[typeKey];
     let position = null;
-    for (let attempt = 0; attempt < 14; attempt++) {
+    // 演练注入可以直接指定落点：入口生成点被占满时，原本会导致「放一堆人」按钮失效。
+    if (forced.spawnAt && this.isFree(forced.spawnAt, type.radius)) position = [...forced.spawnAt];
+    else for (let attempt = 0; attempt < 14; attempt++) {
       const base = STORE.spawnPoints[Math.floor(this.random() * STORE.spawnPoints.length)];
       const candidate = [base[0] + (this.random() - .5) * 2.4, base[1] + (this.random() - .5) * 3.2];
       if (this.isFree(candidate, type.radius, robotPoint)) { position = candidate; break; }

@@ -1030,6 +1030,51 @@ function renderChallengePanel() {
       ? `最近一次重规划由真实人群场触发，机器人从当时位置 [${(rr.position || []).map(v => num(v, 1)).join(', ')}] 重新规划，原路径仅作为对照线保留；移动由物理步进驱动，无瞬移。${rr.mining ? '实验驱动模式启用（允许更大绕行以显著降低风险）。' : ''}`
       : '尚未触发重规划。点击「触发人群堵路」或「触发行人横穿」，在机器人前进方向上放置仿真障碍，观察系统是否自主改道。'}</p>`;
 }
+/** NEXUS 2.2 智能掉头面板：直接读取决策评估（接受或拒绝都有依据），不另造数据。 */
+function renderUTurnPanel() {
+  const host = $('uturnPanel'); if (!host) return;
+  // 展示「最近一次真正采纳的掉头」优先于日常未触发的检查，
+  // 否则课堂上刚看到掉头，面板马上被下一次「前方无人」覆盖成未采纳，无法解释。
+  const ev = state.lastUTurnAccepted || state.lastUTurnEval;
+  const routine = state.lastUTurnEval && !state.lastUTurnEval.accepted && ev?.accepted ? state.lastUTurnEval : null;
+  const chip = $('uturnStatus');
+  if (chip) {
+    chip.textContent = ev
+      ? (ev.accepted ? `已掉头 · Risk −${((ev.riskDrop || 0) * 100).toFixed(0)}%` : '已评估 · 未采纳')
+      : (state.order ? '就绪 · 待触发' : '等待订单');
+    chip.className = `pill ${ev?.accepted ? 'pill--ok' : ''}`;
+  }
+  if (!ev) {
+    host.innerHTML = '<p class="empty">提交订单后点击「在前方放一群人」，机器人会前视检测、比较直行与掉头走最后一排的 Risk，并在这里显示决策依据。</p>';
+    return;
+  }
+  const esc = escapeHtml;
+  const f = (v, d = 2) => Number.isFinite(v) ? Number(v).toFixed(d) : '—';
+  const delta = v => `${v >= 0 ? '+' : ''}${f(v, 1)}`;
+  const rows = [
+    ['本次决策', ev.accepted ? '采纳掉头（已真实换路）' : `未采纳 · ${ev.reason}`],
+    ['前方挡路人数', `${ev.ahead || 0} 人`],
+    ['是否真正掉头', ev.uTurn ? '是 · 车头反向后走新通道' : '否'],
+    ['是否利用最后一排', ev.coldRow ? '是 · y≈134 后排空通道' : '否'],
+    ['路线长度', `${f(ev.lengthBefore, 1)} → ${f(ev.lengthAfter, 1)} 单位（${delta((ev.lengthAfter || 0) - (ev.lengthBefore || 0))}）`],
+    ['实时人群暴露', `${f(ev.exposureBefore, 2)} → ${f(ev.exposureAfter, 2)} 人`],
+    ['时段需求热度', `${f(ev.heatBefore, 3)} → ${f(ev.heatAfter, 3)}`],
+    ['Risk 等级', `${esc(ev.riskLabelBefore || '—')} → ${esc(ev.riskLabelAfter || '—')}`],
+    ['随机森林 Risk 分数', `${f(ev.riskBefore, 3)} → ${f(ev.riskAfter, 3)}`],
+    ['Risk 降幅', `${ev.riskDrop > 0 ? '↓' : ''}${f(Math.abs(ev.riskDrop || 0) * 100, 1)}%`],
+    ['模型来源', ev.model ? 'risk_rf 运行时推理（12 棵树）' : '模型未加载 · 降级为真实暴露密度分'],
+  ];
+  host.innerHTML = `
+    <div class="risk-compare">
+      <div class="risk-compare-row"><span>继续直行</span><div class="risk-track"><i style="width:${Math.min(100, (ev.riskBefore || 0) * 100)}%"></i></div><b class="mono">${f(ev.riskBefore, 3)}</b></div>
+      <div class="risk-compare-row"><span>掉头走后排</span><div class="risk-track is-teal"><i style="width:${Math.min(100, (ev.riskAfter || 0) * 100)}%"></i></div><b class="mono">${f(ev.riskAfter, 3)}</b></div>
+    </div>
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>决策依据</th><th>结果</th></tr></thead>
+      <tbody>${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="mono">${v}</td></tr>`).join('')}</tbody></table></div>
+    <p class="assumption">${ev.accepted
+      ? `触发于 ${f(ev.at, 1)} s。机器人从当时位置沿原路倒退回导航节点后掉头，经最后一排冷通道回到目标；没有瞬移，路径与 3D 位姿同步更新。${routine ? `此后 ${f(routine.at, 1)} s 的前视检查未达阈值（${esc(routine.reason)}），未再重复掉头。` : ''}`
+      : `触发于 ${f(ev.at, 1)} s，但系统判定「${esc(ev.reason)}」，因此保持原路线——掉头不是无脑触发，必须同时满足人群暴露下降与 Risk 明显降低。`}</p>`;
+}
 /** 对照地图：底图共用门店布局；蓝虚线=原始基线（Strategy A），橙实线=当前选中，其余灰线。 */
 function drawStrategyMap() {
   const base = $('strategyMapBase'), layers = $('strategyRouteLayers');
@@ -1302,6 +1347,192 @@ function crowdAwarePath(from, currentPoints, target, vias) {
   return { points: best.points, via: best.via, after: best.after, afterLength: best.afterLength,
     before: pathExposure(currentPoints), beforeLength: span(currentPoints),
     heat: best.heat, heatBefore: mining ? pathHeat(currentPoints) : 0 };
+}
+
+/* ------------------------- NEXUS 2.2 智能掉头：前方成簇人群 → 改走最后一排空通道 ------------------------- */
+/**
+ * 为什么要单独做「掉头」，而不是只靠 A* 换一条相邻通道？
+ * 现场观察：高峰时前方一段路会突然挤进一群顾客，横着绕只会在同一条纵向通道里换边，
+ * 机器人还是被夹在人群中间；真正的解法是**掉头退回去，改走最后一排那条几乎没人的通道**。
+ * 因此这里把「掉头」做成一次可比较、可解释的决策：
+ *   1) 前视走廊 ≥3 人才触发（避免看到 1 个路人就大动作）；
+ *   2) 从身后真实导航节点出发，强制经过 y≈134 的后排通道再回到目标；
+ *   3) 对「继续直行」和「掉头后排」分别算 RandomForest Risk + 实时人群暴露；
+ *   4) 只有 Risk 明显下降、暴露下降、绕行距离可接受才采纳，否则记录拒绝原因。
+ * 所有数值都来自运行时真实模型与实时人群场，不写死「下降」结论。
+ */
+const U_TURN = Object.freeze({
+  // 掉头是大动作，用「一片人群」而不是「车道里一两个人」来触发：
+  // 前视扇形宽 4.5 单位（整条通道 + 两侧），26 单位（≈4.4 m）内 ≥3 人算成簇。
+  // 这比普通改道（车道半宽 2.1、2 人）更宽松地看见人群、更严格地要求人数。
+  aheadMin: 3,
+  look: 26,
+  halfWidth: 4.5,
+  horizon: 26,       // Risk 只比较前方固定 26 单位，避免「路越长风险越低」的假象
+  minRiskDrop: .10,  // ML 风险至少下降 10 个百分点
+  maxRatio: 1.85,    // 掉头最多比原路长 85%
+  maxAdd: 30,
+  cooldown: 7,       // 掉头是大动作，冷却比普通改道长
+  checkEvery: .8,    // 决策节流，避免每帧重算 A*
+});
+function pathLengthOf(points = []) {
+  return points.slice(1).reduce((n, p, i) => n + dist(points[i], p), 0);
+}
+/** 路径采样点到行人最近距离（用于构造 ML 的 robot_ped_distance 特征）。 */
+function pathNearestPed(points, snapshot) {
+  let minD = 6;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const steps = Math.max(1, Math.ceil(dist(a, b) / 8));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps, px = a[0] + (b[0] - a[0]) * t, py = a[1] + (b[1] - a[1]) * t;
+      for (const p of snapshot) { const d = Math.hypot(p.x - px, p.y - py); if (d < minD) minD = d; }
+    }
+  }
+  return minD;
+}
+/** 路径附近静态障碍数（ML 的 obstacle_count 特征，来自真实布局装置）。 */
+function pathObstacles(points = []) {
+  const solid = new Set(['wall', 'promo', 'checkout', 'kiosk', 'cooler']);
+  const seen = new Set(); let n = 0;
+  for (const p of points) for (const f of layoutFixtures) {
+    if (!solid.has(f.kind) || seen.has(f.label)) continue;
+    if (Math.hypot(f.x - p[0], f.y - p[1]) < 12) { seen.add(f.label); n++; }
+  }
+  return Math.min(8, n);
+}
+/**
+ * 一条路径的端到端 Risk：真实训练导出的 RandomForest（risk_rf）+ 实时人群场。
+ * 特征名与 scripts/build_runtime_models.py 训练时完全一致；模型未加载时降级为
+ * 由真实暴露推导的确定性密度分（绝不伪造模型结论）。
+ */
+/** 取一条路径的前 H 单位（不足则取整条）。Risk 必须按固定前视距离比较，
+ *  否则「掉头后绕了很远」会因为平均密度被摊薄而显得风险低，是错误的可解释性。 */
+function horizonPoints(points, h = U_TURN.horizon) {
+  if (points.length < 2) return points.slice();
+  const out = [[...points[0]]]; let acc = 0;
+  for (let i = 1; i < points.length && acc < h; i++) {
+    const a = points[i - 1], b = points[i], len = dist(a, b);
+    if (acc + len <= h) { out.push([...b]); acc += len; }
+    else {
+      const t = (h - acc) / (len || 1);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      break;
+    }
+  }
+  return out;
+}
+function pathRisk(points, snapshot) {
+  const horizon = horizonPoints(points);
+  const exposure = pathExposure(horizon);
+  const length = pathLengthOf(horizon);
+  const density = clamp(exposure / Math.max(4, length / 7), 0, 1);
+  const sample = {
+    pedestrian_density: density,
+    robot_ped_distance: clamp(pathNearestPed(points, snapshot), .2, 6),
+    relative_velocity: clamp(.4 + 1.6 * density, 0, 3),
+    ttc: clamp(8 - 6 * density, .3, 12),
+    corridor_width: 2.55,
+    obstacle_count: pathObstacles(points),
+  };
+  const ml = predictRisk(state.runtimeModels, sample);
+  const score = ml ? ml.score : density;
+  return {
+    score: +score.toFixed(3), exposure, density: +density.toFixed(3), model: !!ml,
+    label: ml?.level || (score > .66 ? '高风险' : score > .33 ? '中风险' : '低风险'),
+    sample,
+  };
+}
+
+/** 评估「掉头走最后一排」是否值得。只读状态、不改路线，供 UI 与测试直接调用。 */
+function evaluateUTurn(direction, snapshot, leg, at, { urge = false } = {}) {
+  const aheadNow = peopleAhead(state.displayPosition, direction, snapshot, U_TURN.look, U_TURN.halfWidth);
+  const verdict = (accepted, reason, extra = {}) => ({
+    accepted, reason, at: +(state.elapsed || 0).toFixed(1), ahead: aheadNow, ...extra,
+  });
+  if (!urge && aheadNow < U_TURN.aheadMin) return verdict(false, '前方人群未达掉头阈值');
+  refreshCrowdField(snapshot);
+  const current = remainingPath(leg, at);
+  const target = leg.points.at(-1);
+  const behind = prevNodeBehind(leg, at).point;
+  // 刚出发时身后就是段首节点，没有倒车余量。这里不是「不能掉头」，而是「再走两步就能掉」；
+  // 此时给掉头一个短暂优先窗口，避免普通改道抢先把人群绕开、导致 U-turn 永远没机会执行。
+  if (dist(behind, state.displayPosition) < 3) return verdict(false, '正在积累转身空间（暂缓普通改道）');
+  // 最后一排导航节点：y=134 的后墙通道（storeData.js 明确设计为高峰备用空通道）。
+  const backNodes = [...nodes.values()].map(n => n.point)
+    .filter(p => p[1] >= 128 && dist(p, behind) > 5 && dist(p, target) > 3);
+  if (!backNodes.length) return verdict(false, '未找到最后一排通道节点');
+  const backNode = backNodes.reduce((best, p) => {
+    const cost = dist(behind, p) * .35 + dist(p, target);
+    return !best || cost < best.cost ? { point: p, cost } : best;
+  }, null).point;
+
+  const previousLive = liveCrowdOn; liveCrowdOn = true;
+  const mode = state.miningEnabled ? 'mining' : 'full';
+  const head = planLeg(behind, backNode, state.scenario, state.slot, mode);
+  const tail = planLeg(backNode, target, state.scenario, state.slot, mode);
+  liveCrowdOn = previousLive;
+  if (!head || !tail) return verdict(false, '最后一排通道无法规划到目标');
+  const points = stitchPath(state.displayPosition, [...head.points, ...tail.points.slice(1)]);
+  // 必须真的是掉头：第一段与原行进方向夹角 >~70°，否则只是普通横绕，不该叫掉头。
+  const first = points.length > 1 ? [points[1][0] - points[0][0], points[1][1] - points[0][1]] : [0, 0];
+  const firstLen = Math.hypot(first[0], first[1]) || 1;
+  const alignment = (first[0] * direction[0] + first[1] * direction[1]) / firstLen;
+  if (alignment >= .35) return verdict(false, '候选路线没有真正掉头');
+
+  const beforeRisk = pathRisk(current, snapshot), afterRisk = pathRisk(points, snapshot);
+  const beforeLen = pathLengthOf(current), afterLen = pathLengthOf(points);
+  const riskDrop = beforeRisk.score - afterRisk.score;
+  const detail = {
+    ahead: aheadNow, uTurn: true, coldRow: points.some(p => p[1] >= 126),
+    via: backNode.map(n => +n.toFixed(1)), points,
+    lengthBefore: +beforeLen.toFixed(1), lengthAfter: +afterLen.toFixed(1),
+    exposureBefore: beforeRisk.exposure, exposureAfter: afterRisk.exposure,
+    riskBefore: beforeRisk.score, riskAfter: afterRisk.score, riskDrop: +riskDrop.toFixed(3),
+    riskLabelBefore: beforeRisk.label, riskLabelAfter: afterRisk.label,
+    model: beforeRisk.model && afterRisk.model,
+    heatBefore: +pathHeat(current).toFixed(3), heatAfter: +pathHeat(points).toFixed(3),
+  };
+  if (afterRisk.exposure >= beforeRisk.exposure - .5) return verdict(false, '掉头后人群暴露没有下降', detail);
+  if (riskDrop < U_TURN.minRiskDrop) return verdict(false, 'Risk 降幅不足阈值', detail);
+  if (afterLen > beforeLen * U_TURN.maxRatio + U_TURN.maxAdd) return verdict(false, '绕行距离过长', detail);
+  return verdict(true, '前方成簇人群 → 掉头走最后一排冷通道，Risk 显著下降', detail);
+}
+
+/** 在履约帧里执行掉头评估；采纳则立即换路，拒绝则把依据留给「路径优化」面板。 */
+function maybeUTurn(direction, snapshot) {
+  if (state.returnLeg || !state.plan || state.rerouteCooldown > 0) return false;
+  if (state.elapsed - (state.uturnLastCheck ?? -1e9) < U_TURN.checkEvery) return false;
+  state.uturnLastCheck = state.elapsed;
+  const leg = state.plan.legs[state.stage]; if (!leg || leg.points.length < 2) return false;
+  const urge = state.elapsed < (state.forceRerouteUntil ?? -1);
+  const outcome = evaluateUTurn(direction, snapshot, leg, state.legDistance, { urge });
+  state.lastUTurnEval = outcome;
+  if (!outcome.accepted) {
+    state.uTurnPendingUntil = /转身空间/.test(outcome.reason) ? state.elapsed + 2.5 : -1e9;
+    renderUTurnPanel(); return false;
+  }
+  state.uTurnPendingUntil = -1e9;
+  state.lastUTurnAccepted = outcome;
+
+  const before = leg.length;
+  state.legDistance = 0; state.lateralVec = [0, 0]; state.backupVec = [0, 0];
+  const length = applyReroute(leg, outcome.points);
+  if (state.plan) state.plan.length = Math.max(1, state.plan.length - before + length);
+  state.rerouteCooldown = U_TURN.cooldown;
+  state.reroutes++;
+  state.lastReroute = {
+    at: state.elapsed, kind: 'uturn', ahead: outcome.ahead, uTurn: true, coldRow: outcome.coldRow,
+    exposureBefore: outcome.exposureBefore, exposureAfter: outcome.exposureAfter,
+    riskBefore: outcome.riskBefore, riskAfter: outcome.riskAfter, riskDrop: outcome.riskDrop,
+    lengthBefore: outcome.lengthBefore, lengthAfter: +length.toFixed(1),
+    heatBefore: outcome.heatBefore, heatAfter: outcome.heatAfter,
+    position: [...state.displayPosition], mining: !!state.miningEnabled,
+  };
+  drawRoutes(); renderAll();
+  log(`智能掉头：前方 ${outcome.ahead} 位顾客成簇挡路。继续直行 Risk ${outcome.riskBefore.toFixed(2)}（${outcome.riskLabelBefore}），掉头经最后一排通道 Risk ${outcome.riskAfter.toFixed(2)}（${outcome.riskLabelAfter}），下降 ${(outcome.riskDrop * 100).toFixed(0)}%；路径 ${before.toFixed(0)} → ${length.toFixed(0)} 单位，没有瞬移。`, 'warn');
+  status('智能掉头', `前方 ${outcome.ahead} 人挡路，机器人自行掉头改走人少的最后一排通道，Risk ${outcome.riskBefore.toFixed(2)} → ${outcome.riskAfter.toFixed(2)}。`, 'AVOIDING');
+  return true;
 }
 
 /**
@@ -2132,7 +2363,7 @@ function renderAll() {
   renderLiveOps(); renderQueue(); renderOrderState(); renderInventory(); renderProgress();
   renderTimeline(); renderRobotCenter(); renderRouteView(); renderSimulationView(); renderPresentationHud();
   renderOverviewPreview(); renderPedestrianPanel(); renderHistory(); renderRestocks();
-  renderStrategyPanel(); renderChallengePanel();
+  renderStrategyPanel(); renderChallengePanel(); renderUTurnPanel();
   renderIntelligenceSummary(); renderDecisionLog(); renderInteractionDemo();
   $('normalBtn')?.setAttribute('aria-pressed', String(state.scenario === 'normal'));
   $('peakBtn')?.setAttribute('aria-pressed', String(state.scenario === 'peak'));
@@ -2335,6 +2566,7 @@ function resetPlayback(preserveSafety = false) {
   state.history = [[...waitSlot]]; state.detected = new Set(); state.traveled = 0;
   state.returnLeg = null; state.returnReason = '';
   state.rerouteCooldown = 0; state.lastReroute = null;
+  state.lastUTurnEval = null; state.lastUTurnAccepted = null; state.uturnLastCheck = -1e9; state.uTurnPendingUntil = -1e9; state.backupVec = [0, 0];
   state.behavior = null; state.lastCollisionAt = -1;
   scene3d?.setPayStation?.(false);
   state.robotBrain?.reset();
@@ -2669,26 +2901,42 @@ function toggleSuddenPerson() {
  */
 function plantCrowd(count = 4) {
   const ped = state.pedSystem; if (!ped) return 0;
-  const dir = currentDirection(), side = [-dir[1], dir[0]], base = state.displayPosition;
-  let placed = 0;
-  for (let i = 0; i < count; i++) {
-    // 沿车道排成一列（横向只错开半米，避免整整齐齐像摆拍），
-    // 起点放在 1.8 m 外——太近顾客会按「给机器人让路」的规则立刻散开，
-    // 太远又超出前视距离，都不利于观察「改道」这个决策本身。
-    const along = 10.5 + i * 2.2;
-    const lateral = (i % 2 ? 1 : -1) * .55;
-    const person = ped.spawnOne(base, { type: i % 2 ? 'cart' : 'regular' });
-    if (!person) continue;
-    const at = [base[0] + dir[0] * along + side[0] * lateral, base[1] + dir[1] * along + side[1] * lateral];
-    // 优先沿车道方向找一个真实可站的位置，实在不行才交给 safePoint 兜底。
-    let spot = ped.isFree(at, person.radius) ? at : null;
-    if (!spot) for (const back of [2.5, -2.5, 5, -5, 7.5]) {
-      const cand = [at[0] + dir[0] * back, at[1] + dir[1] * back];
-      if (ped.isFree(cand, person.radius)) { spot = cand; break; }
+  const dir = currentDirection(), base = state.displayPosition;
+  const leg = state.plan?.legs[state.stage];
+  const baseAt = state.legDistance || 0;
+  const legEnd = leg ? leg.length : 1e9;
+  // 先「找一段真正站得下人的通道」，再放人。
+  // 不能沿直线航向硬外推：充电桩前的促销岛会让候选点全部被 isFree 拒绝，
+  // 人群被 safePoint 甩到十几单位之外，前视里只剩 2 人，掉头演练就永远触发不了。
+  // 沿 A* 路径扫描若干起点，按可站位数择优（相同数量时取离机器人更近的）。
+  let best = { spots: [], start: 0 };
+  // 从 16 单位起扫：跳过段首那段很短的「出站转向」——那里的局部航向和机器人
+  // 当前航向不一致，人即使站满也会落在前视走廊之外（实测触发不了掉头）。
+  for (let start = 16; start <= 56; start += 4) {
+    const spots = [];
+    for (let i = 0; i < count; i++) {
+      const at = baseAt + start + Math.floor(i / 2) * 3.6;
+      if (at > legEnd) break;
+      const anchor = leg ? positionOnLeg(leg, at) : [base[0] + dir[0] * at, base[1] + dir[1] * at];
+      const localDir = leg ? legDirection(leg, at) : dir;
+      const side = [-localDir[1], localDir[0]];
+      const lateral = (i % 2 ? 1 : -1) * 2.0;
+      let spot = null;
+      for (const lat of [lateral, lateral * .5, -lateral * .5, 0]) {
+        const p = [anchor[0] + side[0] * lat, anchor[1] + side[1] * lat];
+        if (ped.isFree(p, .26)) { spot = p; break; }
+      }
+      if (spot) spots.push(spot);
     }
-    person.position = [...(spot || ped.safePoint(at, person.radius))];
+    if (spots.length > best.spots.length || (spots.length === best.spots.length && spots.length && start < best.start)) best = { spots, start };
+  }
+  let placed = 0;
+  for (const spot of best.spots) {
+    const person = ped.spawnOne(null, { type: 'regular', spawnAt: spot });
+    if (!person) continue;
+    person.position = [...spot];
     person.goal = null; person.route = []; person.routeIndex = 0;
-    person.state = 'BROWSING'; person.timer = 20 + i * 1.6;
+    person.state = 'BROWSING'; person.timer = 26 + placed * 1.6;
     person.faceHeading = Math.atan2(dir[1], dir[0]) + Math.PI;
     person.velocity = [0, 0]; person.planted = true;
     ped.people.push(person); placed++;
@@ -2825,15 +3073,15 @@ function advanceWithHeading(leg, at, step, speedFactor, label = '') {
     state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
     return { at, point: positionOnLeg(leg, at), moved: false };
   }
-  // NEXUS 2.1：正常行驶用 Pure Pursuit 跟踪前视点（而非逐节点对准），拐角自然顺滑、不左右摆。
-  // 角速度/角加速度上限由安全层约束； maneuvers（倒车/掉头）仍沿用上面的差速底盘逻辑。
-  const pp = purePursuit(state.position, state.heading, leg.points, at, {
-    lookahead: 12, maxRate: 1.5, maxAccel: 2.6, prevRate: state.yawRate || 0, dt: step,
-  });
-  state.yawRate = pp.rate;
-  state.heading = pp.heading;
-  at = clamp(at + base, 0, leg.length);
-  return { at, point: positionOnLeg(leg, at), moved: Math.abs(base) > 1e-6 };
+  // NEXUS 2.2：正常行驶回到参考版本那种「看得懂」的规则——按当前线段方向匀速限速转向，
+  // 不做 Pure Pursuit 前视跟踪。Pure Pursuit 会把直角拆成连续小角修正，课堂上看起来
+  // 路线歪歪扭扭；角速度限速版在直道上 heading 完全不动，只在节点处转一次，路线是直的。
+  // 安全层仍保留扫掠碰撞校验（穿模防护）与 Human-in-loop 调速，只是不再改车头朝向。
+  const prevHeading = state.heading;
+  state.heading += clamp(err, -MOTION.spinRate * step, MOTION.spinRate * step);
+  state.yawRate = step > 0 ? angleWrap(state.heading - prevHeading) / step : 0;
+  at = Math.min(leg.length, at + base);
+  return { at, point: positionOnLeg(leg, at), moved: base > 1e-6 };
 }
 function publishPedestrians() {
   const list = state.pedSystem?.snapshot() || [];
@@ -2905,7 +3153,11 @@ function stepSimulation(dt) {
     state.forceRerouteUntil = state.elapsed + 4;
     if (state.running) log('紧急停车反复累积：机器人放弃当前走廊，按实时人流改走人少的通道。', 'warn');
   }
-  maybeRerouteDelivery(direction, snapshot, result);
+  // NEXUS 2.2：先看是否值得「掉头走空通道」，再走普通换道改道；两者共用冷却，不会同帧重复换路。
+  // 掉头需要倒车余量；刚出发的 2.5 s 内暂缓普通改道，否则普通绕道会抢先把人群绕掉，
+  // 机器人看起来就永远不会「当场掉头」（实测复现过）。
+  maybeUTurn(direction, snapshot);
+  if (state.elapsed >= (state.uTurnPendingUntil ?? -1e9)) maybeRerouteDelivery(direction, snapshot, result);
   if (result.state === 'YIELD' || result.state === 'WAIT' || result.state === 'EMERGENCY_STOP') {
     status(behaviorLabels[result.state], result.reason, result.state === 'EMERGENCY_STOP' ? 'FAULT' : 'SAFE STOP');
   } else if (['SLOW_DOWN', 'AVOIDANCE', 'RESUME'].includes(result.state)) {
@@ -2968,10 +3220,10 @@ function stepSimulation(dt) {
   const stopStates = ['YIELD', 'WAIT', 'EMERGENCY_STOP', 'REPLANNING'].includes(result.state);
   const perpendicular = [-direction[1], direction[0]];   // 行进方向右侧（地图 y 向下坐标系）
   // 2.1：主动绕行由局部规划器给出横向目标（决策结果，不是被行人挤走）；其余保持靠右车道。
-  let targetShift = stopStates ? 0 : LANE_KEEP;
-  if (!stopStates && (decision.action === 'LEFT' || decision.action === 'RIGHT') && Number.isFinite(decision.lateral)) {
-    targetShift = clamp(decision.lateral, -2.4, 2.4);
-  }
+  // NEXUS 2.2：侧向只由「靠右行驶」决定，局部规划器的 LEFT/RIGHT 只作为减速/改道请求，
+  // 不再直接平移车体——平移会让机器人看起来被行人挤离航道、路线歪斜。
+  // 真正的「换路」由全局改道/智能掉头完成，车头始终对准当前线段，路线是直的。
+  const targetShift = stopStates ? 0 : LANE_KEEP;
   const targetVec = [perpendicular[0] * targetShift, perpendicular[1] * targetShift];
   const ease = Math.min(1, step * 2.2);
   state.lateralVec[0] += (targetVec[0] - state.lateralVec[0]) * ease;
@@ -3227,6 +3479,35 @@ function bindEvents() {
     NEXUS_UI?.showView('supermarket');
     renderChallengePanel();
   });
+  // NEXUS 2.2 智能掉头：按钮触发真实人群注入 + 真实决策评估，再进入 3D 看执行。
+  $('uturnCrowdBtn')?.addEventListener('click', () => {
+    // 先让机器人驶出充电桩前的短转向段，进入纵向主通道再放人群——
+    // 否则人群会落在促销岛另一侧，前视走廊里看不到，演练就没有效果。
+    if (!state.running && (state.order || state.queue.length)) playPause();
+    if (state.running && state.elapsed < 4) window.__NEXUS?.advance?.(4);
+    const placed = plantCrowd(7);
+    state.lastUTurnEval = null; state.uturnLastCheck = -1e9; state.rerouteCooldown = 0;
+    log(`智能掉头演练：已在前方主通道放置 ${placed} 位停留顾客，等待前视检测与 Risk 对比。`, 'warn');
+    renderUTurnPanel();
+  });
+  $('uturnGoBtn')?.addEventListener('click', () => {
+    if (!state.running && (state.order || state.queue.length)) playPause();
+    NEXUS_UI?.showView('supermarket');
+  });
+  $('uturnDemoBtn')?.addEventListener('click', () => {
+    if (!state.order) {
+      demoOrder();
+      if (!state.cart.size) { log('智能掉头演示：真实商品目录仍在加载，请稍后重试。', 'danger'); return; }
+      submitOrder();
+    }
+    if (!state.running) playPause();
+    if (state.running && state.elapsed < 4) window.__NEXUS?.advance?.(4);
+    const placed = plantCrowd(7);
+    state.lastUTurnEval = null; state.uturnLastCheck = -1e9; state.rerouteCooldown = 0;
+    NEXUS_UI?.showView('supermarket');
+    log(`智能掉头一键演示：前方主通道 ${placed} 位顾客挡路，3D 中观察机器人比较直行 / 掉头路线的 Risk 后自行选路。`, 'warn');
+    renderUTurnPanel();
+  });
   // NEXUS 2.1 人机协同智能面板
   document.querySelectorAll('[data-ai-scenario]').forEach(button =>
     button.addEventListener('click', () => applyAiScenario(button.dataset.aiScenario)));
@@ -3243,7 +3524,11 @@ function bindEvents() {
   $('submitOrderBtn').addEventListener('click', submitOrder);
   $('scenarioNormal').addEventListener('click', () => { state.scenario = 'normal'; updateScenario(); });
   $('scenarioPeak').addEventListener('click', () => { state.scenario = 'peak'; updateScenario(); });
-  $('timeSlot').addEventListener('change', () => { state.slot = $('timeSlot').value; renderCrowd(); updateScenario(); });
+  $('timeSlot').addEventListener('change', () => {
+    state.slot = $('timeSlot').value;
+    state.pedSystem?.configure({ slot: state.slot });   // 行人货区选择随数据时段一起变化
+    renderCrowd(); updateScenario();
+  });
   $('playBtn').addEventListener('click', playPause);
   $('resetBtn').addEventListener('click', () => {
     resetPlayback(); log('当前订单已重新开始，机器人已返回入口。');
@@ -3558,6 +3843,31 @@ window.__NEXUS = Object.freeze({
         points: state.returnLeg.points.map(p => p.map(n => +n.toFixed(1))) } : null,
     };
   },
+  // NEXUS 2.2 智能掉头测试钩子：只读评估 + 真实人群注入 + 行人货区权重。
+  uturn: {
+    config: () => ({ ...U_TURN }),
+    last: () => state.lastUTurnEval ? { ...state.lastUTurnEval, points: undefined } : null,
+    accepted: () => state.lastUTurnAccepted ? { ...state.lastUTurnAccepted, points: undefined } : null,
+    pathRisk: points => {
+      const risk = pathRisk(points, state.pedSystem?.snapshot() || []);
+      return { score: risk.score, exposure: risk.exposure, label: risk.label, model: risk.model };
+    },
+    plant: (n = 6) => plantCrowd(n),
+    evaluateNow: () => {
+      const leg = state.plan?.legs[state.stage]; if (!leg) return null;
+      const snapshot = state.pedSystem?.snapshot() || [];
+      refreshCrowdField(snapshot);
+      const outcome = evaluateUTurn(currentDirection(), snapshot, leg, state.legDistance, { urge: true });
+      return { ...outcome, points: undefined };
+    },
+    sectionWeights: () => state.pedSystem?.sectionWeights() || null,
+    lastRowShare: () => {
+      const w = state.pedSystem?.sectionWeights(); if (!w) return null;
+      const total = w.reduce((a, b) => a + b, 0);
+      const row2Total = w.reduce((n, x, i) => n + (shelves[i]?.row === 2 ? x : 0), 0);
+      return +(row2Total / total).toFixed(4);
+    },
+  },
   // V3.0 测试钩子：订单统计口径、真实需求热度、冷区列表、任意路径的平均热度。
   orderStats,
   zoneHeat: () => [...zoneHeat].map(([id, heat]) => ({ id, heat: +heat.toFixed(3), frequency: zoneFrequency.get(id) || 0 })),
@@ -3614,7 +3924,7 @@ applyBrandAssets(document);
 scene3d = createStoreScene($('scene3d'), $('storeMap'));
 scene3d.setFleetCount(state.fleet.length);
 state.robotBrain = new RobotBehavior();
-state.pedSystem = new PedestrianSystem({ nodes });
+state.pedSystem = new PedestrianSystem({ nodes, slot: state.slot });
 scene3d.setPickHandler(info => {
   const node = $('sceneInspect'); if (!node) return;
   if (info.kind === 'robot') node.innerHTML = `<b>AMR-01 · 自主移动机器人</b>状态：${state.behavior ? behaviorLabels[state.behavior.state] : '待机'}<br>速度：${(state.behavior?.targetSpeed || 0).toFixed(2)} m/s<br>车身：${PHYSICS.robot.width} × ${PHYSICS.robot.length} m（仿真）`;

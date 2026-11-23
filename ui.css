@@ -431,3 +431,11 @@ body.presentation .presentation-exit { display: inline-flex; }
 /* NEXUS 2.0 lab hero uses h3 (research-hero CSS only styled h2) */
 .research-hero h3 { color: #fff; font-size: 22px; margin: 4px 0 8px; line-height: 1.25; }
 .research-dashboard .research-badge { flex: none; }
+
+/* NEXUS 2.2 智能掉头：直行 / 掉头 Risk 直观对比条 */
+.risk-compare { display: grid; gap: 8px; margin: 4px 0 12px; }
+.risk-compare-row { display: grid; grid-template-columns: 96px minmax(0, 1fr) 54px; gap: 10px; align-items: center; font-size: 11px; color: var(--muted); }
+.risk-compare-row b { color: var(--text); font-size: 11px; }
+.risk-track { height: 9px; border-radius: 6px; background: #edf1ef; overflow: hidden; border: 1px solid var(--border); }
+.risk-track i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, #E8A34A, #d3725f); }
+.risk-track.is-teal i { background: linear-gradient(90deg, #7fd1c3, #20A995); }

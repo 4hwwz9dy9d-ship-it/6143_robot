@@ -94,6 +94,12 @@ python scripts/build_runtime_models.py   # → lab/runtime-models.json (RF risk 
 
 `runtimeML.js` loads that JSON and executes the trained models in-browser (`predictRisk` / `predictTravelTime` / `predictTrafficCluster` / `anomalyScore`); `safety.js` provides unified static collision bodies, swept底盘 detection, LOS simplification, collision-aware smoothing, Pure Pursuit and the five-option `LocalPlanner`. These feed the new **人机协同智能** view (`view-intelligence`): 10 dynamic scenarios, explainable decision log, live HUD and dynamic-replanning benchmark. All models are trained on seeded **simulated** data (documented in the JSON `disclaimers`) — Instacart data is used only for the real catalog, co-purchase rules and demand heat. PHASE 10 A–J acceptance: **11/11 PASS**; see `DEVELOPMENT_REPORT_2.1.md` and `TEST_REPORT.md` §33.
 
+### NEXUS RETAIL 2.2 — smart U-turn and clear 3D rules
+
+The 3D controller deliberately uses the reference version's simple differential-drive rule again (straight on a segment, one limited turn at a node, `reverse → spin` for a U-turn). Pure Pursuit remains available in `safety.js` but is **not** used for normal driving; `LocalPlanner` no longer shifts the chassis sideways, only requests slowdown / replanning. That keeps the robot on a visibly straight lane and stops pedestrians from pushing it off course. Static swept-collision protection is unchanged.
+
+On the **路径优化** page, the *SMART U-TURN* card demonstrates the new decision: when a cluster (≥3 people within 26 units / 4.5 half-width) is detected ahead, the robot compares RandomForest Risk over a fixed 26-unit horizon for "keep going" vs "turn around via the quiet y≈134 back aisle", and only turns when exposure drops and Risk improves materially. Pedestrian destination sampling is now weighted by `crowdSamples` and by row, so the last aisle really is quieter (visit weight share 0.1504 vs uniform 0.3333). Verified: Risk 0.957 → 0.132 (↓82.5%), 9/9 new checks plus all previous suites green; see `DEVELOPMENT_REPORT_2.2.md` and `TEST_REPORT.md` §34.
+
 ## Local preview
 
 ```bash
