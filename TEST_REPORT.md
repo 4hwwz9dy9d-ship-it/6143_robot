@@ -1159,3 +1159,48 @@ Apriori（真实 support/confidence/lift，131,209 个训练购物篮，28,052 �
   （全程距车 ≥9.4 单位）。
 - 3600 s 高峰审计 ×5：4/4 订单完成、行人卡 0-2 次（瞬时自恢复）、死滞 0。
 - 回归：V3.7 7/7、V2.5 9/9、V3.0 11/11、V2.6 10/10、三策略 6/6。
+
+---
+
+## 32. NEXUS RETAIL 2.0 — 数据挖掘实验室全站验收
+
+### 32.1 新增离线脚本与版本化数据
+
+| 脚本 | 输出 JSON | 真实/仿真 | 关键真实指标 |
+|---|---|---|---|
+| `scripts/build_data_profile.py` | `lab/data-profile.json` | 3 真实 + 1 仿真 | 49688 商品 / 3421083 订单 / IQR 异常计数 / z-score 统计量 |
+| `scripts/build_association_analysis.py` | `lab/association-analysis.json` | 真实购物篮 | 12 组参数扫描，最大 4183 条规则，最大 Lift 97.19 |
+| `scripts/build_recommendation_analysis.py` | `lab/recommendation-analysis.json` | 真实 | CF P@5 0.0639 / R@5 0.1119，热门基线对比 |
+| `scripts/build_clustering_analysis.py` | `lab/clustering-analysis.json` | 商品真实 / 客流仿真 | K=2..8 inertia+silhouette，两个独立实验 |
+| `scripts/build_congestion_classifier.py` | `lab/congestion-classifier.json` | 仿真标签 | DT/RF Accuracy、Precision、Recall、F1、混淆矩阵 |
+| `scripts/build_travel_regression.py` | `lab/travel-regression.json` | 仿真 | LR/RF MAE、RMSE、R² + 独立测试对比点 |
+| `scripts/build_traffic_forecast.py` | `lab/traffic-forecast.json` | 仿真 | MA(3)/ES/Linear MAE、RMSE、MAPE，末 6h 留出 |
+| `scripts/build_anomaly_detection.py` | `lab/anomaly-detection.json` | 仿真 | IsolationForest 4 领域各自独立，异常记录含原因 |
+
+所有 JSON 带 `version:1.0.0`、`seed:6143`、真实 `seconds`；前端 `miningLab.js` 逐文件容错加载，单点失败不影响其它面板。
+
+### 32.2 全站冒烟测试 `cdp-nexus20-smoke.mjs` — 35/35 PASS
+
+- 11 份数据文件加载状态；19 个视图逐一打开并核对标题与显示状态
+- 10 个新面板实质内容（字符数 > 400、无 loading/空占位）
+- 聚类 K 值选择器、关联参数选择器交互重绘
+- 数据真实性：复购 AUC 0.7617、异常 4 领域、预测 3 方法、聚类 7 个 K 值
+- 运行时异常 0、console.error 0
+
+### 32.3 原版回归复测
+
+| 套件 | 结果 |
+|---|---|
+| `cdp-v35-strategy-probe.mjs` | 6/6 PASS（三策略共享 Held–Karp，3D 真实执行，动态重规划 2 次） |
+| `cdp-v30-tests.mjs` | 11/11 PASS（订单生命周期、持久化、风险守门、人群自主改道） |
+| `cdp-v25-tests.mjs` | 9/9 PASS（返航、零侧移、行人绕行、高峰零碰撞） |
+| `cdp-v26-tests.mjs` | 10/10 PASS（收银 FIFO、服务时长、充电闭环） |
+| `cdp-v2-tests.mjs` | 全 PASS（订单/补货/持久化） |
+
+### 32.4 Bug 修复
+
+1. `miningLab.js::table()` — 接受预拼接字符串行，修复 9 个面板空白
+2. `app.js::renderChallengePanel()` — 本地定义 `num`/`esc`，消除 ReferenceError
+3. `data-profile` schema — 数据集缺 `key` 时前端 fallback 到 label/dataset-N
+4. `.research-hero h3` 白色文字，修复深色背景上的低对比度
+5. `runStrategyComparison()` 末尾刷新评估实验室，三策略真实指标即时汇入

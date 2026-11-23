@@ -13,6 +13,14 @@
     simulation: '仿真中心',
     research: '研究方法',
     ml: '监督学习',
+    'data-explorer': '数据探索',
+    association: '关联规则',
+    recommendation: '推荐系统',
+    clustering: '聚类分析',
+    regression: '回归分析',
+    forecast: '客流预测',
+    anomaly: '异常检测',
+    'evaluation-lab': '评估实验室',
   };
   const panels = new Map(Object.keys(titles).map(name => [name, document.getElementById(`view-${name}`)]));
   const navButtons = [...document.querySelectorAll('[data-view]')];

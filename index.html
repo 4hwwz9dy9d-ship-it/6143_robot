@@ -23,17 +23,29 @@
     <div class="navigation-brand"><img class="brand-mark-img" data-brand="logoMark" alt="超市机器人 INT6143 第三组"><span class="brand-title">NEXUS RETAIL<small>自主零售智能平台</small></span></div>
     <p class="navigation-label">工作区 / WORKSPACE</p>
     <nav class="view-navigation" aria-label="主导航">
+      <p class="nav-group">A · OPERATIONS 运营</p>
       <button type="button" data-view="overview" class="is-active"><span class="nav-icon">◈</span><span>总览<small>OVERVIEW</small></span></button>
       <button type="button" data-view="order"><span class="nav-icon">▦</span><span>订单管理<small>ORDER MANAGEMENT</small></span></button>
       <button type="button" data-view="history"><span class="nav-icon">▤</span><span>订单历史<small>ORDER HISTORY</small></span></button>
       <button type="button" data-view="inventory"><span class="nav-icon">▤</span><span>库存管理<small>INVENTORY</small></span></button>
       <button type="button" data-view="analytics"><span class="nav-icon">◫</span><span>零售分析<small>ANALYTICS</small></span></button>
+      <p class="nav-group">B · DATA MINING 数据挖掘</p>
+      <button type="button" data-view="data-explorer"><span class="nav-icon">◧</span><span>数据探索<small>DATA EXPLORER</small></span></button>
+      <button type="button" data-view="association"><span class="nav-icon">⋯</span><span>关联规则<small>ASSOCIATION</small></span></button>
+      <button type="button" data-view="recommendation"><span class="nav-icon">✧</span><span>推荐系统<small>RECOMMENDATION</small></span></button>
+      <button type="button" data-view="clustering"><span class="nav-icon">◍</span><span>聚类分析<small>CLUSTERING</small></span></button>
+      <button type="button" data-view="ml"><span class="nav-icon">✦</span><span>监督学习<small>SUPERVISED</small></span></button>
+      <button type="button" data-view="regression"><span class="nav-icon">∕</span><span>回归分析<small>REGRESSION</small></span></button>
+      <button type="button" data-view="forecast"><span class="nav-icon">⌁</span><span>客流预测<small>FORECAST</small></span></button>
+      <button type="button" data-view="anomaly"><span class="nav-icon">⚠</span><span>异常检测<small>ANOMALY</small></span></button>
+      <p class="nav-group">C · INTELLIGENT ROBOTICS 智能机器人</p>
       <button type="button" data-view="supermarket"><span class="nav-icon">◉</span><span>3D 超市<small>3D SUPERMARKET</small></span></button>
       <button type="button" data-view="robot"><span class="nav-icon">◎</span><span>机器人控制<small>ROBOT CONTROL</small></span></button>
       <button type="button" data-view="route"><span class="nav-icon">◇</span><span>路径优化<small>ROUTE OPTIMIZATION</small></span></button>
       <button type="button" data-view="simulation"><span class="nav-icon">⚡</span><span>仿真中心<small>SIMULATION CENTER</small></span></button>
+      <p class="nav-group">D · RESEARCH LAB 研究实验室</p>
+      <button type="button" data-view="evaluation-lab"><span class="nav-icon">✓</span><span>评估实验室<small>EVALUATION LAB</small></span></button>
       <button type="button" data-view="research"><span class="nav-icon">◈</span><span>研究方法<small>RESEARCH</small></span></button>
-      <button type="button" data-view="ml"><span class="nav-icon">✦</span><span>监督学习<small>SUPERVISED LEARNING</small></span></button>
     </nav>
     <div class="navigation-foot"><b>仿真环境 / SIMULATION ENVIRONMENT</b>规则驱动的教学模型。未接入真实视觉识别、实时库存或实体机器人。</div>
   </aside>
@@ -488,6 +500,18 @@
         </div>
         <p id="strategyNote" class="assumption" style="margin-top:10px">Held–Karp 与 A* 均为确定性算法，同一订单、同一时段结果可复现（无需随机种子）。</p>
       </div>
+      <!-- NEXUS 2.0：Dynamic Obstacle Challenge——触发拥堵/横穿，C 策略从当前位置重规划，保留原路径对照 -->
+      <div class="card card-pad" style="margin-top:16px">
+        <div class="card-head"><div><p class="section-kicker">DYNAMIC OBSTACLE CHALLENGE</p><h3>动态障碍挑战 · 运行时重规划</h3>
+          <p>在机器人执行途中触发拥堵或行人横穿；系统用实时人群场重新预测通行时间与拥堵风险，从当前位置重算路线（不瞬移），并保留原始路径作为对照。</p></div></div>
+        <div class="btn-row" style="margin:10px 0">
+          <button id="challengeCrowdBtn" class="btn btn-secondary btn-sm" type="button">① 触发人群堵路</button>
+          <button id="challengeCrossBtn" class="btn btn-secondary btn-sm" type="button">① 触发行人横穿</button>
+          <button id="challengeGoBtn" class="btn btn-teal btn-sm" type="button">② 开始执行（3D）</button>
+          <span id="challengeStatus" class="pill">等待订单</span>
+        </div>
+        <div id="challengePanel"><p class="empty">提交订单并开始执行后，触发障碍即可看到重规划前后指标。</p></div>
+      </div>
       <!-- V2.4 实验数据驱动的路径优化：Apriori 共购规则真实参与 Held–Karp 访问顺序决策 -->
       <div class="card card-pad" style="margin-top:16px">
         <div class="card-head"><div><p class="section-kicker">EXPERIMENT-DRIVEN ROUTING</p><h3>关联实验驱动的路径优化</h3><p id="miningNote">基于 Apriori 真实购物篮规则：让实验证实常被一起购买的货区在访问顺序上相邻，减少折返。</p></div><button id="miningToggleBtn" class="btn btn-teal btn-sm" type="button">启用实验驱动规划</button></div>
@@ -546,12 +570,50 @@
           <div id="pickupFeasibility" class="assumption"></div>
         </div>
       </div>
+      <div id="dataSourcesPanel"></div>
     </section>
 
     <!-- ============================ 监督学习 ============================ -->
     <section class="view-panel" id="view-ml" aria-label="监督学习" hidden>
       <div class="section-title"><div><p class="section-kicker">SUPERVISED LEARNING &amp; MODEL EVALUATION</p><h2>复购预测与模型评估体系</h2><p>研究问题：能否基于历史购买行为与商品特征，预测用户是否会复购某件商品？全部指标由真实模型在真实数据上运行得到，未预设结果。</p></div><span class="badge badge--live">真实模型 · 真实指标</span></div>
       <div id="mlDashboard"></div>
+      <div id="congestionDashboard"></div>
+    </section>
+
+    <!-- ======================= B · DATA MINING 新增页面 ======================= -->
+    <section class="view-panel" id="view-data-explorer" aria-label="数据探索" hidden>
+      <div class="section-title"><div><p class="section-kicker">DATA EXPLORER</p><h2>数据探索中心</h2><p>字段类型、缺失与重复、异常值、分布、清洗、特征工程、标准化与数据集版本——真实数据与仿真数据分开标注。</p></div><span class="badge badge--live">版本化数据</span></div>
+      <div id="dataExplorerDashboard" class="research-dashboard"><p class="muted">正在加载离线数据审计结果……</p></div>
+    </section>
+    <section class="view-panel" id="view-association" aria-label="关联规则" hidden>
+      <div class="section-title"><div><p class="section-kicker">ASSOCIATION MINING</p><h2>关联规则挖掘</h2><p>真实购物篮上的 Apriori：可调最小支持度与置信度、Top 20 规则、关联网络、商品组合与参数敏感性。</p></div><span class="badge badge--live">真实数据</span></div>
+      <div id="associationDashboard" class="research-dashboard"><p class="muted">正在加载关联规则实验……</p></div>
+    </section>
+    <section class="view-panel" id="view-recommendation" aria-label="推荐系统" hidden>
+      <div class="section-title"><div><p class="section-kicker">RECOMMENDATION</p><h2>推荐系统</h2><p>Item-based Collaborative Filtering：交互矩阵、商品相似度、Top-N 推荐与解释，与热门商品基线真实对比。</p></div><span class="badge badge--live">真实数据</span></div>
+      <div id="recommendationDashboard" class="research-dashboard"><p class="muted">正在加载推荐实验……</p></div>
+    </section>
+    <section class="view-panel" id="view-clustering" aria-label="聚类分析" hidden>
+      <div class="section-title"><div><p class="section-kicker">CLUSTERING</p><h2>聚类分析</h2><p>两类独立实验：商品聚类（真实属性）与客流聚类（仿真通道状态）。分别训练、分别用肘部法与轮廓系数评价。</p></div><span class="badge badge--live">K-Means</span></div>
+      <div id="clusteringDashboard" class="research-dashboard"><p class="muted">正在加载聚类实验……</p></div>
+    </section>
+    <section class="view-panel" id="view-regression" aria-label="回归分析" hidden>
+      <div class="section-title"><div><p class="section-kicker">REGRESSION ANALYSIS</p><h2>通道通行时间回归</h2><p>长度、密度、障碍、占用率、行人速度 → 通行时间。线性回归与随机森林在独立测试集上以 MAE / RMSE / R² 评价。</p></div><span class="badge badge--live">独立测试集</span></div>
+      <div id="regressionDashboard" class="research-dashboard"><p class="muted">正在加载回归实验……</p></div>
+    </section>
+    <section class="view-panel" id="view-forecast" aria-label="客流预测" hidden>
+      <div class="section-title"><div><p class="section-kicker">TRAFFIC FORECAST</p><h2>客流时间序列预测</h2><p>仿真小时客流：高峰低谷识别、移动平均、指数平滑、时间特征线性回归，留出末 6 小时计算 MAE / RMSE / MAPE。</p></div><span class="badge">仿真数据</span></div>
+      <div id="forecastDashboard" class="research-dashboard"><p class="muted">正在加载预测实验……</p></div>
+    </section>
+    <section class="view-panel" id="view-anomaly" aria-label="异常检测" hidden>
+      <div class="section-title"><div><p class="section-kicker">ANOMALY DETECTION</p><h2>异常检测</h2><p>Isolation Forest：异常客流、异常通行时间、机器人运行异常、异常库存变化——四个领域各自独立检测并记录原因。</p></div><span class="badge">仿真数据</span></div>
+      <div id="anomalyDashboard" class="research-dashboard"><p class="muted">正在加载异常检测实验……</p></div>
+    </section>
+
+    <!-- ======================= D · RESEARCH LAB 新增页面 ======================= -->
+    <section class="view-panel" id="view-evaluation-lab" aria-label="评估实验室" hidden>
+      <div class="section-title"><div><p class="section-kicker">EVALUATION LAB</p><h2>综合实验评价</h2><p>统一登记所有实验的版本、算法、参数、随机种子、划分、指标与耗时；可筛选查看历史结果。三策略对照在路径优化页运行后即时汇入。</p></div><span class="badge badge--live">实验登记簿</span></div>
+      <div id="evaluationDashboard" class="research-dashboard"><p class="muted">正在加载实验登记簿……</p></div>
     </section>
   </main>
   <footer><span>NEXUS RETAIL · INT6143 第三组 · 自主零售智能平台</span><span>真实 Instacart 数据 · 可复算算法 · 明确标注的仿真</span></footer>

@@ -9,6 +9,7 @@ import { loadResearch, searchCatalog, convertProduct, propertyLabels, renderRese
 import { getObstacleSnapshot, registerSensorProvider } from './sensorAdapter.js';
 import { hydrateInventory, saveInventory, nextOrderId, saveOrder, patchOrder, listOrders, getOrderRecord, removeOrder, orderCounts, hydrateOrder, addRestock, listRestocks, persistenceStatus, getRobotCount, setSetting } from './systemCore.js';
 import { BRAND_ASSETS, applyBrandAssets, updateBrandRobotImage } from './branding.js';
+import { loadMiningLab, setMiningLabData, getMiningLabData, renderMiningViews, isMiningView } from './miningLab.js';
 
 const $ = id => document.getElementById(id);
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -25,6 +26,11 @@ const clockText = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(
 
 let research = null, rules = [], catalogResults = [], catalogRequest = 0, catalogTimer = 0, scene3d, restocks = listRestocks().length;
 let mlData = null;
+let miningLabData = null;
+function refreshMiningViews() {
+  if (!miningLabData) return;
+  renderMiningViews({ mlData, research, strategyComparison: state.strategyComparison });
+}
 window.INT6143_SENSOR = Object.freeze({ registerProvider: registerSensorProvider });
 
 const substituteNames = {
@@ -792,6 +798,7 @@ function runStrategyComparison() {
   const success = Object.values(result.strategies).filter(s => s.planned).length;
   log(`三策略对照完成：${order.id} · Held–Karp 共用（${result.heldKarpMs}ms）· ${success}/3 种策略规划成功。`);
   renderStrategyPanel();
+  refreshMiningViews(); // 评估实验室的 EXP-P1..P3 读取本次真实三策略指标
 }
 /** 选中某种策略（更新卡片高亮与地图橙线）。 */
 function selectStrategy(key) {
@@ -932,6 +939,43 @@ function renderStrategyPanel() {
   $('exportStrategyJsonBtn').disabled = false; $('exportStrategyCsvBtn').disabled = false;
   $('strategyExecuteBtn').disabled = !sel;
   $('strategyExecuteBtn').textContent = sel ? `使用 Strategy ${sel} 执行（3D）` : '使用此策略执行（3D）';
+}
+/** NEXUS 2.0 动态障碍挑战：从真实运行状态读取重规划前后的指标，不另造数据。 */
+function renderChallengePanel() {
+  const host = $('challengePanel'); if (!host) return;
+  const num = v => Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 1 });
+  const esc = v => escapeHtml(String(v ?? ''));
+  const hasOrder = !!(state.order || state.queue.length);
+  const chip = $('challengeStatus');
+  if (chip) {
+    chip.textContent = state.reroutes ? `已重规划 ${state.reroutes} 次` : hasOrder ? '就绪 · 待触发' : '等待订单';
+    chip.className = `pill ${state.reroutes ? 'pill--ok' : ''}`;
+  }
+  if (!hasOrder) { host.innerHTML = '<p class="empty">提交订单并开始执行后，触发障碍即可看到重规划前后指标。</p>'; return; }
+  const rr = state.lastReroute;
+  const legs = state.plan?.legs || [];
+  const leg = legs[state.stage];
+  const plannedLength = leg ? (+leg.length || 0) : null;
+  const rows = [];
+  rows.push(['累计重规划次数', num(state.reroutes || 0), '次']);
+  if (rr) {
+    rows.push(['最近触发时刻', `${(rr.at || 0).toFixed(1)} s`, '仿真时间']);
+    rows.push(['前方挡路人数', num(rr.ahead || 0), '人']);
+    rows.push(['原路径长度', num(rr.lengthBefore || 0), '地图单位']);
+    rows.push(['重规划后长度', num(rr.lengthAfter || 0), '地图单位']);
+    rows.push(['长度变化', `${((rr.lengthAfter || 0) - (rr.lengthBefore || 0) >= 0 ? '+' : '')}${num((rr.lengthAfter || 0) - (rr.lengthBefore || 0))}`, '地图单位']);
+    rows.push(['原路径风险暴露', num(rr.exposureBefore || 0), '风险值']);
+    rows.push(['重规划后风险暴露', num(rr.exposureAfter || 0), '风险值']);
+    rows.push(['人群热区变化', `${num(rr.heatBefore || 0, 3)} → ${num(rr.heatAfter || 0, 3)}`, '密度']);
+    rows.push(['重规划位置', `[${(rr.position || []).map(v => num(v, 1)).join(', ')}]`, '地图坐标']);
+  }
+  if (plannedLength != null) rows.push(['当前路段规划长度', num(plannedLength, 1), '地图单位']);
+  host.innerHTML = `
+    <div class="table-wrap"><table class="data-table"><thead><tr><th>指标</th><th class="right">数值</th><th>单位 / 说明</th></tr></thead>
+      <tbody>${rows.map(([k, v, u]) => `<tr><td>${esc(k)}</td><td class="right mono">${esc(v)}</td><td>${esc(u)}</td></tr>`).join('')}</tbody></table></div>
+    <p class="assumption">${rr
+      ? `最近一次重规划由真实人群场触发，机器人从当时位置 [${(rr.position || []).map(v => num(v, 1)).join(', ')}] 重新规划，原路径仅作为对照线保留；移动由物理步进驱动，无瞬移。${rr.mining ? '实验驱动模式启用（允许更大绕行以显著降低风险）。' : ''}`
+      : '尚未触发重规划。点击「触发人群堵路」或「触发行人横穿」，在机器人前进方向上放置仿真障碍，观察系统是否自主改道。'}</p>`;
 }
 /** 对照地图：底图共用门店布局；蓝虚线=原始基线（Strategy A），橙实线=当前选中，其余灰线。 */
 function drawStrategyMap() {
@@ -1961,7 +2005,7 @@ function renderAll() {
   renderLiveOps(); renderQueue(); renderOrderState(); renderInventory(); renderProgress();
   renderTimeline(); renderRobotCenter(); renderRouteView(); renderSimulationView(); renderPresentationHud();
   renderOverviewPreview(); renderPedestrianPanel(); renderHistory(); renderRestocks();
-  renderStrategyPanel();
+  renderStrategyPanel(); renderChallengePanel();
   $('normalBtn')?.setAttribute('aria-pressed', String(state.scenario === 'normal'));
   $('peakBtn')?.setAttribute('aria-pressed', String(state.scenario === 'peak'));
   $('scenarioNormal').setAttribute('aria-pressed', String(state.scenario === 'normal'));
@@ -2974,6 +3018,14 @@ function bindEvents() {
   $('exportStrategyCsvBtn')?.addEventListener('click', () => exportStrategyResult('csv'));
   $('strategyOverlaySelect')?.addEventListener('change', drawStrategyMap);
   $('strategyOrderSelect')?.addEventListener('change', () => { state.strategyComparison = null; state.selectedStrategy = null; renderStrategyPanel(); });
+  // NEXUS 2.0 动态障碍挑战：按钮触发真实仿真事件，随后从运行状态读取重规划前后指标。
+  $('challengeCrowdBtn')?.addEventListener('click', () => { handleSimEvent('crowd'); renderChallengePanel(); });
+  $('challengeCrossBtn')?.addEventListener('click', () => { handleSimEvent('pedestrian'); renderChallengePanel(); });
+  $('challengeGoBtn')?.addEventListener('click', () => {
+    if (!state.running) playPause();
+    NEXUS_UI?.showView('supermarket');
+    renderChallengePanel();
+  });
   $('categoryFilter').addEventListener('change', updateSubcategories);
   $('subcategoryFilter').addEventListener('change', scheduleCatalogSearch);
   $('demoOrderBtn').addEventListener('click', demoOrder);
@@ -3065,6 +3117,8 @@ function bindEvents() {
     state.view = event.detail.name;
     scene3d.setActive(state.view === 'supermarket' && state.mode === '3d');
     if (state.view === 'supermarket') { scene3d.resize(); renderAll(); }
+    // NEXUS 2.0：进入挖掘/实验页时按需重绘；评估实验室需读取最新的三策略对照结果。
+    if (isMiningView(state.view)) refreshMiningViews();
   });
   window.addEventListener('nexus:viewmode', event => {
     state.mode = event.detail.mode;
@@ -3192,6 +3246,7 @@ function setCamera(mode) {
 /* 自动化回归测试钩子：所有数值直接来自运行中的仿真状态，不另造指标。 */
 window.__NEXUS = Object.freeze({
   state, STORE, shelves, layoutFixtures, PHYSICS,
+  miningLab: getMiningLabData, renderMiningViews, refreshMiningViews,
   applyPedPreset,
   setScenario: value => { state.scenario = value === 'peak' ? 'peak' : 'normal'; updateScenario('test'); return syncCrowdToScenario(); },
   setSimSpeed, setRobotCount, startNextOrder, activateNext,
@@ -3360,6 +3415,13 @@ loadResearch().then(async data => {
     const mlPanel = document.getElementById('mlDashboard');
     if (mlPanel) mlPanel.innerHTML = '<p class="empty">监督学习数据加载失败。请确认 public/data/ml/ 下的 JSON 已生成，并以 http 方式访问本站。</p>';
   }
+  // NEXUS 2.0：数据挖掘实验室 JSON 懒加载。每个文件独立容错——任一缺失只影响对应页面。
+  miningLabData = await loadMiningLab();
+  setMiningLabData(miningLabData);
+  refreshMiningViews();
+  const loadedCount = Object.values(miningLabData).filter(Boolean).length;
+  const totalCount = Object.keys(miningLabData).length;
+  log(`数据挖掘实验室已加载：${loadedCount}/${totalCount} 个版本化数据集（探索/关联/推荐/聚类/分类/回归/预测/异常）。`);
 }).catch(error => {
   console.error(error);
   // 目录加载失败时给出可操作的原因，而不是一句干巴巴的提示。

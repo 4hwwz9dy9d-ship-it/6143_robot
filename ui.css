@@ -408,3 +408,25 @@ body.presentation .presentation-exit { display: inline-flex; }
 .strategy-card .strategy-weights { font-size: 10px; color: #84919b; }
 @media (max-width: 900px) { .strategy-cards { grid-template-columns: 1fr; } .strategy-map-wrap { grid-template-columns: 1fr; } }
 .strategy-card.is-failed { opacity: .55; border-style: dashed; }
+
+/* ===== NEXUS RETAIL 2.0 — 4-section navigation + data-mining lab ===== */
+.view-navigation { max-height: calc(100vh - 210px); overflow-y: auto; padding-right: 3px; }
+.view-navigation::-webkit-scrollbar { width: 5px; }
+.view-navigation::-webkit-scrollbar-thumb { background: #2b4557; border-radius: 4px; }
+.nav-group { position: sticky; top: 0; z-index: 1; margin: 14px 6px 4px; padding: 3px 4px; background: var(--ctrl-bg); color: #63d8c4; font-size: 8px; font-weight: 900; letter-spacing: .14em; border-bottom: 1px solid var(--ctrl-grid); }
+.lab-dualbars { display: grid; gap: 8px; margin: 12px 0; }
+.lab-dualbar { display: grid; grid-template-columns: 108px minmax(0, 1fr) 92px; align-items: center; gap: 8px; font-size: 11px; }
+.lab-dualbar > span { color: var(--muted); font-family: var(--mono); }
+.lab-dualbar-track { display: grid; gap: 3px; }
+.lab-dualbar-track i { display: block; height: 8px; border-radius: 5px; min-width: 2px; }
+.lab-dualbar > b { text-align: right; font-size: 10px; color: var(--text); font-weight: 700; }
+.research-dashboard .card-pad h4 { margin: 4px 0 6px; font-size: 12px; }
+.research-dashboard .btn-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.research-dashboard .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 4px; }
+.research-dashboard .chart-legend span { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); }
+.research-dashboard .chart-legend i { width: 10px; height: 3px; border-radius: 2px; }
+@media (max-width: 760px) { .view-navigation { max-height: none; } .nav-group { display: none; } }
+
+/* NEXUS 2.0 lab hero uses h3 (research-hero CSS only styled h2) */
+.research-hero h3 { color: #fff; font-size: 22px; margin: 4px 0 8px; line-height: 1.25; }
+.research-dashboard .research-badge { flex: none; }

@@ -63,6 +63,29 @@ python scripts/build_data.py --source /path/to/cleaned_csv_folder
 
 Outputs: catalog shards, search index, summary, rules, clusters, top products and top reorder products under `public/data/`. Running the script is optional for the website — the committed JSON is ready to serve.
 
+### NEXUS RETAIL 2.0 offline research scripts
+
+All scripts read `data/raw/*.csv` (or versioned JSON already in `public/data/`) and write compact, versioned JSON under `public/data/ml/` and `public/data/lab/`. All use seed 6143 and record real `seconds`; no metric is hardcoded. Each script runs standalone in < 90 s with Python 3.13 + pandas/numpy/scikit-learn installed.
+
+```bash
+# V2 core ML (reorder / CF / demand regression)
+python scripts/train_reorder_model.py
+python scripts/build_recommendations.py
+python scripts/build_demand_analysis.py
+
+# NEXUS 2.0 data-mining lab
+python scripts/build_data_profile.py             # → lab/data-profile.json
+python scripts/build_association_analysis.py     # → lab/association-analysis.json
+python scripts/build_recommendation_analysis.py  # → lab/recommendation-analysis.json
+python scripts/build_clustering_analysis.py      # → lab/clustering-analysis.json
+python scripts/build_congestion_classifier.py    # → lab/congestion-classifier.json
+python scripts/build_travel_regression.py        # → lab/travel-regression.json
+python scripts/build_traffic_forecast.py         # → lab/traffic-forecast.json
+python scripts/build_anomaly_detection.py        # → lab/anomaly-detection.json
+```
+
+The front end loads these files lazily (`miningLab.js` → `loadMiningLab()`), and each file is isolated: a missing JSON only disables its own panel. The four-section navigation (OPERATIONS / DATA MINING / INTELLIGENT ROBOTICS / RESEARCH LAB) is defined in `index.html` + the `titles` whitelist in `layout.js`. See `DEVELOPMENT_REPORT.md` for the complete 2.0 delivery and verification record.
+
 ## Local preview
 
 ```bash
