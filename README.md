@@ -100,6 +100,14 @@ The 3D controller deliberately uses the reference version's simple differential-
 
 On the **路径优化** page, the *SMART U-TURN* card demonstrates the new decision: when a cluster (≥3 people within 26 units / 4.5 half-width) is detected ahead, the robot compares RandomForest Risk over a fixed 26-unit horizon for "keep going" vs "turn around via the quiet y≈134 back aisle", and only turns when exposure drops and Risk improves materially. Pedestrian destination sampling is now weighted by `crowdSamples` and by row, so the last aisle really is quieter (visit weight share 0.1504 vs uniform 0.3333). Verified: Risk 0.957 → 0.132 (↓82.5%), 9/9 new checks plus all previous suites green; see `DEVELOPMENT_REPORT_2.2.md` and `TEST_REPORT.md` §34.
 
+
+### NEXUS RETAIL 2.3 — free-space pedestrian walking
+Pedestrians are no longer pinned to navigation-graph grid lines. A shared `staticBlocked()`
+definition drives both movement collision and line-of-sight; `routeBetween()` now uses Theta*
+(any-angle shortcuts) plus string pulling, and `advance()` steers toward the farthest visible
+waypoint with a stable per-pedestrian lane bias. Free diagonal movement is allowed anywhere
+that is collision-free; browse / queue / exit goals stay exact. See `TEST_REPORT.md` §38.
+
 ## Local preview
 
 ```bash

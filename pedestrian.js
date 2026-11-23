@@ -85,9 +85,20 @@ function routeBetween(nodes, from, to, avoid = null) {
     for (const nk of node.neighbors) {
       const next = nodes.get(nk);
       if (nearRobot(next.point) || edgeBlocked(node.point, next.point)) continue;   // V3.8：车体占住的节点/边不通行
-      const score = costs.get(current)
-        + dist(node.point, next.point) * (weight(node.point) + weight(next.point)) / 2;
-      if (score < (costs.get(nk) ?? Infinity)) { costs.set(nk, score); prev.set(nk, current); open.add(nk); }
+      // NEXUS 2.3 Theta*：若「当前点的父节点」能直接看到这个邻居，就从父节点连一条任意角度的
+      // 斜线过去（前驱写成父节点），而不是被迫走 current→next 的网格边。这让路径贴着货架角
+      // 走自然斜线，而不是沿通道中心线一格一格折行。视线不通时才退回普通网格边。
+      let from = node.point, base = costs.get(current), through = current;
+      const pk = prev.get(current);
+      if (pk) {
+        const parent = nodes.get(pk);
+        if (parent && !nearRobot(parent.point) && !edgeBlocked(parent.point, next.point)
+            && segmentClear(parent.point, next.point, .24, avoid)) {
+          from = parent.point; base = costs.get(pk) ?? Infinity; through = pk;
+        }
+      }
+      const score = base + dist(from, next.point) * (weight(from) + weight(next.point)) / 2;
+      if (score < (costs.get(nk) ?? Infinity)) { costs.set(nk, score); prev.set(nk, through); open.add(nk); }
     }
   }
   if (!costs.has(finish)) return [from, to];
@@ -98,25 +109,66 @@ function routeBetween(nodes, from, to, avoid = null) {
   if (dist(chain.at(-1), to) > .01) chain.push(to);
   // V3.5：首段剪枝必须先确认「跨过 chain[1] 的斜线段」不穿货架/装置——
   // 避让机器人时路线常被改到前场，盲目剪枝会剪出一条斜穿货架的直线。
-  if (chain.length > 3 && dist(chain[1], to) > dist(chain[2], to) && segmentClear(chain[0], chain[2])) chain.splice(1, 1);
-  return chain;
+  if (chain.length > 3 && dist(chain[1], to) > dist(chain[2], to) && segmentClear(chain[0], chain[2], .24, avoid)) chain.splice(1, 1);
+  // 2.3：视线拉直——导航图只负责绕开货架口袋的拓扑，真正走过的航点用视线压缩到最少，
+  // 于是行人从入口到货区是一条自然直线，而不是贴着每条网格线逐段折行。
+  return pullLine(chain, .24, avoid);
 }
 
-/** 线段 a→b 以 1.5 单位步长采样，任一点落在货架/实体装置内即视为不安全。 */
-function segmentClear(a, b) {
+// NEXUS RETAIL 2.3 — 自由空间行走（free-space walking）：
+// 行人不该被导航图的几条中心线钉住。物理上 move() 本来逐轴检测货架/装置；
+// 这里把「可通行」判定抽成与 2D/3D/移动碰撞同源的单一函数，再用它做视线检测，
+// 于是「能看到的空地就能直着走过去」，轨迹自然变成斜线/直线而非网格折线。
+const SOLID_KINDS = ['wall', 'promo', 'checkout', 'kiosk', 'charger', 'robotpay'];
+
+/** 静态实体障碍判定（地图单位半径）——blockedByFixture / segmentClear 共用同一定义。 */
+export function staticBlocked(x, y, r) {
+  for (const s of shelves) if (x > s.xMin - r && x < s.xMax + r && y > s.yMin - r && y < s.yMax + r) return true;
+  for (const f of layoutFixtures) {
+    if (!SOLID_KINDS.includes(f.kind)) continue;
+    if (x > f.x - f.w / 2 - r && x < f.x + f.w / 2 + r && y > f.y - f.h / 2 - r && y < f.y + f.h / 2 + r) return true;
+  }
+  return false;
+}
+
+/**
+ * 视线检测：线段 a→b 以 1.0 单位步长采样，任一点落在货架/实体装置/墙体，
+ * 或越过门店边界（除唯一入口/出口开口）即视为不通。
+ * radiusM 用行人真实半径（推车 .38 m 需要更宽余量），避免「看得见却擦到货架角」。
+ */
+export function segmentClear(a, b, radiusM = .24, avoid = null) {
   const length = dist(a, b);
-  const steps = Math.max(2, Math.ceil(length / 1.5));
+  const steps = Math.max(2, Math.ceil(length / 1.0));
+  const r = radiusM / M + .35;   // 行人半径 + 余量（地图单位）
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
-    const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-    const r = .24 / M + .3;   // 行人半径 + 余量（地图单位）
-    for (const s of shelves) if (p[0] > s.xMin - r && p[0] < s.xMax + r && p[1] > s.yMin - r && p[1] < s.yMax + r) return false;
-    for (const f of layoutFixtures) {
-      if (!['wall', 'promo', 'checkout', 'kiosk', 'charger', 'robotpay'].includes(f.kind)) continue;
-      if (p[0] > f.x - f.w / 2 - r && p[0] < f.x + f.w / 2 + r && p[1] > f.y - f.h / 2 - r && p[1] < f.y + f.h / 2 + r) return false;
-    }
+    const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
+    if (staticBlocked(x, y, r)) return false;
+    // 墙体边界：只有左入口 / 右出口的开口高度允许越墙。
+    const inEntry = Math.abs(y - STORE.openings.entrance.y) <= STORE.openings.entrance.halfHeight - r;
+    const inExit = Math.abs(y - STORE.openings.exit.y) <= STORE.openings.exit.halfHeight - r;
+    if (x < 4 + r && !inEntry) return false;
+    if (x > STORE.width - 4 - r && !inExit) return false;
+    if (y < 4 + r || y > STORE.height - 4 - r) return false;
+    // 停稳/强避让的机器人当静态障碍：视线拉直不得斜穿车身（V3.8 死锁防护）。
+    if (avoid?.point && (avoid.still || avoid.forceHard) &&
+        distToSegment(avoid.point, a, b) < (avoid.hardR ?? 4.2)) return false;
   }
   return true;
+}
+
+/** 视线拉直（string pulling）：只保留必须绕行的拐点，中间可见的节点删除。 */
+function pullLine(points, radiusM = .24, avoid = null) {
+  if (points.length <= 2) return points;
+  const out = [points[0]];
+  let i = 0;
+  while (i < points.length - 1) {
+    let j = points.length - 1;
+    while (j > i + 1 && !segmentClear(points[i], points[j], radiusM, avoid)) j--;
+    out.push(points[j]);
+    i = j;
+  }
+  return out;
 }
 
 export class PedestrianSystem {
@@ -287,6 +339,9 @@ export class PedestrianSystem {
       serviceSeconds: this.serviceSeconds(items, basket),
       yieldToRobot: 0, blocked: 0, crossing: !!forced.crossing,
       yieldSide: 0, yieldTimer: 0,
+      // NEXUS 2.3：通道内稳定横向偏好（±1.5 单位）——同一条通道里的行人各走各的线，
+      // 不再像火车一样叠在导航图的中心线上；由 id 散列决定，可复现、不消耗随机流。
+      laneBias: (doorLaneHash(this.nextId) - .5) * 3.0,
       // V3.4 防卡看门狗：固定 3 s 观测窗测「到目标的净进度」，连续卡住 → 绕行/吸附脱困。
       stuckWindows: 0, progressClock: 0, anchorGoalDist: 0, nudgeCooldown: 0,
       // V2.5 僵局脱离：与机器人持续近距离对峙时，行人明确换一条方向绕行，
@@ -844,7 +899,33 @@ export class PedestrianSystem {
       }
       target = person.route[person.routeIndex];
     }
+    // NEXUS 2.3 自由空间行走：在当前航点之后向后找「从脚下就能直线走到」的最远航点，
+    // 直接朝它走。导航图只决定绕开货架口袋的大方向，真正轨迹是开阔卖场里的自然直线/
+    // 斜线，而不是贴着每条网格中心线逐段折行。视线检测与 move() 共用同一套障碍定义，
+    // 因此「能看到的空地」必然是「不穿模的空地」；停稳的机器人视为障碍不斜穿车身。
     if (target) {
+      const avoid = robot?.position
+        ? { point: robot.position, still: robot.still !== false, hardR: robot.hardROverride ?? 4.2 }
+        : null;
+      let farthest = person.routeIndex;
+      for (let j = person.route.length - 1; j > person.routeIndex; j--) {
+        if (segmentClear(person.position, person.route[j], person.radius || .26, avoid)) { farthest = j; break; }
+      }
+      if (farthest > person.routeIndex) {
+        person.routeIndex = farthest;
+        target = person.route[farthest];
+      }
+    }
+    if (target) {
+      // 通道内横向偏好：把目标沿法线侧移一小段，让每个人走在自己那条「虚拟车道」上。
+      // 终点（最后一个航点，如货架浏览位/收银队位/出口）不偏移，保证精确到位；
+      // 偏移点若视线不通（会擦货架角/出界）则放弃偏移走原目标。
+      if (person.laneBias && person.routeIndex < person.route.length - 1) {
+        const d0 = Math.max(.001, dist(person.position, target));
+        const nx = -(target[1] - person.position[1]) / d0, ny = (target[0] - person.position[0]) / d0;
+        const shifted = [target[0] + nx * person.laneBias, target[1] + ny * person.laneBias];
+        if (segmentClear(person.position, shifted, person.radius || .26, null)) target = shifted;
+      }
       const d = Math.max(.001, dist(person.position, target));
       desired = [(target[0] - person.position[0]) / d * maxSpeed, (target[1] - person.position[1]) / d * maxSpeed];
     }
@@ -1006,16 +1087,9 @@ export class PedestrianSystem {
     }
   }
 
-  /** 与 3D/2D 完全同源的障碍判定：货架 + 实体装置（不含地面标线）。 */
+  /** 与 3D/2D 与视线检测完全同源的障碍判定：货架 + 实体装置（不含地面标线）。 */
   blockedByFixture(x, y, person) {
-    const r = (person.radius || .26) / M;
-    for (const s of shelves) if (x > s.xMin - r && x < s.xMax + r && y > s.yMin - r && y < s.yMax + r) return true;
-    for (const f of layoutFixtures) {
-      // V2.8：机器人自助收银台（robotpay）也是实体装置，行人不得穿过。
-      if (!['wall', 'promo', 'checkout', 'kiosk', 'charger', 'robotpay'].includes(f.kind)) continue;
-      if (x > f.x - f.w / 2 - r && x < f.x + f.w / 2 + r && y > f.y - f.h / 2 - r && y < f.y + f.h / 2 + r) return true;
-    }
-    return false;
+    return staticBlocked(x, y, (person.radius || .26) / M);
   }
 
   snapshot() {
