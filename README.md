@@ -108,6 +108,9 @@ python -m http.server 8099
 ```
 
 ES modules require HTTP; opening `index.html` directly from disk will not work.
+If the catalogue shows `商品目录加载失败：Failed to fetch`, the page is either opened via `file://`,
+the local server has stopped, or the WorkBuddy share link lost its `?sharecode=...` parameter.
+The page now explains the exact cause and offers a **重新加载商品目录** button instead of a raw browser error.
 
 ## Deployment
 

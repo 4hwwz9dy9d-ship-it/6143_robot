@@ -29,6 +29,19 @@ const clockText = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(
 let research = null, rules = [], catalogResults = [], catalogRequest = 0, catalogTimer = 0, scene3d, restocks = listRestocks().length;
 let mlData = null;
 let miningLabData = null;
+// 分享链接的数据请求必须带回 sharecode；同时给「Failed to fetch」一个可执行的提示，
+// 而不是把浏览器原生英文错误直接丢给用户。
+const shareCode = new URLSearchParams(location.search).get('sharecode');
+const withShareCode = path => shareCode
+  ? `${path}${path.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(shareCode)}`
+  : path;
+const catalogHint = () => location.protocol === 'file:'
+  ? '检测到用 file:// 直接打开。ES 模块和本地 JSON 不能双击运行：请在项目目录执行 python -m http.server 8099，再访问 http://127.0.0.1:8099/；或直接使用线上分享链接。'
+  : `数据请求未成功。请确认本地服务仍在运行；线上访问请保留链接中的 ?sharecode=... 参数并检查网络。${shareCode ? '' : '（当前链接未带 sharecode）'}`;
+const catalogErrorBox = message => `<p class="empty">商品目录加载失败：${escapeHtml(message)}<br>${escapeHtml(catalogHint())}</p><button type="button" class="btn btn-secondary" id="catalogRetryBtn">重新加载商品目录</button>`;
+function bindCatalogRetry() {
+  $('catalogRetryBtn')?.addEventListener('click', () => scheduleCatalogSearch());
+}
 function refreshMiningViews() {
   if (!miningLabData) return;
   renderMiningViews({ mlData, research, strategyComparison: state.strategyComparison });
@@ -251,7 +264,7 @@ async function ensureProduct(id) {
   const info = mlData?.cf?.productInfo?.[sourceId];
   if (!info) return null;
   try {
-    const response = await fetch(`./public/data/catalog/department-${info.departmentId}.json`);
+    const response = await fetch(withShareCode(`./public/data/catalog/department-${info.departmentId}.json`));
     if (!response.ok) return null;
     const rows = await response.json();
     const row = rows.find(item => item.id === sourceId);
@@ -3444,7 +3457,31 @@ function scheduleCatalogSearch() {
         const id = `I${row.id}`; if (!productById.has(id)) productById.set(id, convertProduct(row)); return productById.get(id);
       });
       renderCatalogue();
-    } catch (error) { if (request === catalogRequest) $('catalogue').textContent = `商品目录加载失败：${error.message}`; }
+    } catch (error) {
+      if (request !== catalogRequest) return;
+      console.error('商品目录加载失败：', error);
+      // 目录分片请求失败时，先用已经成功加载的高热度商品响应筛选，不让整页空掉。
+      const q = $('productSearch').value.trim().toLowerCase();
+      const dept = $('categoryFilter').value, aisle = $('subcategoryFilter').value;
+      const cached = (research?.top || []).filter(row =>
+        (!dept || row.departmentId === Number(dept)) &&
+        (!aisle || row.aisleId === Number(aisle)) &&
+        (!q || `${row.name} ${row.aisle} ${row.department}`.toLowerCase().includes(q))
+      ).slice(0, 36);
+      if (cached.length) {
+        catalogResults = cached.map(row => {
+          const id = `I${row.id}`; if (!productById.has(id)) productById.set(id, convertProduct(row));
+          return productById.get(id);
+        });
+        setText('catalogScope', `目录分片请求失败（${error.message}），当前仅用已缓存的 ${cached.length} 件真实高热度商品响应筛选。${catalogHint()}`);
+        renderCatalogue();
+        $('catalogue').insertAdjacentHTML('beforeend', '<button type="button" class="btn btn-secondary" id="catalogRetryBtn" style="margin-top:12px">重新加载完整目录</button>');
+        bindCatalogRetry();
+        return;
+      }
+      $('catalogue').innerHTML = catalogErrorBox(error.message);
+      bindCatalogRetry();
+    }
   }, 240);
 }
 function bindEvents() {
@@ -3918,6 +3955,9 @@ window.__NEXUS = Object.freeze({
       fps: scene3d.getFps?.() || 0,
     };
   },
+  // 商品目录失败后的可重试入口：测试与页面按钮共用，避免用户只能刷新整页。
+  retryCatalog: () => scheduleCatalogSearch(),
+  catalogStatus: () => ({ loaded: !!research, results: catalogResults.length, scope: $('catalogScope')?.textContent || '' }),
   reset() { resetPlayback(); },
 });
 
@@ -4009,11 +4049,10 @@ loadResearch().then(async data => {
   renderIntelligenceSummary(); // 异步加载完成后立即刷新 HUD 徽标，不等下一次 renderAll
   refreshMiningViews();
 }).catch(error => {
-  console.error(error);
-  // 目录加载失败时给出可操作的原因，而不是一句干巴巴的提示。
-  const reason = location.protocol === 'file:'
-    ? '当前是直接双击打开的 file:// 页面，ES 模块与 JSON 数据无法加载。请用本地服务器访问：python -m http.server 8099 后打开 http://127.0.0.1:8099/'
-    : `数据请求失败（${error.message}）。若本地预览请确认服务器仍在运行（python -m http.server 8099），再刷新一次。`;
-  $('catalogue').textContent = `真实数据加载失败：${reason}`;
-  setText('miningMethod', '真实分析数据不可用，请检查 public/data 目录。');
+  console.error('真实商品目录数据加载失败：', error);
+  $('catalogue').innerHTML = catalogErrorBox(error.message);
+  bindCatalogRetry();
+  setText('catalogScope', '真实数据不可用；请按下方提示恢复服务后重试。');
+  setText('miningMethod', '真实分析数据不可用，请检查 public/data 目录或分享链接参数。');
+  log(`真实商品目录加载失败：${error.message}`, 'error');
 });

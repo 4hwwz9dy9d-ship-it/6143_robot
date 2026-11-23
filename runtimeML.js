@@ -6,11 +6,15 @@
 // 因此前端用「标准化正态偏离度」作为与训练阈值同源的异常打分代理，报告须注明。
 
 const RISK_CN = ['低风险', '中风险', '高风险'];
+const SHARE_CODE = new URLSearchParams(location.search).get('sharecode');
+const withShareCode = path => SHARE_CODE
+  ? `${path}${path.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(SHARE_CODE)}`
+  : path;
 
 /** 加载运行时模型。失败时返回 null，调用方降级到几何启发式，不影响仿真。 */
 export async function loadRuntimeModels(url = './public/data/lab/runtime-models.json') {
   try {
-    const res = await fetch(url, { cache: 'no-cache' });
+    const res = await fetch(withShareCode(url), { cache: 'no-cache' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (!data?.risk_rf?.trees?.length) throw new Error('模型文件缺少 risk_rf.trees');

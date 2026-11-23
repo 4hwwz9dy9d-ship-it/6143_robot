@@ -4,6 +4,12 @@
 import { shelves } from './storeData.js';
 
 const BASE = './public/data/';
+// WorkBuddy 分享页的静态资源需要保留 sharecode；浏览器发出的相对路径请求不会自动带查询串，
+// 因此统一在这里补回，避免「分享链接能打开、数据请求 403 / Failed to fetch」。
+const SHARE_CODE = new URLSearchParams(location.search).get('sharecode');
+const withShareCode = path => SHARE_CODE
+  ? `${path}${path.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(SHARE_CODE)}`
+  : path;
 const CNY_PER_USD = 7; // teaching assumption, not a live exchange rate
 const shelfByDepartment = {
   frozen: 'Frozen Food', other: 'Stationery', bakery: 'Bakery', produce: 'Fresh Produce',
@@ -41,10 +47,26 @@ const text = value => String(value ?? '');
 export const escapeHtml = value => text(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const count = value => Number(value ?? 0).toLocaleString('zh-CN');
 
-async function loadJson(path) {
-  const response = await fetch(BASE + path);
-  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
-  return response.json();
+async function loadJson(path, retries = 1) {
+  const url = withShareCode(BASE + path);
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(url, { signal: controller.signal, cache: 'no-cache' });
+      clearTimeout(timer);
+      if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      clearTimeout(timer);
+      if (attempt >= retries) {
+        if (error?.name === 'AbortError') throw new Error(`${path}: 请求超时`);
+        throw error;
+      }
+      // 瞬时网络抖动/分享页 Cookie 尚未就绪时重试一次，避免整个目录被一个请求拖死。
+      await new Promise(resolve => setTimeout(resolve, 250 * (attempt + 1)));
+    }
+  }
 }
 export async function loadResearch() {
   const [index, summary, rules, clusters, top, topReordered] = await Promise.all([

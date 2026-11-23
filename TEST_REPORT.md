@@ -1294,3 +1294,35 @@ Apriori（真实 support/confidence/lift，131,209 个训练购物篮，28,052 �
 SVG 起点 `M1064,1276`（= (108−1.6)×10）与车体一致；验收 **11/11 PASS**。
 
 回归：2.1 A–J **11/11**、2.0 冒烟 **35/35**、V3.0 **11/11**、UI **10/10**、V2.5 **9/9**。
+
+---
+
+## §37 NEXUS RETAIL 2.2d — 商品目录 `Failed to fetch` 容错（2026-11-24）
+
+用户反馈“商品目录加载失败：Failed to fetch”。诊断结论：
+
+- `file://` 双击打开时 ES 模块与本地 JSON 请求被浏览器拦截，必然出现该原生错误；
+- WorkBuddy 分享页的相对路径数据请求不会自动携带 `?sharecode=...`，
+  一旦凭证 Cookie 未就绪 / 被拦截，`public/data/*.json` 会 403 或网络失败；
+- 单个目录分片失败会让整个搜索 Promise 拒绝，页面只剩英文错误。
+
+修复：
+
+- `instacart.js` / `miningLab.js` / `runtimeML.js` / `app.js` 统一 `withShareCode()` 透传分享码；
+- `instacart.js::loadJson()` 增加 20 s 超时 + 1 次指数退避重试；
+- 搜索分片失败时用已加载的 `top-products` 真实高热度商品响应筛选，并给出中文可执行提示；
+- 数据整体失败时展示 `python -m http.server 8099` 或“保留 sharecode”的指引与“重新加载”按钮；
+- 新增 `window.__NEXUS.retryCatalog()` 测试钩子；
+- GitHub Pages 工作流改为复制全部根级 `*.js`，补齐此前漏拷的 `safety.js` / `runtimeML.js` / `miningLab.js`。
+
+`cdp-catalog-fix.mjs` **5/5 PASS**：
+
+| 用例 | 结果 |
+| --- | --- |
+| T1 本地 HTTP 正常加载 50 件真实高热度商品 | PASS |
+| T2 21/21 数据请求均携带 sharecode | PASS |
+| T3 分片失败时用真实缓存降级并给出可操作提示 | PASS |
+| T4 解除阻塞后点重试恢复完整搜索（36 件） | PASS |
+| T5 数据整体失败时显示指引与重试按钮 | PASS |
+
+回归：2.2 **11/11**、2.1 A–J **11/11**、2.0 冒烟 **35/35**、V3.0 **11/11**、UI **10/10**、V2.5 **9/9**。

@@ -140,3 +140,35 @@ python -m http.server 8100 --bind 127.0.0.1
 验收：T11 在 8 个采样点计算机器人到显示路线的最小距离，全部为 **0**；
 2D SVG 路径起点由 `M990` 变为 `M974`（x=99→97.4），与车体一致。
 2.2 全量 **11/11 PASS**；A–J 11/11、冒烟 35/35、V3.0 11/11、UI 10/10、V2.5 9/9。
+
+---
+
+## 8. 补充修复（2.2d）：商品目录 `Failed to fetch`
+
+用户反馈打开页面后商品目录区域显示“商品目录加载失败：Failed to fetch”。
+
+### 诊断
+
+浏览器原生 `Failed to fetch` 只可能来自网络层，不是算法或数据内容错误。复现出三条路径：
+
+1. `file://` 双击打开 `index.html`：ES 模块与本地 JSON 请求都被同源策略拦截；
+2. WorkBuddy 分享页：相对路径数据请求不带 `?sharecode=...`，凭证 Cookie 未就绪时返回 403；
+3. 单个目录分片（搜索索引/部门明细）失败：Promise 整体拒绝，页面只剩英文错误。
+
+### 处理
+
+- 新增统一 `withShareCode()`：`instacart.js` / `miningLab.js` / `runtimeML.js` / `app.js`
+  所有数据请求都把当前页面的 `sharecode` 补回查询串，实测 21/21 请求全部携带；
+- `instacart.js::loadJson()` 增加 20 s `AbortController` 超时与一次退避重试，覆盖瞬时抖动；
+- 搜索分片失败时，用已成功加载的 `top-products.json` 真实高热度商品响应当前筛选，
+  并在 `catalogScope` 中明确写出“仅用已缓存的真实高热度商品”与恢复办法；
+- 数据整体失败时不再显示裸英文错误，而是给出
+  `python -m http.server 8099` / 保留 `?sharecode=...` 的可执行指引，并提供“重新加载商品目录”按钮；
+- 新增 `window.__NEXUS.retryCatalog()` / `catalogStatus()` 测试钩子；
+- 修复 GitHub Pages 工作流此前漏拷 `safety.js` / `runtimeML.js` / `miningLab.js` 的问题，
+  改为复制全部根级 `*.js`。
+
+### 验收
+
+`cdp-catalog-fix.mjs` **5/5 PASS**（正常加载、sharecode 透传、分片失败降级、重试恢复、整体失败指引）。
+全部旧回归保持通过：2.2 11/11、2.1 A–J 11/11、2.0 35/35、V3.0 11/11、UI 10/10、V2.5 9/9。

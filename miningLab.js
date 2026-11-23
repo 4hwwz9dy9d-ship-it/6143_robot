@@ -4,6 +4,10 @@
 // Real data: Instacart cleaned CSV. Simulated data: corridor / pedestrian / robot state (labelled).
 
 const BASE = './public/data/';
+const SHARE_CODE = new URLSearchParams(location.search).get('sharecode');
+const withShareCode = path => SHARE_CODE
+  ? `${path}${path.includes('?') ? '&' : '?'}sharecode=${encodeURIComponent(SHARE_CODE)}`
+  : path;
 const LAB_FILES = {
   dataProfile: 'lab/data-profile.json',
   association: 'lab/association-analysis.json',
@@ -41,7 +45,7 @@ const COLORS = { blue: '#3D7BD6', teal: '#20A995', amber: '#E8A34A', red: '#D96C
 const arr = v => Array.isArray(v) ? v : [];
 
 async function loadJson(path) {
-  const response = await fetch(BASE + path);
+  const response = await fetch(withShareCode(BASE + path));
   if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
   return response.json();
 }
